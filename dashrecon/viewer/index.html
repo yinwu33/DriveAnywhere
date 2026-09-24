@@ -8,6 +8,9 @@
     scenes/<id>.fusion.js  window.FUSION[<id>] (scripts/vis_fusion.py fusion_view.js; only with --fusion)
     scenes/<id>.mesh.js    window.MESH[<id>]   (scripts/vis_mesh.py mesh_view.js; only with --mesh)
     training/<scene>_<t>.jpg  Phase 6 comparison sheets (scripts/vis_training.py; only with --training_dir)
+    scenes/<id>.splat.js   window.SPLAT[<id>]  (scripts/export_splats.py; only with --splat_exp)
+  The 3DGS mode is a small WebGL splat renderer (EWA projection in the vertex shader, CPU counting sort
+  back to front, premultiplied "over" blending); no workers or WASM. Only the current scene stays decoded.
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
   Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
@@ -227,6 +230,7 @@ tr.mean td { border-top: 2px solid var(--rule); }
           <button class="tool" id="cloud-raw" type="button" aria-pressed="false">Raw depth</button>
           <button class="tool" id="cloud-fused" type="button" aria-pressed="true">Fused</button>
           <button class="tool" id="cloud-mesh" type="button" aria-pressed="false" hidden>Mesh</button>
+          <button class="tool" id="cloud-splat" type="button" aria-pressed="false" hidden>3DGS</button>
         </div>
         <div class="seg" id="seg-color" role="group" aria-label="Point colour" hidden>
           <button class="tool" id="color-photo" type="button" aria-pressed="true">Photo</button>
@@ -379,6 +383,7 @@ const MASKS = CFG.masks;
 const FUSION = CFG.fusion;
 const MESH = CFG.mesh;
 const TRAIN = CFG.training;
+const SPLATS = CFG.splats;
 const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
 const KINDS = ["sky", "dynamic", "road"];  // categorical slots 1-3, fixed order
 const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road", other: "Other" };
@@ -637,7 +642,7 @@ scene3.add(sun);
 let current = null;
 let currentId = null;
 let showCams = true, hideDynamic = false, showRejected = false;
-let cloudMode = MESH ? "mesh" : (FUSION ? "fused" : "raw");
+let cloudMode = SPLATS ? "splat" : (MESH ? "mesh" : (FUSION ? "fused" : "raw"));
 let colorMode = "photo";
 const loaded = {};
 
@@ -704,7 +709,7 @@ function buildScene(d) {
   });
   const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
   group.add(frusta);
-  return { group, raw, fused: null, rejected: null, mesh: null, path, frusta, centers, cams: d.cams };
+  return { group, raw, fused: null, rejected: null, mesh: null, splat: null, path, frusta, centers, cams: d.cams };
 }
 
 function addFusion(s, f) {
@@ -741,7 +746,145 @@ function addMesh(s, m) {
   s.group.add(mesh);
 }
 
+// ---------- 3DGS splats ----------
+const SPLAT_VS = `
+precision highp float;
+attribute vec3 iCenter;
+attribute vec4 iColor;
+attribute vec3 iCovA;
+attribute vec3 iCovB;
+uniform vec2 focal;
+uniform vec2 viewport;
+varying vec4 vColor;
+varying vec2 vPos;
+void main() {
+  vec4 cam = modelViewMatrix * vec4(iCenter, 1.0);
+  float z = -cam.z;
+  vec4 clip = projectionMatrix * cam;
+  vec2 ndc = clip.xy / clip.w;
+  if (z < 0.2 || abs(ndc.x) > 1.3 || abs(ndc.y) > 1.3) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  // world -> OpenCV camera rows (x right, y down, z forward); three.js cameras look down -z with y up
+  vec3 c0 = modelViewMatrix[0].xyz, c1 = modelViewMatrix[1].xyz, c2 = modelViewMatrix[2].xyz;
+  vec3 r0 = vec3(c0.x, c1.x, c2.x);
+  vec3 r1 = -vec3(c0.y, c1.y, c2.y);
+  vec3 r2 = -vec3(c0.z, c1.z, c2.z);
+  float x = cam.x, y = -cam.y;
+  vec3 m0 = (focal.x / z) * r0 - (focal.x * x / (z * z)) * r2;
+  vec3 m1 = (focal.y / z) * r1 - (focal.y * y / (z * z)) * r2;
+  mat3 V = mat3(iCovA.x, iCovA.y, iCovA.z, iCovA.y, iCovB.x, iCovB.y, iCovA.z, iCovB.y, iCovB.z);
+  float a = dot(m0, V * m0) + 0.3;
+  float b = dot(m0, V * m1);
+  float c = dot(m1, V * m1) + 0.3;
+  float mid = 0.5 * (a + c);
+  float rad = length(vec2(0.5 * (a - c), b));
+  float l1 = mid + rad;
+  float l2 = max(mid - rad, 0.1);
+  vec2 v1 = abs(b) > 1e-6 ? normalize(vec2(b, l1 - a)) : (a >= c ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+  vec2 major = min(sqrt(2.0 * l1), 1024.0) * v1;
+  vec2 minor = min(sqrt(2.0 * l2), 1024.0) * vec2(v1.y, -v1.x);
+  vec2 offPix = position.x * major + position.y * minor;
+  vColor = iColor;
+  vPos = position.xy;
+  gl_Position = vec4(ndc + vec2(2.0 * offPix.x / viewport.x, -2.0 * offPix.y / viewport.y), 0.0, 1.0);
+}`;
+const SPLAT_FS = `
+precision highp float;
+varying vec4 vColor;
+varying vec2 vPos;
+void main() {
+  float A = -dot(vPos, vPos);
+  if (A < -4.0) discard;
+  float B = exp(A) * vColor.a;
+  gl_FragColor = vec4(B * vColor.rgb, B);
+}`;
+
+function halfToFloat(h) {
+  const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
+  if (e === 0) return s * Math.pow(2, -14) * (f / 1024);
+  if (e === 31) return f ? NaN : s * Infinity;
+  return s * Math.pow(2, e - 15) * (1 + f / 1024);
+}
+
+function buildSplats(d) {
+  const n = d.n;
+  const q = new Uint16Array(b64bytes(d.pos).buffer);
+  const col = b64bytes(d.col);
+  const scl = new Uint16Array(b64bytes(d.scl).buffer);
+  const rot = new Int8Array(b64bytes(d.rot).buffer);
+  const center = new Float32Array(n * 3), covA = new Float32Array(n * 3), covB = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    for (let a = 0; a < 3; a++) center[3 * i + a] = d.lo[a] + (q[3 * i + a] / 65535) * (d.hi[a] - d.lo[a]);
+    let w = rot[4 * i] / 127, x = rot[4 * i + 1] / 127, y = rot[4 * i + 2] / 127, z = rot[4 * i + 3] / 127;
+    const nq = Math.hypot(w, x, y, z) || 1; w /= nq; x /= nq; y /= nq; z /= nq;
+    // rotation matrix (gsplat wxyz convention), columns are the Gaussian axes
+    const R = [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+               2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+               2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)];
+    const s2 = [0, 1, 2].map(k => Math.exp(2 * halfToFloat(scl[3 * i + k])));
+    const cov = (r, c) => R[3 * r] * R[3 * c] * s2[0] + R[3 * r + 1] * R[3 * c + 1] * s2[1] + R[3 * r + 2] * R[3 * c + 2] * s2[2];
+    covA[3 * i] = cov(0, 0); covA[3 * i + 1] = cov(0, 1); covA[3 * i + 2] = cov(0, 2);
+    covB[3 * i] = cov(1, 1); covB[3 * i + 1] = cov(1, 2); covB[3 * i + 2] = cov(2, 2);
+  }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0]), 3));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  const attrs = {
+    iCenter: new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3),
+    iColor: new THREE.InstancedBufferAttribute(new Uint8Array(n * 4), 4, true),
+    iCovA: new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3),
+    iCovB: new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3),
+  };
+  for (const [k, a] of Object.entries(attrs)) { a.setUsage(THREE.DynamicDrawUsage); g.setAttribute(k, a); }
+  g.instanceCount = n;
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: SPLAT_VS, fragmentShader: SPLAT_FS, transparent: true, depthTest: false, depthWrite: false,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+    uniforms: { focal: { value: new THREE.Vector2(1, 1) }, viewport: { value: new THREE.Vector2(1, 1) } },
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.frustumCulled = false;
+  const box = new THREE.Box3();
+  // keep the camera framing to where most splats are (far background splats would dominate a full box)
+  const idx = Array.from({ length: Math.min(n, 20000) }, (_, k) => Math.floor(k * n / Math.min(n, 20000)));
+  const pct = (a, p) => { const v = idx.map(i => center[3 * i + a]).sort((x, y) => x - y); return v[Math.floor(p * (v.length - 1))]; };
+  box.min.set(pct(0, 0.02), pct(1, 0.02), pct(2, 0.02)); box.max.set(pct(0, 0.98), pct(1, 0.98), pct(2, 0.98));
+  return { mesh, attrs, center, col, covA, covB, n, n_total: d.n_total, exp: d.exp, box,
+           depth: new Float32Array(n), order: new Uint32Array(n), counts: new Uint32Array(65536), lastView: null };
+}
+
+// counting sort by view depth, far to near, then permute the instance buffers
+function sortSplats(sp) {
+  const e = camera.matrixWorldInverse.elements;
+  const key = e.slice(0, 16).join(",");
+  if (key === sp.lastView) return;
+  sp.lastView = key;
+  const n = sp.n, c = sp.center, d = sp.depth;
+  let dmin = Infinity, dmax = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = -(e[2] * c[3 * i] + e[6] * c[3 * i + 1] + e[10] * c[3 * i + 2] + e[14]);
+    d[i] = v; if (v < dmin) dmin = v; if (v > dmax) dmax = v;
+  }
+  const counts = sp.counts; counts.fill(0);
+  const scale = 65535 / Math.max(dmax - dmin, 1e-6);
+  for (let i = 0; i < n; i++) counts[65535 - Math.floor((d[i] - dmin) * scale)]++;
+  for (let b = 1; b < 65536; b++) counts[b] += counts[b - 1];
+  const order = sp.order;
+  for (let i = n - 1; i >= 0; i--) order[--counts[65535 - Math.floor((d[i] - dmin) * scale)]] = i;
+  const ac = sp.attrs.iCenter.array, ak = sp.attrs.iColor.array, aa = sp.attrs.iCovA.array, ab = sp.attrs.iCovB.array;
+  for (let k = 0; k < n; k++) {
+    const i = order[k];
+    ac[3 * k] = c[3 * i]; ac[3 * k + 1] = c[3 * i + 1]; ac[3 * k + 2] = c[3 * i + 2];
+    aa[3 * k] = sp.covA[3 * i]; aa[3 * k + 1] = sp.covA[3 * i + 1]; aa[3 * k + 2] = sp.covA[3 * i + 2];
+    ab[3 * k] = sp.covB[3 * i]; ab[3 * k + 1] = sp.covB[3 * i + 1]; ab[3 * k + 2] = sp.covB[3 * i + 2];
+    ak[4 * k] = sp.col[4 * i]; ak[4 * k + 1] = sp.col[4 * i + 1]; ak[4 * k + 2] = sp.col[4 * i + 2]; ak[4 * k + 3] = sp.col[4 * i + 3];
+  }
+  for (const a of Object.values(sp.attrs)) a.needsUpdate = true;
+}
+
 function activeCloud(s) {
+  if (cloudMode === "splat" && s.splat) return s.splat;
   if (cloudMode === "mesh" && s.mesh) return s.mesh;
   return cloudMode === "fused" && s.fused ? s.fused : s.raw;
 }
@@ -762,9 +905,12 @@ function colourCloud(c) {
 function refreshScene() {
   if (!current) return;
   const s = current;
+  if (cloudMode === "splat" && !s.splat) cloudMode = s.mesh ? "mesh" : (s.fused ? "fused" : "raw");
+  const splatOn = cloudMode === "splat";
   const meshOn = cloudMode === "mesh" && Boolean(s.mesh);
   const fusedOn = cloudMode === "fused" && Boolean(s.fused);
-  s.raw.points.visible = !fusedOn && !meshOn;
+  s.raw.points.visible = !fusedOn && !meshOn && !splatOn;
+  if (s.splat) s.splat.mesh.visible = splatOn;
   if (s.fused) s.fused.points.visible = fusedOn;
   if (s.mesh) s.mesh.mesh.visible = meshOn;
   if (s.rejected) { s.rejected.visible = fusedOn && showRejected; s.rejected.material.color.set(cssVar("--bad")); }
@@ -776,7 +922,10 @@ function refreshScene() {
   if (colorMode === "normals" && !c.nrmCol) colorMode = "photo";
   if (colorMode === "classes" && !c.lab) colorMode = "photo";
   if (colorMode === "shaded" && !meshOn) colorMode = "photo";
-  if (meshOn) {
+  if (splatOn) colorMode = "photo";
+  if (splatOn) {
+    // splat colours are fixed (base colour); nothing to recolour
+  } else if (meshOn) {
     const attr = s.mesh.mesh.geometry.getAttribute("color");
     attr.array.set(colorMode === "normals" ? s.mesh.nrmCol : s.mesh.photoCol);
     attr.needsUpdate = true;
@@ -786,14 +935,17 @@ function refreshScene() {
     colourCloud(c);
   }
   // controls
-  document.getElementById("seg-cloud").hidden = !s.fused && !s.mesh;
-  document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn && !meshOn));
+  document.getElementById("seg-cloud").hidden = !s.fused && !s.mesh && !s.splat;
+  document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn && !meshOn && !splatOn));
+  document.getElementById("cloud-splat").hidden = !s.splat;
+  document.getElementById("cloud-splat").setAttribute("aria-pressed", String(splatOn));
+  if (s.splat) document.getElementById("cloud-splat").textContent = `3DGS (${s.splat.exp})`;
   document.getElementById("cloud-fused").setAttribute("aria-pressed", String(fusedOn));
   document.getElementById("cloud-mesh").hidden = !s.mesh;
   document.getElementById("cloud-mesh").setAttribute("aria-pressed", String(meshOn));
   document.getElementById("color-shaded").hidden = !s.mesh;
   document.getElementById("color-shaded").disabled = !meshOn;
-  document.getElementById("seg-color").hidden = !c.lab && !c.nrmCol;
+  document.getElementById("seg-color").hidden = (!c.lab && !c.nrmCol) || splatOn;
   document.getElementById("color-classes").disabled = !c.lab || meshOn;
   document.getElementById("color-normals").disabled = !c.nrmCol;
   for (const m of ["photo", "classes", "normals", "shaded"]) document.getElementById(`color-${m}`).setAttribute("aria-pressed", String(colorMode === m));
@@ -809,6 +961,7 @@ function refreshScene() {
   } else {
     extra.innerHTML = "";
   }
+  if (splatOn) extra.innerHTML = `<span>${s.splat.exp} Gaussians: ${s.splat.n.toLocaleString("en-US")} of ${s.splat.n_total.toLocaleString("en-US")} (most opaque × largest) · base colour only, no sky model</span>`;
   if (meshOn) extra.innerHTML += ` <span>showing ${window.MESH[currentId].nf.toLocaleString("en-US")} of ${MESH.scenes[currentId].stats.faces.toLocaleString("en-US")} faces</span>`;
   if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
   extra.hidden = extra.innerHTML === "";
@@ -832,7 +985,17 @@ function resize() {
 }
 new ResizeObserver(resize).observe(viewer);
 
-function render() { renderer.render(scene3, camera); }
+function render() {
+  if (current && current.splat && current.splat.mesh.visible) {
+    const sp = current.splat, size = renderer.getSize(new THREE.Vector2());
+    camera.updateMatrixWorld();
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();  // renderer.render updates it only later
+    sp.mesh.material.uniforms.viewport.value.set(size.x, size.y);
+    sp.mesh.material.uniforms.focal.value.set(camera.projectionMatrix.elements[0] * size.x / 2, camera.projectionMatrix.elements[5] * size.y / 2);
+    sortSplats(sp);
+  }
+  renderer.render(scene3, camera);
+}
 
 function driverView() {
   if (!current) return;
@@ -856,6 +1019,17 @@ function topView() {
   controls.update(); render();
 }
 
+function disposeScene(id) {
+  const s = loaded[id];
+  s.group.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  });
+  if (s.mesh) { s.mesh.basic.dispose(); s.mesh.shaded.dispose(); }
+  delete loaded[id];
+  for (const reg of [window.SCENES, window.FUSION, window.MESH, window.SPLAT]) if (reg) delete reg[id];
+}
+
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     const tag = document.createElement("script");
@@ -876,12 +1050,19 @@ async function selectScene(id) {
     if (!(window.SCENES && window.SCENES[id])) await loadScript(`scenes/${id}.js`);
     if (FUSION && !(window.FUSION && window.FUSION[id])) await loadScript(`scenes/${id}.fusion.js`);
     if (MESH && !(window.MESH && window.MESH[id])) await loadScript(`scenes/${id}.mesh.js`);
+    if (SPLATS && SPLATS.scenes[id] && !(window.SPLAT && window.SPLAT[id])) await loadScript(`scenes/${id}.splat.js`);
     if (currentId !== id) return;
     if (current) scene3.remove(current.group);
+    // browser memory: keep only the scene being shown; others are freed and reloaded from cache on revisit
+    for (const other of Object.keys(loaded)) if (other !== id) disposeScene(other);
     if (!loaded[id]) {
       loaded[id] = buildScene(window.SCENES[id]);
       if (FUSION) addFusion(loaded[id], window.FUSION[id]);
       if (MESH) addMesh(loaded[id], window.MESH[id]);
+      if (SPLATS && SPLATS.scenes[id]) {
+        loaded[id].splat = buildSplats(window.SPLAT[id]);
+        loaded[id].group.add(loaded[id].splat.mesh);
+      }
     }
     current = loaded[id];
     scene3.add(current.group);
@@ -912,6 +1093,7 @@ document.getElementById("toggle-cams").addEventListener("click", e => {
 document.getElementById("cloud-raw").addEventListener("click", () => { cloudMode = "raw"; refreshScene(); });
 document.getElementById("cloud-fused").addEventListener("click", () => { cloudMode = "fused"; refreshScene(); });
 document.getElementById("cloud-mesh").addEventListener("click", () => { cloudMode = "mesh"; refreshScene(); });
+document.getElementById("cloud-splat").addEventListener("click", () => { cloudMode = "splat"; refreshScene(); });
 for (const m of ["photo", "classes", "normals", "shaded"]) {
   document.getElementById(`color-${m}`).addEventListener("click", () => { colorMode = m; refreshScene(); });
 }
