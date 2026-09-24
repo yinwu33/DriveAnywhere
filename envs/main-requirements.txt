@@ -23,3 +23,9 @@ gdown
 nerfview==0.0.3
 lpips==0.1.4
 trimesh
+# Phase 8 (frozen SDXL + depth ControlNet, dashrecon/gen): versions verified with torch 2.4.1 and numpy 1.23.1;
+# weights via envs/download_gen_weights.sh
+diffusers==0.31.0
+transformers==4.46.3
+accelerate==1.1.1
+huggingface_hub==0.26.5

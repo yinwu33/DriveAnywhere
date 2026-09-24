@@ -8,7 +8,7 @@
 
 | venv | 用途 | 建立方式 | 关键版本（已验证） |
 |---|---|---|---|
-| `main` | drivestudio 训练与渲染（Phase 6） | `CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=8.6 bash envs/setup_main.sh` | Python 3.10.16，torch 2.4.1+cu121，gsplat 1.3.0，pytorch3d 0.7.8，nvdiffrast 0.3.3，numpy 1.23.1，open3d 0.16.0，torchmetrics 0.10.3，setuptools 80.10.2 |
+| `main` | drivestudio 训练与渲染（Phase 6） | `CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=8.6 bash envs/setup_main.sh` | Python 3.10.16，torch 2.4.1+cu121，gsplat 1.3.0，pytorch3d 0.7.8，nvdiffrast 0.3.3，numpy 1.23.1，open3d 0.16.0，torchmetrics 0.10.3，setuptools 80.10.2；Phase 8 另装 diffusers 0.31.0，transformers 4.46.3，accelerate 1.1.1，huggingface_hub 0.26.5（已写入 `envs/main-requirements.txt`） |
 | `waymo` | Waymo 预处理、选场景用的统计 | `bash envs/setup_waymo.sh` | Python 3.10.16，tensorflow 2.11.0，waymo-open-dataset-tf-2-11-0 1.6.0，numpy 1.21.5 |
 | `mapanything` | Phase 3 位姿与点图 | `bash envs/setup_mapanything.sh` | Python 3.12.12，torch 2.5.1+cu121，mapanything 1.1.4（commit `3d10cf7`），uniception 0.1.7，numpy 2.5.2 |
 | `masks` | Phase 4 掩码 | `bash envs/setup_masks.sh` | Python 3.12.12，torch 2.6.0+cu124，transformers 5.17.0，accelerate 1.15.0，scipy |
@@ -26,6 +26,7 @@
 | 动态分割 | Grounded-SAM-2：Grounding DINO base + SAM 2.1 large | 通过 HF transformers 使用；Grounding DINO 为 Apache-2.0，SAM 2.1 为 Apache-2.0 | `masks` venv | 检测输入 800×1200（全分辨率时检测失效）；实测每帧约 0.85 s（含 SegFormer），峰值约 4–7 GB | 已验证（Phase 4），见 DECISIONS G |
 | 天空/路面 | SegFormer-B5 Cityscapes（HF） | nvidia/segformer-b5-finetuned-cityscapes-1024-1024（NVIDIA SegFormer license，仅限非商业用途） | `masks` venv | 输入 1024×1536，logits 上采样回原图 | 已验证（Phase 4）；类别 id 0 = road、10 = sky，加载时断言 |
 | 表面重建 | NKSR | nv-tlabs/NKSR / NVIDIA Source Code License（仅限非商业用途），模型 CC-BY-SA-4.0 | `nksr` venv（上游改为源码编译，官方配方是 conda + CUDA 12.8；这里用 uv 针对系统 CUDA 12.1 编译） | kitchen-sink 权重（`ks.pth`，54.9 MB，从 HF `heiwang1997/nksr-checkpoints` 下载）的体素为 0.1（米）；val056 的 300 万点输入耗时 10 s，峰值 2.8 GB | 已验证（Phase 7），见 DECISIONS I |
+| 生成式细化 | SDXL base 1.0 + SDXL depth ControlNet + fp16 VAE | `stabilityai/stable-diffusion-xl-base-1.0`（CreativeML Open RAIL++-M）、`diffusers/controlnet-depth-sdxl-1.0`（OpenRAIL++）、`madebyollin/sdxl-vae-fp16-fix`（MIT）；只用现成权重，不微调 | `main` venv；权重用 `envs/download_gen_weights.sh` 下载到 HF 缓存（9.6 GB，fp16），之后以 `HF_HUB_OFFLINE=1` 运行 | 生成分辨率 1248×832，DDIM 反演 5 步 + 去噪 5 步：与两个训练任务共享 GPU 时每张约 4 s；加上 drivestudio 训练器，峰值约 14 GB（E5+pp）/ 17 GB（E6） | 已验证（Phase 8），见 DECISIONS K |
 | 点云处理 | Open3D 0.16.0 | isl-org/Open3D / MIT | `main` venv | — | 已安装 |
 | 位姿评测 | evo | MichaelGrupp/evo / GPL-3.0 | — | — | 待确认（Phase 1，延后） |
 | 图像评测 | torchmetrics 0.10.3、lpips 0.1.4 | Apache-2.0 / BSD | `main` venv | — | 已安装 |
