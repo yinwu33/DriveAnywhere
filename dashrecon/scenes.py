@@ -6,7 +6,10 @@ All are daytime, sunny, and the ego drives more than 80 m. ``scene_idx`` is the 
 ``data/waymo_val_list.txt`` and the drivestudio processed-scene index under
 ``data/waymo/processed/validation/``. GT labels were used only for this selection.
 """
+import os
 from dataclasses import dataclass
+
+import numpy as np
 
 FRONT_CAM_ID = 0  # drivestudio camera index of Waymo FRONT (datasets/waymo/waymo_preprocess.py:100)
 
@@ -44,3 +47,18 @@ def get_scene(scene_id: str) -> Scene:
     matches = [s for s in DEV_SCENES if s.scene_id == scene_id]
     assert len(matches) == 1, f"unknown scene_id {scene_id}; known: {[s.scene_id for s in DEV_SCENES]}"
     return matches[0]
+
+
+def front_image_paths(scene_dir: str, start: int, end: int) -> tuple[np.ndarray, list[str]]:
+    """FRONT image paths for timesteps [start, end); end = -1 means up to the last frame."""
+    img_dir = os.path.join(scene_dir, "images")
+    front = sorted(f for f in os.listdir(img_dir) if f.endswith(f"_{FRONT_CAM_ID}.jpg"))
+    num = len(front)
+    assert num > 0, f"no FRONT images in {img_dir}"
+    stop = num if end == -1 else end
+    assert 0 <= start < stop <= num, (start, stop, num)
+    frames = np.arange(start, stop)
+    paths = [os.path.join(img_dir, f"{t:03d}_{FRONT_CAM_ID}.jpg") for t in frames]
+    for p in paths:
+        assert os.path.exists(p), p
+    return frames, paths

@@ -155,6 +155,24 @@ def image_intrinsics_from_depth(intrinsics_depth: np.ndarray, depth_grid: dict) 
     return k
 
 
+def mask_to_depth_grid(mask: np.ndarray, depth_grid: dict) -> np.ndarray:
+    """Resample an original-resolution boolean mask onto the depth grid (nearest resize, then crop).
+
+    Args:
+        mask: (H,W) bool mask on the original image grid.
+        depth_grid: ``meta["depth_grid"]`` of the depth maps.
+
+    Returns:
+        (h,w) bool mask on the depth grid.
+    """
+    assert mask.dtype == bool and list(mask.shape) == depth_grid["image_hw"], (mask.dtype, mask.shape)
+    rh, rw = depth_grid["resized_hw"]
+    top, left = depth_grid["crop_top_left"]
+    th, tw = depth_grid["depth_hw"]
+    small = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255).resize((rw, rh), resample=Image.NEAREST))
+    return small[top : top + th, left : left + tw] == 255
+
+
 def write_ply(path: str, xyz: np.ndarray, rgb: np.ndarray, normals: np.ndarray | None = None) -> None:
     """Write a binary little-endian PLY with float32 xyz, uint8 rgb and optional float32 normals.
 

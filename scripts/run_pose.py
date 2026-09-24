@@ -19,24 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
 from dashrecon.pose.world import SCALE_STRATEGIES, apply_scale_strategy, gravity_aligned_transform  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
-from dashrecon.scenes import FRONT_CAM_ID, get_scene  # noqa: E402
+from dashrecon.scenes import front_image_paths, get_scene  # noqa: E402
 
 BACKENDS = ("mapanything",)
-
-
-def front_image_paths(scene_dir: str, start: int, end: int) -> tuple[np.ndarray, list[str]]:
-    """FRONT image paths for timesteps [start, end); end = -1 means up to the last frame."""
-    img_dir = os.path.join(scene_dir, "images")
-    front = sorted(f for f in os.listdir(img_dir) if f.endswith(f"_{FRONT_CAM_ID}.jpg"))
-    num = len(front)
-    assert num > 0, f"no FRONT images in {img_dir}"
-    stop = num if end == -1 else end
-    assert 0 <= start < stop <= num, (start, stop, num)
-    frames = np.arange(start, stop)
-    paths = [os.path.join(img_dir, f"{t:03d}_{FRONT_CAM_ID}.jpg") for t in frames]
-    for p in paths:
-        assert os.path.exists(p), p
-    return frames, paths
 
 
 def main() -> None:
@@ -51,6 +36,7 @@ def main() -> None:
     parser.add_argument("--resolution_set", type=int, default=518)
     args = parser.parse_args()
 
+    commit = git_commit()  # at start: later edits must not change what this run records
     scene = get_scene(args.scene_id)
     frames, paths = front_image_paths(
         os.path.join(args.processed_root, f"{scene.scene_idx:03d}"), scene.start_timestep, scene.end_timestep
@@ -88,7 +74,7 @@ def main() -> None:
             "uses_oracle": False,
             "uses_calibration": False,
             "oracle_note": "FRONT images only; no GT pose / LiDAR / boxes / calibration read",
-            "dashrecon_commit": git_commit(),
+            "dashrecon_commit": commit,
         }
     )
     io.write_meta(out_dir, meta)
