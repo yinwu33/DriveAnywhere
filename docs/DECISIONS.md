@@ -116,6 +116,8 @@ AGENTS §11 待确认项的答复：
 | D5 | 动态物体分割先用 **Grounded-SAM-2** | grounding-dino-base/tiny 已在本地 HF 缓存；SAM 3 延后（见 OPEN_QUESTIONS） |
 | D6 | 天空和路面分割用 **HF transformers 版 SegFormer-B5 Cityscapes**（`nvidia/segformer-b5-finetuned-cityscapes-1024-1024`） | 一次推理同时得到天空（类 10）和路面（类 0）掩码。与上游 mmcv 版 `segformer.b5.1024x1024.city.160k` 属于同一模型族，但推理实现和前处理可能不同，不能逐像素等同于上游天空掩码 |
 | D7 | **保留每 10 帧留出 1 帧**（`test_image_stride: 10`，可配置） | 位姿估计用全部帧，留出帧不进入融合点云、深度监督和光度损失，方便以后补评测时不用重训 |
+| D8 | **执行顺序改为：Phase 5 之后先做 Phase 7 的网格重建（NKSR），再做 Phase 6，E4 和 E5 一起训练**（2026-09-24） | 用户参照 LSD-3D 的"先网格、后 3DGS"。保留无网格的 E4 作对照组，所以网格带来的收益仍能量化 |
+| D9 | **E5 按 LSD-3D 的几何部分使用网格：在网格面上初始化 Gaussian（朝向与尺度按三角面设定），训练时用网格渲染的深度和法向做正则**（2026-09-24） | 这比 AGENTS 原定的"只做正则"多了网格初始化。LSD-3D 的外观来自扩散模型的分数蒸馏（GGDS），属于 AGENTS §1 非目标和 §10 第 2 条禁止的内容，不采用；外观只来自真实 FRONT 图像的光度损失 |
 
 D3 的具体影响：
 - `undistort: False`，直接在原始畸变图像上按针孔模型重建。FRONT 的 k2≈-0.33，图像边缘会不一致，已列为已知风险。

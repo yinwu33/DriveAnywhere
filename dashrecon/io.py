@@ -261,3 +261,65 @@ def read_ply(path: str) -> dict[str, np.ndarray]:
     if "label" in names:
         out["labels"] = data["label"].copy()
     return out
+
+
+def write_json(path: str, obj: dict) -> None:
+    """Write an auxiliary JSON file (e.g. per-product metadata next to meta.json)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
+
+def read_json(path: str) -> dict:
+    """Read a JSON file written by :func:`write_json`."""
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_mesh_ply(path: str, vertices: np.ndarray, faces: np.ndarray, rgb: np.ndarray) -> None:
+    """Write a binary little-endian triangle-mesh PLY (float32 xyz + uint8 rgb per vertex, int32 faces).
+
+    Args:
+        vertices: (V,3). faces: (F,3) vertex indices. rgb: (V,3) uint8.
+    """
+    assert vertices.ndim == 2 and vertices.shape[1] == 3, vertices.shape
+    assert faces.ndim == 2 and faces.shape[1] == 3, faces.shape
+    assert rgb.shape == vertices.shape and rgb.dtype == np.uint8, (rgb.shape, rgb.dtype)
+    assert faces.min() >= 0 and faces.max() < len(vertices), "face index out of range"
+    vdata = np.empty(len(vertices), dtype=[("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+                                           ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+    vdata["x"], vdata["y"], vdata["z"] = vertices[:, 0], vertices[:, 1], vertices[:, 2]
+    vdata["red"], vdata["green"], vdata["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    fdata = np.empty(len(faces), dtype=[("n", "u1"), ("v", "<i4", (3,))])
+    fdata["n"] = 3
+    fdata["v"] = faces
+    header = ["ply", "format binary_little_endian 1.0", f"element vertex {len(vertices)}",
+              "property float x", "property float y", "property float z",
+              "property uchar red", "property uchar green", "property uchar blue",
+              f"element face {len(faces)}", "property list uchar int vertex_indices", "end_header"]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(("\n".join(header) + "\n").encode("ascii"))
+        f.write(vdata.tobytes())
+        f.write(fdata.tobytes())
+
+
+def read_mesh_ply(path: str) -> dict[str, np.ndarray]:
+    """Read a mesh written by :func:`write_mesh_ply`: ``vertices`` (V,3), ``faces`` (F,3), ``rgb`` (V,3)."""
+    with open(path, "rb") as f:
+        header = []
+        while True:
+            line = f.readline().decode("ascii").strip()
+            header.append(line)
+            if line == "end_header":
+                break
+        assert header[1] == "format binary_little_endian 1.0", header[1]
+        n_v = int(header[2].split()[2])
+        n_f = int(header[9].split()[2])
+        vdt = [("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("red", "u1"), ("green", "u1"), ("blue", "u1")]
+        vdata = np.frombuffer(f.read(n_v * 15), dtype=vdt, count=n_v)
+        fdata = np.frombuffer(f.read(n_f * 13), dtype=[("n", "u1"), ("v", "<i4", (3,))], count=n_f)
+    assert (fdata["n"] == 3).all()
+    return {"vertices": np.stack([vdata["x"], vdata["y"], vdata["z"]], 1),
+            "faces": fdata["v"].copy(),
+            "rgb": np.stack([vdata["red"], vdata["green"], vdata["blue"]], 1)}

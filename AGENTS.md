@@ -153,7 +153,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 每个 Phase 都有「产出」和「验收标准」。验收未通过不得进入下一 Phase。
 
-> **当前执行顺序（DECISIONS D1）：Phase 0 → 3 → 4 → 5 → 6 → 7。**
+> **当前执行顺序（DECISIONS D1、D8）：Phase 0 → 3 → 4 → 5 → 7 的网格重建（任务 1–3）→ 6（E3、E4、E5 一起训练）。**
 > - 先搭非 oracle 的 FRONT 单目 pipeline。**Phase 1（评测工具）和 Phase 2（E0）延后。**
 > - 延后期间，下文所有依赖 GT 的任务和验收（位姿指标、IoU、LiDAR Chamfer 等）都标为「延后」，改用 `docs/DECISIONS.md` E 节的临时验收标准。
 > - Phase 1 任务 5（横向偏移渲染）不需要 GT，提前纳入 Phase 6。
@@ -272,7 +272,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 1. 安装 NKSR，使用预训练模型推理。输入 `points_fused.ply`，并提供传感器位置（每个点对应的相机中心）或法向。
 2. 大场景分块重建，记录显存与耗时。
 3. 输出 `mesh_nksr.ply`。对 LiDAR 做几何评测的部分**延后**。
-4. 可选：在高斯训练中加入 mesh 渲染的法向与深度正则（E5），与 E4 对比。
+4. E5（D9）：在网格面上初始化 Gaussian，训练时加入网格渲染的法向与深度正则，与 E4 对比。与 Phase 6 一起训练（D8）。
 
 产出：mesh 与几何指标；E5 结果。
 验收：mesh 能覆盖路面主体且无大面积穿洞；E5 与 E4 的对比已记录。
@@ -288,7 +288,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 | E2 | 估计 | 估计点图 | GT boxes（moving） | — | 位姿 + 深度影响（半 oracle） |
 | E3 | 估计 | 估计点图 | SAM 文本分割 | — | **完全非 oracle** |
 | E4 | 估计 | 估计点图 + Phase 5 清理 | SAM 文本分割 | — | 完全非 oracle |
-| E5 | 同 E4 | 同 E4 | 同 E4 | NKSR mesh 正则 | 完全非 oracle |
+| E5 | 同 E4 | 同 E4 | 同 E4 | NKSR 网格：在网格面上初始化 Gaussian，并用网格渲染的深度/法向正则（D9，参照 LSD-3D 的几何部分） | 完全非 oracle |
 
 注意：E1 使用估计位姿但 LiDAR 在 GT 世界坐标下，需要先把估计轨迹 Sim(3) 对齐到 GT，才能使用 LiDAR；该实验必须标注为半 oracle。
 
@@ -353,7 +353,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ## 12. 进度 Checklist
 
-执行顺序为 0 → 3 → 4 → 5 → 6 → 7；Phase 1、2 延后（D1）。
+执行顺序为 0 → 3 → 4 → 5 → 7 的网格重建 → 6（E3、E4、E5 一起跑）；Phase 1、2 延后（D1、D8）。
 
 - [x] 可执行性评估：结论见 `docs/DECISIONS.md`，待定问题见 `docs/OPEN_QUESTIONS.md`
 - [x] Phase 0：环境与数据（2026-09-24：3 个 uv venv；5 个 validation 开发场景）

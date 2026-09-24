@@ -1,10 +1,12 @@
 <!--
-  DashRecon Pose Review: static viewer for Phase 3 point clouds / trajectories, Phase 4 masks and Phase 5 fusion.
+  DashRecon Pose Review: static viewer for Phase 3 point clouds / trajectories, Phase 4 masks, Phase 5 fusion
+  and the Phase 7 NKSR mesh.
   This is a template. Build a runnable copy with scripts/build_viewer.py, which writes next to it:
     config.js              window.VIEWER_CONFIG (scene list, diagnostics, vis parameters, mask summary)
     scenes/<id>.js         window.SCENES[<id>] (scripts/vis_pose.py viewer_data.js)
     scenes/<id>.masks.js   window.MASKS[<id>]  (scripts/vis_masks.py masks_view.js; only with --mask_tag)
     scenes/<id>.fusion.js  window.FUSION[<id>] (scripts/vis_fusion.py fusion_view.js; only with --fusion)
+    scenes/<id>.mesh.js    window.MESH[<id>]   (scripts/vis_mesh.py mesh_view.js; only with --mesh)
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
   Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
@@ -214,11 +216,13 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
         <div class="seg" id="seg-cloud" role="group" aria-label="Point cloud" hidden>
           <button class="tool" id="cloud-raw" type="button" aria-pressed="false">Raw depth</button>
           <button class="tool" id="cloud-fused" type="button" aria-pressed="true">Fused</button>
+          <button class="tool" id="cloud-mesh" type="button" aria-pressed="false" hidden>Mesh</button>
         </div>
         <div class="seg" id="seg-color" role="group" aria-label="Point colour" hidden>
           <button class="tool" id="color-photo" type="button" aria-pressed="true">Photo</button>
           <button class="tool" id="color-classes" type="button" aria-pressed="false">Classes</button>
           <button class="tool" id="color-normals" type="button" aria-pressed="false">Normals</button>
+          <button class="tool" id="color-shaded" type="button" aria-pressed="false" hidden>Shaded</button>
         </div>
         <button class="tool" id="toggle-dynamic" type="button" aria-pressed="false" hidden>Hide dynamic</button>
         <button class="tool" id="toggle-rejected" type="button" aria-pressed="false" hidden>Rejected</button>
@@ -299,6 +303,22 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
     </div>
   </section>
 
+  <section id="surface" hidden>
+    <div class="section-head">
+      <h2>Surface</h2>
+      <span class="section-sub" id="surface-sub"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>scene</th><th>input points</th><th>vertices</th><th>faces</th><th>shown faces</th><th>road coverage</th><th>boundary edges</th><th>boundary length</th><th>time</th><th>peak VRAM</th></tr>
+        </thead>
+        <tbody id="surface-table"></tbody>
+      </table>
+    </div>
+    <ul class="notes" id="surface-notes"></ul>
+  </section>
+
   <section>
     <h2 id="cmp-title">Run comparison, all scenes</h2>
     <div class="table-wrap">
@@ -321,6 +341,7 @@ const RUNS = DIAG.runs;
 const PRIMARY = DIAG.primary;
 const MASKS = CFG.masks;
 const FUSION = CFG.fusion;
+const MESH = CFG.mesh;
 const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
 const KINDS = ["sky", "dynamic", "road"];  // categorical slots 1-3, fixed order
 const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road", other: "Other" };
@@ -338,13 +359,14 @@ const swatch = k => `<span><span class="sw" style="background: var(--c-${k})"></
 const vis = CFG.vis;
 const p0 = prim(SCENES_META[0]);
 document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap" +
-  (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "");
+  (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "") + (MESH ? " · Phase 7 mesh" : "");
 document.getElementById("lede").textContent =
   `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
   `no calibration, LiDAR, GT poses or boxes. The raw cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
   `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).` +
   (MASKS ? " Dynamic-object, sky and road masks come from text-prompted detection and semantic segmentation of the same frames." : "") +
-  (FUSION ? " The fused cloud merges all training frames after masking, a multi-view consistency check, voxel averaging, outlier removal and road smoothing." : "");
+  (FUSION ? " The fused cloud merges all training frames after masking, a multi-view consistency check, voxel averaging, outlier removal and road smoothing." : "") +
+  (MESH ? " The mesh is an NKSR surface reconstructed from the fused cloud and its oriented normals." : "");
 document.getElementById("pipeline").innerHTML =
   [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
 document.getElementById("legend-frusta").textContent = `frusta ${ordinal(5 * vis.frame_stride)}`;
@@ -422,6 +444,30 @@ function renderFusionTable(currentId) {
   }).join("");
 }
 
+// ---------- surface section static parts ----------
+if (MESH) {
+  const p = MESH.params;
+  document.getElementById("surface").hidden = false;
+  document.getElementById("surface-sub").textContent =
+    `NKSR · detail level ${p.detail_level} · MISE ${p.mise_iter} · trimmed to the input · coverage radius ${p.coverage_radius}`;
+  document.getElementById("surface-notes").innerHTML = [
+    "Road coverage is the share of fused road points with a mesh vertex within the coverage radius (AGENTS Phase 7 acceptance: the mesh covers the main road surface).",
+    "Boundary edges belong to one triangle only: the mesh border plus the rims of holes. They are a proxy for holes, not a hole area.",
+    "The viewer shows each mesh decimated with quadric simplification; the full mesh is mesh_nksr.ply next to points_fused.ply.",
+  ].map(t => `<li>${t}</li>`).join("");
+}
+function renderSurfaceTable(currentId) {
+  if (!MESH) return;
+  document.getElementById("surface-table").innerHTML = SCENES_META.map(s => {
+    const m = MESH.scenes[s.id], st = m.stats;
+    const shown = window.MESH && window.MESH[s.id] ? window.MESH[s.id].nf.toLocaleString("en-US") : "—";
+    return `<tr class="${s.id === currentId ? "cur" : ""}"><td>${s.id}</td><td>${mega(m.input_points)}</td>
+      <td>${mega(st.vertices)}</td><td>${mega(st.faces)}</td><td>${shown}</td><td>${pct(st.road_coverage)}</td>
+      <td>${st.boundary_edges.toLocaleString("en-US")}</td><td>${st.boundary_length.toFixed(0)}</td>
+      <td>${m.runtime_s.toFixed(0)} s</td><td>${m.peak_vram_gb.toFixed(1)} GB</td></tr>`;
+  }).join("");
+}
+
 // ---------- scene rail ----------
 const rail = document.getElementById("rail");
 SCENES_META.forEach(s => {
@@ -450,6 +496,10 @@ function renderReadout(s) {
     const f = FUSION.scenes[s.id], c = f.counts;
     cards.push({ k: "Fused points", v: mega(c.final), sub: `${pct(1 - c.after_consistency / c.after_conf_range)} rejected by the consistency check`, g: null });
   }
+  if (MESH) {
+    const st = MESH.scenes[s.id].stats;
+    cards.push({ k: "Mesh", v: `${mega(st.faces)} faces`, sub: `road coverage ${pct(st.road_coverage)} · ${st.boundary_edges.toLocaleString("en-US")} boundary edges`, g: null });
+  }
   document.getElementById("readout").innerHTML = cards.map(c => `
     <div class="metric"><span class="eyebrow">${c.k}</span><span class="val">${c.v}</span>
     ${c.g ? `<span class="chip ${c.g}">${label[c.g]}${c.note ? " · " + c.note : ""}</span>` : ""}
@@ -468,11 +518,15 @@ camera.up.set(0, 0, 1);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping = false;
 controls.addEventListener("change", render);
+scene3.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+sun.position.set(0.4, 0.3, 1.0);
+scene3.add(sun);
 
 let current = null;
 let currentId = null;
 let showCams = true, hideDynamic = false, showRejected = false;
-let cloudMode = FUSION ? "fused" : "raw";
+let cloudMode = MESH ? "mesh" : (FUSION ? "fused" : "raw");
 let colorMode = "photo";
 const loaded = {};
 
@@ -539,7 +593,7 @@ function buildScene(d) {
   });
   const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
   group.add(frusta);
-  return { group, raw, fused: null, rejected: null, path, frusta, centers, cams: d.cams };
+  return { group, raw, fused: null, rejected: null, mesh: null, path, frusta, centers, cams: d.cams };
 }
 
 function addFusion(s, f) {
@@ -555,7 +609,31 @@ function addFusion(s, f) {
   s.group.add(s.rejected);
 }
 
-function activeCloud(s) { return cloudMode === "fused" && s.fused ? s.fused : s.raw; }
+function addMesh(s, m) {
+  const q = new Uint16Array(b64bytes(m.pos).buffer);
+  const idx = new Uint32Array(b64bytes(m.idx).buffer);
+  const col = b64bytes(m.col);
+  const pos = new Float32Array(m.nv * 3);
+  for (let i = 0; i < m.nv; i++) for (let a = 0; a < 3; a++) pos[3 * i + a] = m.lo[a] + (q[3 * i + a] / 65535) * (m.hi[a] - m.lo[a]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeVertexNormals();
+  const nrm = g.getAttribute("normal").array;
+  const nrmCol = new Uint8Array(m.nv * 3);
+  for (let i = 0; i < m.nv * 3; i++) nrmCol[i] = Math.round((nrm[i] * 0.5 + 0.5) * 255);
+  g.setAttribute("color", new THREE.BufferAttribute(col.slice(), 3, true));
+  const basic = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const shaded = new THREE.MeshLambertMaterial({ color: cssVar("--c-other"), side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(g, basic);
+  s.mesh = { mesh, basic, shaded, photoCol: col, nrmCol, box: new THREE.Box3().setFromBufferAttribute(g.getAttribute("position")) };
+  s.group.add(mesh);
+}
+
+function activeCloud(s) {
+  if (cloudMode === "mesh" && s.mesh) return s.mesh;
+  return cloudMode === "fused" && s.fused ? s.fused : s.raw;
+}
 
 function colourCloud(c) {
   const attr = c.points.geometry.getAttribute("color");
@@ -573,9 +651,11 @@ function colourCloud(c) {
 function refreshScene() {
   if (!current) return;
   const s = current;
+  const meshOn = cloudMode === "mesh" && Boolean(s.mesh);
   const fusedOn = cloudMode === "fused" && Boolean(s.fused);
-  s.raw.points.visible = !fusedOn;
+  s.raw.points.visible = !fusedOn && !meshOn;
   if (s.fused) s.fused.points.visible = fusedOn;
+  if (s.mesh) s.mesh.mesh.visible = meshOn;
   if (s.rejected) { s.rejected.visible = fusedOn && showRejected; s.rejected.material.color.set(cssVar("--bad")); }
   s.raw.points.geometry.setDrawRange(0, hideDynamic && s.raw.lab ? s.raw.nKeep : s.raw.n);
   s.frusta.visible = showCams;
@@ -584,25 +664,41 @@ function refreshScene() {
   const c = activeCloud(s);
   if (colorMode === "normals" && !c.nrmCol) colorMode = "photo";
   if (colorMode === "classes" && !c.lab) colorMode = "photo";
-  colourCloud(c);
+  if (colorMode === "shaded" && !meshOn) colorMode = "photo";
+  if (meshOn) {
+    const attr = s.mesh.mesh.geometry.getAttribute("color");
+    attr.array.set(colorMode === "normals" ? s.mesh.nrmCol : s.mesh.photoCol);
+    attr.needsUpdate = true;
+    s.mesh.shaded.color.set(cssVar("--c-other"));
+    s.mesh.mesh.material = colorMode === "shaded" ? s.mesh.shaded : s.mesh.basic;
+  } else {
+    colourCloud(c);
+  }
   // controls
-  document.getElementById("seg-cloud").hidden = !s.fused;
-  document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn));
+  document.getElementById("seg-cloud").hidden = !s.fused && !s.mesh;
+  document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn && !meshOn));
   document.getElementById("cloud-fused").setAttribute("aria-pressed", String(fusedOn));
+  document.getElementById("cloud-mesh").hidden = !s.mesh;
+  document.getElementById("cloud-mesh").setAttribute("aria-pressed", String(meshOn));
+  document.getElementById("color-shaded").hidden = !s.mesh;
+  document.getElementById("color-shaded").disabled = !meshOn;
   document.getElementById("seg-color").hidden = !c.lab && !c.nrmCol;
-  document.getElementById("color-classes").disabled = !c.lab;
+  document.getElementById("color-classes").disabled = !c.lab || meshOn;
   document.getElementById("color-normals").disabled = !c.nrmCol;
-  for (const m of ["photo", "classes", "normals"]) document.getElementById(`color-${m}`).setAttribute("aria-pressed", String(colorMode === m));
-  document.getElementById("toggle-dynamic").hidden = fusedOn || !s.raw.lab;
+  for (const m of ["photo", "classes", "normals", "shaded"]) document.getElementById(`color-${m}`).setAttribute("aria-pressed", String(colorMode === m));
+  document.getElementById("toggle-dynamic").hidden = fusedOn || meshOn || !s.raw.lab;
   document.getElementById("toggle-rejected").hidden = !fusedOn;
   const extra = document.getElementById("legend-extra");
   if (colorMode === "classes") {
     extra.innerHTML = c.labelNames.filter(n => n !== "other").map(swatch).join(" ") + swatch("other");
   } else if (colorMode === "normals") {
     extra.innerHTML = '<span class="mono">normal x→R · y→G · z→B</span>';
+  } else if (colorMode === "shaded") {
+    extra.innerHTML = "<span>grey mesh, lit from above</span>";
   } else {
     extra.innerHTML = "";
   }
+  if (meshOn) extra.innerHTML += ` <span>showing ${window.MESH[currentId].nf.toLocaleString("en-US")} of ${MESH.scenes[currentId].stats.faces.toLocaleString("en-US")} faces</span>`;
   if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
   extra.hidden = extra.innerHTML === "";
   render();
@@ -668,11 +764,13 @@ async function selectScene(id) {
   try {
     if (!(window.SCENES && window.SCENES[id])) await loadScript(`scenes/${id}.js`);
     if (FUSION && !(window.FUSION && window.FUSION[id])) await loadScript(`scenes/${id}.fusion.js`);
+    if (MESH && !(window.MESH && window.MESH[id])) await loadScript(`scenes/${id}.mesh.js`);
     if (currentId !== id) return;
     if (current) scene3.remove(current.group);
     if (!loaded[id]) {
       loaded[id] = buildScene(window.SCENES[id]);
       if (FUSION) addFusion(loaded[id], window.FUSION[id]);
+      if (MESH) addMesh(loaded[id], window.MESH[id]);
     }
     current = loaded[id];
     scene3.add(current.group);
@@ -680,6 +778,7 @@ async function selectScene(id) {
     refreshScene();
     driverView();
     if (FUSION) drawFunnel(id);
+    renderSurfaceTable(id);
     if (MASKS) {
       if (!(window.MASKS && window.MASKS[id])) await loadScript(`scenes/${id}.masks.js`);
       if (currentId !== id) return;
@@ -700,7 +799,8 @@ document.getElementById("toggle-cams").addEventListener("click", e => {
 });
 document.getElementById("cloud-raw").addEventListener("click", () => { cloudMode = "raw"; refreshScene(); });
 document.getElementById("cloud-fused").addEventListener("click", () => { cloudMode = "fused"; refreshScene(); });
-for (const m of ["photo", "classes", "normals"]) {
+document.getElementById("cloud-mesh").addEventListener("click", () => { cloudMode = "mesh"; refreshScene(); });
+for (const m of ["photo", "classes", "normals", "shaded"]) {
   document.getElementById(`color-${m}`).addEventListener("click", () => { colorMode = m; refreshScene(); });
 }
 document.getElementById("toggle-dynamic").addEventListener("click", e => {

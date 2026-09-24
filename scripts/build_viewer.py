@@ -7,16 +7,17 @@ Inputs:
     --diagnostics JSON                                   from scripts/diagnose_pose.py
     <scene_root>/<scene_id>/<mask_tag>/vis/masks_view.js from scripts/vis_masks.py (optional, Phase 4)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/fusion_view.js from scripts/vis_fusion.py (optional, Phase 5)
+    <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/mesh_view.js   from scripts/vis_mesh.py (optional, Phase 7 mesh)
 Output directory:
     index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js,
-    scenes/<scene_id>.fusion.js
+    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js
 
 Open <out_dir>/index.html in a browser (or `python -m http.server` inside it). three.js loads from CDN.
 The same directory can be published as a Claude Artifact (index.html + config.js + scenes/*.js).
 
 Example:
     python3 scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion \
+        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
         --out_dir data/dashrecon/viewer/review
 """
 import argparse
@@ -41,9 +42,11 @@ def main() -> None:
     parser.add_argument("--diagnostics", required=True)
     parser.add_argument("--mask_tag", default=None, help="Phase 4 mask backend tag; adds the mask panel")
     parser.add_argument("--fusion", action="store_true", help="add Phase 5 fusion (<tag>__<mask_tag>); needs --mask_tag")
+    parser.add_argument("--mesh", action="store_true", help="add the Phase 7 NKSR mesh; needs --fusion")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
     assert not args.fusion or args.mask_tag is not None, "--fusion needs --mask_tag"
+    assert not args.mesh or args.fusion, "--mesh needs --fusion"
 
     with open(args.diagnostics) as f:
         diagnostics = json.load(f)
@@ -90,6 +93,19 @@ def main() -> None:
                 "counts", "road", "runtime_s", "num_frames_used", "num_frames_total", "conf_threshold",
                 "rejected_by_consistency", "dashrecon_commit")}
 
+    mesh = None
+    if args.mesh:
+        mesh = {"scenes": {}}
+        for sc in DEV_SCENES:
+            fdir = io.scene_dir(args.scene_root, sc.scene_id, f"{args.tag}__{args.mask_tag}")
+            info = io.read_json(os.path.join(fdir, "mesh_nksr.json"))
+            shutil.copyfile(os.path.join(fdir, "vis", "mesh_view.js"), os.path.join(args.out_dir, "scenes", f"{sc.scene_id}.mesh.js"))
+            mesh["params"] = info["params"]
+            mesh["model_voxel_size"] = info["model_voxel_size"]
+            mesh["scenes"][sc.scene_id] = {"stats": info["stats"], "runtime_s": info["runtime_s"],
+                                           "peak_vram_gb": info["peak_vram_gb"], "input_points": info["input_points"],
+                                           "dashrecon_commit": info["dashrecon_commit"]}
+
     config = {
         "tag": args.tag,
         "built_from_commit": git_commit(),
@@ -98,6 +114,7 @@ def main() -> None:
         "diagnostics": diagnostics,
         "masks": masks,
         "fusion": fusion,
+        "mesh": mesh,
     }
     with open(os.path.join(args.out_dir, "config.js"), "w") as f:
         f.write(f"window.VIEWER_CONFIG = {json.dumps(config, indent=1)};\n")
