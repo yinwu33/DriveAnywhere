@@ -1,21 +1,26 @@
-"""Phase 6 web-viewer data: per-scene comparison sheets and a metrics summary.
+"""Phase 6 / Phase 8 web-viewer data: per-scene comparison sheets and a metrics summary.
 
 For each scene and each still frame, a JPEG sheet with rows = lateral offsets (first row = offset 0) and
 columns = [ground-truth FRONT image] + experiments; the ground truth exists only in the offset-0 row.
 Still frames should be held-out test frames (every 10th, DECISIONS D7) so that row 0 is an interpolation
 check. Inputs: results/<exp>/<scene>/{metrics.json, meta.json, renders/frames/<t>_<offset>.jpg}
-(scripts/train_gs.py, scripts/render_lateral.py). Output: <out_dir>/<scene>_<t>.jpg and <out_dir>/summary.json.
+(scripts/train_gs.py, scripts/train_ggds.py + scripts/render_lateral.py, scripts/postprocess_frames.py).
+Output: <out_dir>/<scene>_<t>.jpg and <out_dir>/summary.json. Runs without a full-split evaluation (E5pp) get
+full_psnr null; runs whose meta.json says generative are flagged so the viewer can mark them.
+With --gen_exp, the first --gen_views target examples of the first and last round of that run
+(<run>/gen/round<r>_view<k>.jpg from scripts/train_ggds.py) are copied as <scene>_gen_r<r>_v<k>.jpg.
 With --allow_missing, runs that are not finished and rendered yet are listed as missing (blank sheet cells) so
 the viewer can show partial results while the batch is still running; without it every run must exist.
 
 Example:
-    .venvs/main/bin/python scripts/vis_training.py --results_root results --exps E3 E4 E5 \
-        --frames 50 100 150 --offsets 0 0.5 1 2 --cell_width 480 \
+    .venvs/main/bin/python scripts/vis_training.py --results_root results --exps E3 E4 E5 E5pp E6 \
+        --frames 50 100 150 --offsets 0 0.5 1 2 --cell_width 400 --gen_exp E6 --gen_views 2 \
         --processed_root data/waymo/processed/validation --out_dir results/_vis
 """
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -39,6 +44,8 @@ def main() -> None:
     parser.add_argument("--processed_root", required=True)
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--allow_missing", action="store_true", help="partial results while training is running")
+    parser.add_argument("--gen_exp", default=None, help="generative-distillation run whose SDXL targets are shown, e.g. E6")
+    parser.add_argument("--gen_views", type=int, default=2, help="pool views per round to show for --gen_exp")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -60,7 +67,8 @@ def main() -> None:
                 meta = json.load(f)
             runs[exp] = {
                 "test": {k: m["test"][f"image_metrics/test/{k}"] for k in METRIC_KEYS},
-                "full_psnr": m["full"]["image_metrics/full/psnr"],
+                "full_psnr": m["full"]["image_metrics/full/psnr"] if "full" in m else None,
+                "generative": bool(meta.get("generative", False)),
                 "runtime_min": meta["runtime_s"] / 60.0,
                 "peak_vram_gb": meta["peak_vram_gb"],
                 "dashrecon_commit": meta["dashrecon_commit"],
@@ -81,7 +89,19 @@ def main() -> None:
             name = f"{sc.scene_id}_{t:03d}.jpg"
             sheet.save(os.path.join(args.out_dir, name), quality=82)
             sheets.append(name)
-        summary["scenes"][sc.scene_id] = {"runs": runs, "sheets": sheets, "missing": missing}
+        gen_examples = []
+        if args.gen_exp is not None and args.gen_exp in runs:
+            run_dir = os.path.join(args.results_root, args.gen_exp, sc.scene_id)
+            with open(os.path.join(run_dir, "meta.json")) as f:
+                meta = json.load(f)
+            for rd in (meta["rounds"][0], meta["rounds"][-1]):
+                for k in range(args.gen_views):
+                    name = f"{sc.scene_id}_gen_r{rd['round']}_v{k}.jpg"
+                    shutil.copyfile(os.path.join(run_dir, "gen", f"round{rd['round']}_view{k}.jpg"), os.path.join(args.out_dir, name))
+                    view = meta["pool"][k]
+                    gen_examples.append({"file": name, "round": rd["round"], "step": rd["step"], "t_max": rd["t_max"],
+                                         "frame": view["frame"], "offset": view["offset"], "yaw": view["yaw"]})
+        summary["scenes"][sc.scene_id] = {"runs": runs, "sheets": sheets, "missing": missing, "gen_examples": gen_examples}
         print(f"[vis_training] {sc.scene_id}: " + " | ".join(
             f"{e} test PSNR {r['test']['psnr']:.2f}" for e, r in runs.items()) + (f" | missing {missing}" if missing else ""), flush=True)
     with open(os.path.join(args.out_dir, "summary.json"), "w") as f:

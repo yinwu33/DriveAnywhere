@@ -8,11 +8,11 @@ Inputs:
     <scene_root>/<scene_id>/<mask_tag>/vis/masks_view.js from scripts/vis_masks.py (optional, Phase 4)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/fusion_view.js from scripts/vis_fusion.py (optional, Phase 5)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/mesh_view.js   from scripts/vis_mesh.py (optional, Phase 7 mesh)
-    <training_dir>/{summary.json, <scene>_<t>.jpg}                from scripts/vis_training.py (optional, Phase 6)
+    <training_dir>/{summary.json, <scene>_<t>.jpg, <scene>_gen_*.jpg}   from scripts/vis_training.py (optional, Phase 6 / 8)
     <results_root>/<splat_exp>/<scene>/renders/splat_view.js      from scripts/export_splats.py (optional, Phase 6 3DGS)
 Output directory:
     index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js,
-    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js, scenes/<scene_id>.splat.js, training/<scene>_<t>.jpg
+    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js, scenes/<scene_id>.splat.js, training/<scene>_<t>.jpg, training/<scene>_gen_*.jpg
 
 Open <out_dir>/index.html in a browser (or `python -m http.server` inside it). three.js loads from CDN.
 The same directory can be published as a Claude Artifact (index.html + config.js + scenes/*.js).
@@ -120,7 +120,8 @@ def main() -> None:
             training = json.load(f)
         os.makedirs(os.path.join(args.out_dir, "training"), exist_ok=True)
         for sc in DEV_SCENES:
-            for name in training["scenes"][sc.scene_id]["sheets"]:
+            scene = training["scenes"][sc.scene_id]
+            for name in scene["sheets"] + [g["file"] for g in scene.get("gen_examples", [])]:
                 shutil.copyfile(os.path.join(args.training_dir, name), os.path.join(args.out_dir, "training", name))
 
     splats = None

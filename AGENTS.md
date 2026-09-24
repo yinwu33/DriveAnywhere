@@ -269,10 +269,15 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 任务：
 
-1. 冻结的 SDXL base 1.0 + ControlNet depth（SDXL），条件为 NKSR 网格渲染的视差图；不训练、不微调。
-2. E6：从 E5 的 checkpoint 继续训练。真实 FRONT 训练视角照常训练；偏离轨迹的视角（横移 ±0.5–3 m 加小角度偏转）用 GGDS 生成的目标图，按 L1 + LPIPS 监督。目标图生成方式为：DDIM 反演到噪声等级 t，再去噪 5 步，t 的下界线性退火。
-3. E5+pp：对 E5 的渲染结果逐帧做同样的去噪，作为对照。
-4. 生成内容在结果和网页中都要明确标注。
+1. 冻结的 SDXL base 1.0 + ControlNet depth（SDXL），条件为 NKSR 网格渲染的视差图；不训练、不微调（`dashrecon/gen/ggds.py`）。
+2. E6（`scripts/train_ggds.py`）：从 E5 的 checkpoint 继续训练 6000 步。
+   - 真实 FRONT 训练视角照常训练。
+   - 偏离轨迹的视角用 GGDS 式生成的目标图，按 L1 + LPIPS 监督。这些视角取自训练帧，横移 ±0.5–2.5 m，偏航不超过 3°。
+   - 目标图的生成：DDIM 反演到噪声等级 t，再去噪 5 步；每 1000 步整体重新生成一次；t 的上界从 0.7 线性退火到 0.4。
+   - 天空和空白背景不参与生成 loss。
+   - 实现细节和与 GGDS 的差别见 DECISIONS K。
+3. E5+pp（`scripts/postprocess_frames.py`）：对 E5 的渲染结果逐帧做同样的去噪（t = 0.6），作为对照。
+4. 生成内容在结果和网页中都要明确标注（`meta.json` 的 `generative: true`；网页列名旁的 gen 标记）。
 
 验收（临时）：5 个场景跑通，并产出横向偏移的对比渲染。跨相机评测延后（D12）。
 
@@ -376,7 +381,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
 - [ ] Phase 6：E3–E4（含横向偏移渲染）
 - [ ] Phase 7：NKSR 与 E5（2026-09-24：任务 1–3 的网格重建已完成，按临时标准验收，见 DECISIONS I；E5 与 Phase 6 一起训练）
-- [ ] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）
+- [ ] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-24：生成器、E6、E5+pp 代码完成，在 val056 上冒烟测试通过，见 DECISIONS K；5 个场景的正式运行进行中）
 - [ ] （延后）Phase 1：评测工具
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
@@ -385,7 +390,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ---
 
-## 13. 复现：Phase 0、Phase 3–7 与网页可视化
+## 13. 复现：Phase 0、Phase 3–8 与网页可视化
 
 所有命令都在仓库根目录执行。
 
@@ -502,7 +507,29 @@ python scripts/vis_training.py --results_root results --exps E3 E4 E5 --frames 5
     --cell_width 480 --processed_root data/waymo/processed/validation --out_dir results/_vis
 ```
 
-### 13.8 可视化数据与网页组装
+### 13.8 生成式蒸馏与后处理（Phase 8：E6、E5+pp）
+
+```bash
+export PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1
+bash envs/download_gen_weights.sh    # 一次性：SDXL、ControlNet depth、fp16 VAE → HF 缓存（9.6 GB）
+export HF_HUB_OFFLINE=1
+for s in val056 val039 val041 val087 val094; do
+  # E6：从 results/E5/<scene> 续训 6000 步 → results/E6/<scene>/（含 gen/ 下每轮的目标样例）
+  python scripts/train_ggds.py --scene_id $s --output_root results
+  python scripts/render_lateral.py --log_dir results/E6/$s --offsets 0 0.5 1 2 --still_frames 50 100 150 --fps 10
+  # E5+pp：E5 渲染逐帧细化 → results/E5pp/<scene>/（测试帧指标、静帧、横移 1 的视频）
+  python scripts/postprocess_frames.py --scene_id $s --output_root results --offsets 0 0.5 1 2 \
+      --still_frames 50 100 150 --video_offsets 1
+done
+# 网页用的对比拼图（E3–E6 共 5 列，所以单元格缩到 400 宽）和 E6 目标样例 → results/_vis/
+python scripts/vis_training.py --results_root results --exps E3 E4 E5 E5pp E6 --frames 50 100 150 \
+    --offsets 0 0.5 1 2 --cell_width 400 --gen_exp E6 --gen_views 2 \
+    --processed_root data/waymo/processed/validation --out_dir results/_vis
+```
+
+E6 峰值显存约 17 GB，E5+pp 约 13 GB，都包含 drivestudio 训练器。
+
+### 13.9 可视化数据与网页组装
 
 ```bash
 for s in val056 val039 val041 val087 val094; do
@@ -512,27 +539,31 @@ for s in val056 val039 val041 val087 val094; do
   # 点云、俯视图和网页数据；--mask_dir 给每个点加上类别（other / road / dynamic / sky）
   .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id $s --scene_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
       --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 --max_depth 60 \
-      --max_points 200000 --seed 0 --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer
-  # 融合点云抽样（20 万点，含法向和路面标签）以及一致性检查剔除的点（5 万点）
+      --max_points 120000 --seed 0 --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer
+  # 融合点云抽样（12 万点，含法向和路面标签）以及一致性检查剔除的点（3 万点）
   .venvs/main/bin/python scripts/vis_fusion.py --scene_id $s \
       --fusion_dir data/dashrecon/$s/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer \
-      --max_points 200000 --rejected_points 50000 --seed 0
-  # 网格简化到 15 万个面用于显示（完整网格保留在磁盘上）
+      --max_points 120000 --rejected_points 30000 --seed 0
+  # 网格简化到 10 万个面用于显示（完整网格保留在磁盘上）
   .venvs/main/bin/python scripts/vis_mesh.py --scene_id $s \
-      --fusion_dir data/dashrecon/$s/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer --target_faces 150000
+      --fusion_dir data/dashrecon/$s/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer --target_faces 100000
+  # 网页 3DGS 模式用的 E5 Gaussian（15 万个，去掉最大轴超过第 99.5 百分位的）
+  .venvs/main/bin/python scripts/export_splats.py --log_dir results/E5/$s --scene_id $s \
+      --max_splats 150000 --min_opacity 0.05 --max_scale_pct 99.5
 done
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
     --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
-    --training_dir results/_vis --out_dir data/dashrecon/viewer/review
+    --training_dir results/_vis --results_root results --splat_exp E5 --out_dir data/dashrecon/viewer/review
 ```
 
 - 不加 `--training_dir`：网页里没有 Phase 6 的内容。
 - 不加 `--mesh`：网页里没有网格。
 - 再去掉 `--fusion`：没有 Phase 5 的内容。
 - 再去掉 `--mask_dir` 和 `--mask_tag`：只剩 Phase 3。
-- 显示用的抽样规模（原始 20 万点、融合 20 万点、剔除点 5 万点、网格 15 万个面）是为了让整个网页小于 Claude Artifact 单个版本 64 MB 的上限。
+- 不加 `--splat_exp`：网页里没有 3DGS 模式。
+- 显示用的抽样规模（原始 12 万点、融合 12 万点、剔除点 3 万点、网格 10 万个面、每个场景 15 万个 Gaussian）是为了让整个网页小于 Claude Artifact 单个版本 64 MB 的上限。E6 的 Gaussian 不放进网页，否则会超出上限。
 
-### 13.9 查看网页
+### 13.10 查看网页
 
 - **本地**：直接用浏览器打开 `data/dashrecon/viewer/review/index.html`。也可以起一个静态服务器：
   ```bash
@@ -554,7 +585,7 @@ done
   - "Rejected"（仅融合点云）：用红色显示被一致性检查剔除的点。
 - 类别颜色取自 dataviz 参考调色板的 1–3 号色。用 `validate_palette.js` 在两种主题下做了全配对验证，均通过。
 
-### 13.10 产物位置（均不入 git）
+### 13.11 产物位置（均不入 git）
 
 | 产物 | 路径 |
 |---|---|
@@ -565,7 +596,8 @@ done
 | 掩码可视化 | Phase 4 目录下的 `vis/masks_view.js` |
 | Phase 5 融合点云（第 5 节约定） | `data/dashrecon/<scene_id>/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer/`：`points_fused.ply`（xyz、法向、rgb、`label` 0 = 其他 / 1 = 路面，可用 CloudCompare 打开）、`frames.txt`（用到的训练帧）、`meta.json`（逐步点数、路面平滑统计）、`diagnostics/consistency_rejected.ply`、`vis/fusion_view.js` |
 | Phase 6 训练结果（第 8 节约定） | `results/<exp>/<scene_id>/`：`config.yaml`、`checkpoint_final.pth`、`metrics.json`、`meta.json`、drivestudio 的 `videos/` 和 `metrics/`、`renders/lateral_<offset>.mp4` 与 `renders/frames/`；训练日志在 `results/_logs/` |
-| Phase 6 网页数据 | `results/_vis/`：`<scene>_<t>.jpg` 对比拼图、`summary.json` |
+| Phase 8 结果 | `results/E6/<scene_id>/`：同 Phase 6，另有 `ggds_params.json` 和 `gen/round<r>_view<k>.jpg`（渲染 / 网格视差 / SDXL 目标）；`results/E5pp/<scene_id>/`：`metrics.json`（只有 test）、`meta.json`、`renders/frames/`、`renders/lateral_1.mp4` |
+| Phase 6 / 8 网页数据 | `results/_vis/`：`<scene>_<t>.jpg` 对比拼图、`<scene>_gen_r<r>_v<k>.jpg` E6 目标样例、`summary.json` |
 | Phase 7 网格（第 5 节约定） | 同上的融合目录：`mesh_nksr.ply`（顶点带颜色，可用 MeshLab 打开）、`mesh_nksr.json`（参数、覆盖率、边界边、耗时）、`vis/mesh_view.js` |
 | Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
 | 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
@@ -589,3 +621,4 @@ done
 - 2026-09-24：Phase 4 完成（§12）；§4 列出 masks 后端；§13 重排为 Phase 3 → Phase 4 → 可视化 → 查看网页 → 产物位置，网页输出目录改为 `data/dashrecon/viewer/review`。
 - 2026-09-24：Phase 5 完成（§12）；§4 列出 fusion/backproject.py 和新脚本；§13 新增 13.5（Phase 5 命令），可视化命令加入 `vis_fusion.py` 和 `build_viewer.py --fusion`。
 - 2026-09-24：D8、D9（先网格后 3DGS；E5 在网格上初始化并正则）；Phase 7 网格重建完成；§13 新增 13.6（网格命令），显示抽样规模下调到 64 MB 以内，`build_viewer.py --mesh`；§6、§7 更新 E5 定义与执行顺序。
+- 2026-09-24：Phase 8 代码完成（`dashrecon/gen/`、`scripts/train_ggds.py`、`scripts/postprocess_frames.py`，DECISIONS K）；§6 Phase 8 按实现改写（t 上界退火、横移 0.5–2.5、天空不参与生成 loss）；§13 新增 13.8（Phase 8 命令），原 13.8–13.10 顺延；13.9 的显示抽样规模改为实际值，并补上 `export_splats.py` 和 `--splat_exp`。

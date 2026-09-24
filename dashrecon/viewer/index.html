@@ -199,7 +199,14 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .stats .metric { border: 0; padding: 0; background: none; }
 .sheet { position: relative; }
-.sheet img { display: block; width: 100%; height: auto; border-radius: 4px; background: var(--canvas); }
+.sheet img { display: block; width: 100%; height: auto; aspect-ratio: auto; border-radius: 4px; background: var(--canvas); }
+.gen-tag { display: inline-block; margin-left: 5px; padding: 0 5px; border: 1px solid var(--rule); border-radius: 3px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); vertical-align: 1px; }
+.gen-list { display: grid; gap: 10px; }
+.gen-list figure { margin: 0; display: grid; gap: 4px; }
+.gen-list img { aspect-ratio: auto; }
+.gen-list figcaption { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gen-cols { display: grid; grid-template-columns: repeat(3, 1fr); }
+.gen-cols span { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--muted); text-align: center; }
 .sheet-cols { display: grid; gap: 0; margin-bottom: 4px; }
 .sheet-cols span { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--muted); text-align: center; }
 .sheet-label { position: absolute; display: grid; place-items: center; text-align: center; padding: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
@@ -346,9 +353,17 @@ tr.mean td { border-top: 2px solid var(--rule); }
       </div>
       <div class="sheet-cols" id="sheet-cols"></div>
       <div class="sheet" id="sheet">
-        <img id="sheet-img" alt="Ground truth and E3, E4, E5 renders at lateral offsets">
+        <img id="sheet-img" alt="Ground truth and experiment renders at lateral offsets">
       </div>
       <p class="section-sub" id="sheet-empty" hidden>No experiment has finished for this scene yet.</p>
+    </div>
+    <div class="card" id="gen-card" hidden>
+      <div class="toolbar-inline" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;">
+        <span class="eyebrow">SDXL targets used by E6</span>
+        <span class="section-sub" id="gen-sub"></span>
+      </div>
+      <div class="gen-cols"><span>E6 render</span><span>mesh disparity (ControlNet input)</span><span>SDXL target</span></div>
+      <div class="gen-list" id="gen-list"></div>
     </div>
     <div class="table-wrap">
       <table>
@@ -512,12 +527,15 @@ function renderSurfaceTable(currentId) {
 
 // ---------- training section ----------
 let trainFrame = 0;
+const expName = e => e === "E5pp" ? "E5+pp" : e;
+const isGenExp = e => SCENES_META.some(s => TRAIN.scenes[s.id].runs[e] && TRAIN.scenes[s.id].runs[e].generative);
+const expLabel = e => expName(e) + (isGenExp(e) ? `<span class="gen-tag">gen</span>` : "");
 if (TRAIN) {
   document.getElementById("training").hidden = false;
   document.getElementById("training-sub").textContent =
-    `drivestudio static background · FRONT only · ${TRAIN.exps.join(" / ")} · offsets ${TRAIN.offsets.map(o => o === 0 ? "0" : "+" + o).join(", ")} estimated m` +
+    `drivestudio static background · FRONT only · ${TRAIN.exps.map(expName).join(" / ")} · offsets ${TRAIN.offsets.map(o => o === 0 ? "0" : "+" + o).join(", ")} estimated m` +
     (TRAIN.partial ? ` · partial: ${SCENES_META.reduce((a, s) => a + Object.keys(TRAIN.scenes[s.id].runs).length, 0)} of ${SCENES_META.length * TRAIN.exps.length} runs, ${TRAIN.generated_at}` : "");
-  const cols = ["Ground truth", ...TRAIN.exps];
+  const cols = ["Ground truth", ...TRAIN.exps.map(expLabel)];
   const colsEl = document.getElementById("sheet-cols");
   colsEl.style.gridTemplateColumns = `repeat(${cols.length}, 1fr)`;
   colsEl.innerHTML = cols.map(c => `<span>${c}</span>`).join("");
@@ -527,13 +545,16 @@ if (TRAIN) {
   document.getElementById("train-frame-note").textContent = "held-out frames (every 10th is excluded from training)";
   const m = ["PSNR", "SSIM", "LPIPS"];
   document.getElementById("train-head").innerHTML =
-    `<tr class="group"><th></th>${TRAIN.exps.map(e => `<th colspan="3">${e}</th>`).join("")}<th colspan="${TRAIN.exps.length}">training time</th></tr>` +
-    `<tr><th>scene</th>${TRAIN.exps.map(() => m.map(x => `<th>${x}</th>`).join("")).join("")}${TRAIN.exps.map(e => `<th>${e}</th>`).join("")}</tr>`;
+    `<tr class="group"><th></th>${TRAIN.exps.map(e => `<th colspan="3">${expLabel(e)}</th>`).join("")}<th colspan="${TRAIN.exps.length}">run time</th></tr>` +
+    `<tr><th>scene</th>${TRAIN.exps.map(() => m.map(x => `<th>${x}</th>`).join("")).join("")}${TRAIN.exps.map(e => `<th>${expName(e)}</th>`).join("")}</tr>`;
   document.getElementById("train-notes").innerHTML = [
     "Metrics are drivestudio's held-out-frame metrics over the full image (every 10th FRONT frame, 19–20 per scene). Bold marks the best experiment per scene; PSNR and SSIM higher is better, LPIPS lower.",
     "Held-out frames use MapAnything poses without pose refinement (CamPose only refines training frames), so these numbers include pose error. They are not the Phase 1 evaluation protocol.",
     "Rows below the first are lateral shifts along the camera's right axis with no ground truth. Metres are MapAnything's metric estimate, which the diagnostics above put at 0.4–0.7 of true scale.",
     "Parked and moving vehicles are masked out of every loss, so they are not reconstructed and render as blur (OPEN_QUESTIONS 18).",
+    ...(TRAIN.exps.includes("E6") ? ["E6 continues E5 for 6000 more steps. Each step adds a novel view shifted 0.5–2.5 m sideways and turned up to 3°, supervised by a frozen SDXL + depth-ControlNet image of that view's render. Only pixels the mesh or opaque Gaussians cover count, so the sky is left alone. Its run time is this second stage only."] : []),
+    ...(TRAIN.exps.includes("E5pp") ? ["E5+pp passes every E5 frame through the same SDXL model (t = 0.6) on its own, without training, so neighbouring frames are not kept consistent. Its metrics cover the held-out frames only; its run time covers those, the stills and one video."] : []),
+    ...(TRAIN.exps.some(isGenExp) ? ["Columns marked gen contain generated content. Nothing here checks it against the real street yet (no cross-camera evaluation, OPEN_QUESTIONS 28), so a sharper shifted view may still be wrong."] : []),
   ].map(x => `<li>${x}</li>`).join("");
 }
 function renderTraining(id) {
@@ -553,7 +574,7 @@ function renderTraining(id) {
     d.className = "sheet-label";
     const c = 1 + TRAIN.exps.indexOf(e);
     d.style.left = `${100 * c / nc}%`; d.style.top = "0"; d.style.width = `${100 / nc}%`; d.style.height = "100%";
-    d.innerHTML = `<span>${e} is still training</span>`;
+    d.innerHTML = `<span>${expName(e)} is still running</span>`;
     sheet.appendChild(d);
   });
   TRAIN.offsets.forEach((o, r) => {
@@ -582,6 +603,15 @@ function renderTraining(id) {
   const meanTime = e => complete(e) ? `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>` : `<td>—</td>`;
   const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(meanCells).join("")}${TRAIN.exps.map(meanTime).join("")}</tr>`;
   document.getElementById("train-table").innerHTML = rows.join("") + meanRow;
+  const gen = sc.gen_examples || [];
+  document.getElementById("gen-card").hidden = gen.length === 0;
+  if (gen.length) {
+    const sign = x => (x < 0 ? "−" : "+") + Math.abs(x).toFixed(1);
+    document.getElementById("gen-sub").textContent = "first and last target round, the same two pool views";
+    document.getElementById("gen-list").innerHTML = gen.map(g =>
+      `<figure><img src="training/${g.file}" alt="E6 render, mesh disparity and SDXL target, round ${g.round}" loading="lazy">` +
+      `<figcaption>round ${g.round} (step ${g.step}, t ≤ ${g.t_max.toFixed(2)}) · frame ${String(g.frame).padStart(3, "0")} · ${sign(g.offset)} m sideways, yaw ${sign(g.yaw)}°</figcaption></figure>`).join("");
+  }
 }
 
 // ---------- scene rail ----------
