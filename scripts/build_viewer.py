@@ -6,15 +6,17 @@ Inputs:
     <scene_root>/<scene_id>/<tag>/vis/vis_params.json    from scripts/vis_pose.py
     --diagnostics JSON                                   from scripts/diagnose_pose.py
     <scene_root>/<scene_id>/<mask_tag>/vis/masks_view.js from scripts/vis_masks.py (optional, Phase 4)
+    <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/fusion_view.js from scripts/vis_fusion.py (optional, Phase 5)
 Output directory:
-    index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js
+    index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js,
+    scenes/<scene_id>.fusion.js
 
 Open <out_dir>/index.html in a browser (or `python -m http.server` inside it). three.js loads from CDN.
 The same directory can be published as a Claude Artifact (index.html + config.js + scenes/*.js).
 
 Example:
     python3 scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer \
+        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion \
         --out_dir data/dashrecon/viewer/review
 """
 import argparse
@@ -38,8 +40,10 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--diagnostics", required=True)
     parser.add_argument("--mask_tag", default=None, help="Phase 4 mask backend tag; adds the mask panel")
+    parser.add_argument("--fusion", action="store_true", help="add Phase 5 fusion (<tag>__<mask_tag>); needs --mask_tag")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
+    assert not args.fusion or args.mask_tag is not None, "--fusion needs --mask_tag"
 
     with open(args.diagnostics) as f:
         diagnostics = json.load(f)
@@ -70,6 +74,22 @@ def main() -> None:
             with open(os.path.join(io.scene_dir(args.scene_root, sc.scene_id, args.tag), "vis", "vis_params.json")) as f:
                 assert json.load(f)["mask_dir"] is not None, f"{sc.scene_id}: rerun vis_pose.py with --mask_dir for class labels"
 
+    fusion = None
+    if args.fusion:
+        fusion_tag = f"{args.tag}__{args.mask_tag}"
+        fusion = {"tag": fusion_tag, "scenes": {}}
+        for sc in DEV_SCENES:
+            fdir = io.scene_dir(args.scene_root, sc.scene_id, fusion_tag)
+            meta = io.read_meta(fdir)
+            shutil.copyfile(os.path.join(fdir, "vis", "fusion_view.js"),
+                            os.path.join(args.out_dir, "scenes", f"{sc.scene_id}.fusion.js"))
+            fusion["params"] = {k: meta["params"][k] for k in (
+                "test_stride", "conf_percentile", "max_depth", "consistency_k", "consistency_rel", "consistency_min",
+                "voxel", "outlier_nb", "outlier_std", "road_cell", "road_sigma", "road_max_dz", "normal_knn", "skip")}
+            fusion["scenes"][sc.scene_id] = {k: meta[k] for k in (
+                "counts", "road", "runtime_s", "num_frames_used", "num_frames_total", "conf_threshold",
+                "rejected_by_consistency", "dashrecon_commit")}
+
     config = {
         "tag": args.tag,
         "built_from_commit": git_commit(),
@@ -77,6 +97,7 @@ def main() -> None:
         "scenes": [{"id": s.scene_id, "category": s.category, "note": s.note} for s in DEV_SCENES],
         "diagnostics": diagnostics,
         "masks": masks,
+        "fusion": fusion,
     }
     with open(os.path.join(args.out_dir, "config.js"), "w") as f:
         f.write(f"window.VIEWER_CONFIG = {json.dumps(config, indent=1)};\n")

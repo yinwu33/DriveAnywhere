@@ -1,9 +1,10 @@
 <!--
-  DashRecon Pose Review: static viewer for Phase 3 point clouds / trajectories and Phase 4 masks.
+  DashRecon Pose Review: static viewer for Phase 3 point clouds / trajectories, Phase 4 masks and Phase 5 fusion.
   This is a template. Build a runnable copy with scripts/build_viewer.py, which writes next to it:
     config.js              window.VIEWER_CONFIG (scene list, diagnostics, vis parameters, mask summary)
     scenes/<id>.js         window.SCENES[<id>] (scripts/vis_pose.py viewer_data.js)
     scenes/<id>.masks.js   window.MASKS[<id>]  (scripts/vis_masks.py masks_view.js; only with --mask_tag)
+    scenes/<id>.fusion.js  window.FUSION[<id>] (scripts/vis_fusion.py fusion_view.js; only with --fusion)
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
   Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
@@ -87,6 +88,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* elements below set display; keep the attribute authoritative */
 body {
   margin: 0;
   background: var(--ground);
@@ -139,6 +141,11 @@ header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
 .legend { position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 5px 10px; border-radius: 5px; max-width: calc(100% - 20px); }
 .legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; background: var(--accent); }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.seg { display: flex; }
+.seg .tool { border-radius: 0; margin-left: -1px; }
+.seg .tool:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+.seg .tool:last-child { border-radius: 0 5px 5px 0; }
+.tool:disabled { opacity: 0.45; cursor: not-allowed; }
 .status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-family: var(--display); font-size: 15px; letter-spacing: 0.04em; pointer-events: none; }
 
 .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
@@ -179,6 +186,12 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
 .tip { position: absolute; top: 0; left: 0; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 6px 9px; font-size: 12.5px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14); white-space: nowrap; display: grid; gap: 2px; }
 .tip .row { display: flex; gap: 12px; justify-content: space-between; align-items: center; }
 .tip .v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.funnel-wrap { position: relative; }
+.funnel-wrap svg { display: block; width: 100%; }
+.funnel-wrap svg text { font-family: var(--body); font-size: 12.5px; fill: var(--ink); }
+.funnel-wrap svg text.num { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stats .metric { border: 0; padding: 0; background: none; }
 </style>
 
 <div class="wrap">
@@ -198,14 +211,23 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
         <button class="tool" id="view-chase" type="button">Driver view</button>
         <button class="tool" id="view-top" type="button">Top view</button>
         <button class="tool" id="toggle-cams" type="button" aria-pressed="true">Cameras</button>
-        <button class="tool" id="toggle-classes" type="button" aria-pressed="false" hidden>Classes</button>
+        <div class="seg" id="seg-cloud" role="group" aria-label="Point cloud" hidden>
+          <button class="tool" id="cloud-raw" type="button" aria-pressed="false">Raw depth</button>
+          <button class="tool" id="cloud-fused" type="button" aria-pressed="true">Fused</button>
+        </div>
+        <div class="seg" id="seg-color" role="group" aria-label="Point colour" hidden>
+          <button class="tool" id="color-photo" type="button" aria-pressed="true">Photo</button>
+          <button class="tool" id="color-classes" type="button" aria-pressed="false">Classes</button>
+          <button class="tool" id="color-normals" type="button" aria-pressed="false">Normals</button>
+        </div>
         <button class="tool" id="toggle-dynamic" type="button" aria-pressed="false" hidden>Hide dynamic</button>
+        <button class="tool" id="toggle-rejected" type="button" aria-pressed="false" hidden>Rejected</button>
         <label class="slider" for="pt-size">Point size <input id="pt-size" type="range" min="0.02" max="0.4" step="0.01" value="0.1"></label>
       </div>
       <div class="legend">
         <span><i></i>FRONT camera path</span>
         <span id="legend-frusta"></span>
-        <span id="legend-classes" hidden></span>
+        <span id="legend-extra" hidden></span>
         <span class="mono">x forward · y left · z up</span>
       </div>
       <div class="status" id="status">Loading scene…</div>
@@ -248,6 +270,35 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
     </div>
   </section>
 
+  <section id="fusion" hidden>
+    <div class="section-head">
+      <h2>Fusion</h2>
+      <span class="section-sub" id="fusion-sub"></span>
+    </div>
+    <div class="mask-grid">
+      <div class="card">
+        <div class="eyebrow" id="funnel-title">Points kept at each step</div>
+        <div class="funnel-wrap" id="funnel-wrap">
+          <svg id="funnel" role="img" aria-label="Number of points kept after each fusion step"></svg>
+          <div class="tip" id="funnel-tip" hidden></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Road smoothing</div>
+        <div class="stats" id="road-stats"></div>
+        <p class="notes" style="padding-left: 0" id="fusion-note"></p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>scene</th><th>frames used</th><th>with depth</th><th>not dynamic / sky</th><th>confidence + range</th><th>consistent</th><th>voxel</th><th>final</th><th>road moved</th><th>mean |Δz|</th><th>time</th></tr>
+        </thead>
+        <tbody id="fusion-table"></tbody>
+      </table>
+    </div>
+  </section>
+
   <section>
     <h2 id="cmp-title">Run comparison, all scenes</h2>
     <div class="table-wrap">
@@ -269,32 +320,34 @@ const DIAG = CFG.diagnostics;
 const RUNS = DIAG.runs;
 const PRIMARY = DIAG.primary;
 const MASKS = CFG.masks;
+const FUSION = CFG.fusion;
 const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
 const KINDS = ["sky", "dynamic", "road"];  // categorical slots 1-3, fixed order
-const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road" };
+const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road", other: "Other" };
 const SCENES_META = CFG.scenes.map(s => ({ ...s, diag: DIAG.scenes.find(d => d.scene_id === s.id) }));
 SCENES_META.forEach(s => { if (!s.diag) throw new Error(`no diagnostics for ${s.id}`); });
 
 const fmtRange = (xs, digits) => `${Math.min(...xs).toFixed(digits)}–${Math.max(...xs).toFixed(digits)}`;
 const ordinal = n => n === 1 ? "every frame" : `every ${n}${[, "st", "nd", "rd"][n % 10 > 3 || Math.floor(n / 10) === 1 ? 0 : n % 10] || "th"} frame`;
 const pct = x => `${(100 * x).toFixed(1)}%`;
+const mega = n => n >= 1e6 ? `${(n / 1e6).toFixed(2)} M` : `${(n / 1e3).toFixed(0)} k`;
 const prim = s => s.diag.runs[PRIMARY];
 const swatch = k => `<span><span class="sw" style="background: var(--c-${k})"></span>${KIND_LABEL[k]}</span>`;
 
 // ---------- header ----------
 const vis = CFG.vis;
 const p0 = prim(SCENES_META[0]);
-if (MASKS) document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap · Phase 4 masks";
+document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap" +
+  (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "");
 document.getElementById("lede").textContent =
   `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
-  `no calibration, LiDAR, GT poses or boxes. Each cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
+  `no calibration, LiDAR, GT poses or boxes. The raw cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
   `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).` +
-  (MASKS ? " Dynamic-object, sky and road masks come from text-prompted detection and semantic segmentation of the same frames." : "");
+  (MASKS ? " Dynamic-object, sky and road masks come from text-prompted detection and semantic segmentation of the same frames." : "") +
+  (FUSION ? " The fused cloud merges all training frames after masking, a multi-view consistency check, voxel averaging, outlier removal and road smoothing." : "");
 document.getElementById("pipeline").innerHTML =
   [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
 document.getElementById("legend-frusta").textContent = `frusta ${ordinal(5 * vis.frame_stride)}`;
-document.getElementById("legend-classes").innerHTML = ["road", "dynamic", "sky"].map(swatch).join(" ") +
-  `<span><span class="sw" style="background: var(--c-other)"></span>Other</span>`;
 
 // ---------- comparison table ----------
 const grade = {
@@ -321,7 +374,7 @@ document.getElementById("notes").innerHTML = [
   `The viewer shows the ${PRIMARY} run. Each run is one MapAnything call over all frames of a segment.`,
 ].map(t => `<li>${t}</li>`).join("");
 
-// ---------- mask summary table ----------
+// ---------- mask section static parts ----------
 if (MASKS) {
   const d = MASKS.dynamic, sem = MASKS.semantic;
   document.getElementById("masks").hidden = false;
@@ -338,6 +391,34 @@ function renderMaskTable(currentId) {
       <td>${pct(sm.dynamic.mean)}</td><td>${pct(sm.dynamic.max)}</td><td>${pct(sm.sky.mean)}</td><td>${pct(sm.sky.max)}</td>
       <td>${pct(sm.road.mean)}</td><td>${pct(sm.road.max)}</td><td>${sm.num_boxes_mean.toFixed(1)}</td>
       <td>${m.seconds_per_frame.toFixed(2)} s</td><td>${m.peak_vram_gb.toFixed(1)} GB</td></tr>`;
+  }).join("");
+}
+
+// ---------- fusion section static parts ----------
+const FSTEPS = FUSION ? [
+  ["depth_pixels", "Pixels with depth"],
+  ["after_masks", "Not dynamic or sky"],
+  ["after_conf_range", `Confidence ≥ p${FUSION.params.conf_percentile}, depth < ${FUSION.params.max_depth}`],
+  ["after_consistency", `Consistent in ≥ ${FUSION.params.consistency_min} of ±${FUSION.params.consistency_k} frames`],
+  ["after_voxel", `Voxel average, ${FUSION.params.voxel}`],
+  ["after_outlier", `Outlier removal, k ${FUSION.params.outlier_nb}, ${FUSION.params.outlier_std}σ`],
+] : [];
+if (FUSION) {
+  const p = FUSION.params;
+  document.getElementById("fusion").hidden = false;
+  document.getElementById("fusion-sub").textContent =
+    `training frames only (every ${p.test_stride}th held out) · depth tolerance ${100 * p.consistency_rel}% · road cell ${p.road_cell}, σ ${p.road_sigma} cells` +
+    (p.skip.length ? ` · skipped: ${p.skip.join(", ")}` : "");
+}
+function renderFusionTable(currentId) {
+  if (!FUSION) return;
+  document.getElementById("fusion-table").innerHTML = SCENES_META.map(s => {
+    const f = FUSION.scenes[s.id], c = f.counts;
+    return `<tr class="${s.id === currentId ? "cur" : ""}"><td>${s.id}</td><td>${f.num_frames_used} / ${f.num_frames_total}</td>
+      <td>${mega(c.depth_pixels)}</td><td>${mega(c.after_masks)}</td><td>${mega(c.after_conf_range)}</td>
+      <td>${mega(c.after_consistency)} <span style="color: var(--muted)">(${pct(c.after_consistency / c.after_conf_range)})</span></td>
+      <td>${mega(c.after_voxel)}</td><td>${mega(c.final)}</td><td>${mega(f.road.moved)}</td><td>${f.road.mean_abs_dz_moved.toFixed(3)}</td>
+      <td>${f.runtime_s.toFixed(0)} s</td></tr>`;
   }).join("");
 }
 
@@ -365,6 +446,10 @@ function renderReadout(s) {
     const sm = MASKS.scenes[s.id].summary;
     cards.push({ k: "Dynamic pixels", v: pct(sm.dynamic.mean), sub: `mean per frame · max ${pct(sm.dynamic.max)} · ${sm.num_boxes_mean.toFixed(1)} detections/frame`, g: null });
   }
+  if (FUSION) {
+    const f = FUSION.scenes[s.id], c = f.counts;
+    cards.push({ k: "Fused points", v: mega(c.final), sub: `${pct(1 - c.after_consistency / c.after_conf_range)} rejected by the consistency check`, g: null });
+  }
   document.getElementById("readout").innerHTML = cards.map(c => `
     <div class="metric"><span class="eyebrow">${c.k}</span><span class="val">${c.v}</span>
     ${c.g ? `<span class="chip ${c.g}">${label[c.g]}${c.note ? " · " + c.note : ""}</span>` : ""}
@@ -386,46 +471,13 @@ controls.addEventListener("change", render);
 
 let current = null;
 let currentId = null;
-let showCams = true, classMode = false, hideDynamic = false;
+let showCams = true, hideDynamic = false, showRejected = false;
+let cloudMode = FUSION ? "fused" : "raw";
+let colorMode = "photo";
 const loaded = {};
 
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function rgbBytes(hex) { const c = new THREE.Color(hex); return [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)]; }
-
-function applyPointColors(s) {
-  const attr = s.points.geometry.getAttribute("color");
-  if (classMode && s.lab) {
-    const byLabel = s.labelNames.map(n => rgbBytes(cssVar(`--c-${n}`)));
-    for (let i = 0; i < s.n; i++) { const c = byLabel[s.lab[i]]; attr.array[3 * i] = c[0]; attr.array[3 * i + 1] = c[1]; attr.array[3 * i + 2] = c[2]; }
-  } else {
-    attr.array.set(s.photoCol);
-  }
-  attr.needsUpdate = true;
-  s.points.geometry.setDrawRange(0, hideDynamic && s.lab ? s.nKeep : s.n);
-}
-
-function applyTheme() {
-  renderer.setClearColor(new THREE.Color(cssVar("--canvas")));
-  if (current) {
-    current.path.material.color.set(cssVar("--accent"));
-    current.frusta.material.color.set(cssVar("--muted"));
-    applyPointColors(current);
-  }
-  render();
-}
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
-new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-
-function resize() {
-  const w = viewer.clientWidth, h = viewer.clientHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / Math.max(h, 1);
-  camera.updateProjectionMatrix();
-  render();
-}
-new ResizeObserver(resize).observe(viewer);
-
-function render() { renderer.render(scene3, camera); }
 
 function b64bytes(s) {
   const bin = atob(s);
@@ -434,22 +486,24 @@ function b64bytes(s) {
   return out;
 }
 
-function buildScene(d) {
-  const group = new THREE.Group();
+// A point set: positions (reordered so an optional "hidden" label goes last), photo/label/normal colours.
+function buildCloud(d, hideLabel) {
   const q = new Uint16Array(b64bytes(d.pos).buffer);
   const col = b64bytes(d.col);
   const lab = d.lab ? b64bytes(d.lab) : null;
-  // dynamic points go last so "Hide dynamic" is a draw range
-  const dynCode = d.label_names.indexOf("dynamic");
+  const nrm = d.nrm ? new Int8Array(b64bytes(d.nrm).buffer) : null;
+  const hideCode = lab ? d.label_names.indexOf(hideLabel) : -1;
   const order = [];
-  if (lab) { for (let i = 0; i < d.n; i++) if (lab[i] !== dynCode) order.push(i); }
-  const nKeep = lab ? order.length : d.n;
-  if (lab) { for (let i = 0; i < d.n; i++) if (lab[i] === dynCode) order.push(i); } else { for (let i = 0; i < d.n; i++) order.push(i); }
-  const pos = new Float32Array(d.n * 3), photoCol = new Uint8Array(d.n * 3), labOut = lab ? new Uint8Array(d.n) : null;
+  for (let i = 0; i < d.n; i++) if (!lab || lab[i] !== hideCode) order.push(i);
+  const nKeep = order.length;
+  if (lab) for (let i = 0; i < d.n; i++) if (lab[i] === hideCode) order.push(i);
+  const pos = new Float32Array(d.n * 3), photoCol = new Uint8Array(d.n * 3);
+  const labOut = lab ? new Uint8Array(d.n) : null, nrmCol = nrm ? new Uint8Array(d.n * 3) : null;
   order.forEach((src, i) => {
     for (let a = 0; a < 3; a++) {
       pos[3 * i + a] = d.lo[a] + (q[3 * src + a] / 65535) * (d.hi[a] - d.lo[a]);
       photoCol[3 * i + a] = col[3 * src + a];
+      if (nrm) nrmCol[3 * i + a] = Math.round((nrm[3 * src + a] / 127 * 0.5 + 0.5) * 255);
     }
     if (lab) labOut[i] = lab[src];
   });
@@ -457,7 +511,14 @@ function buildScene(d) {
   g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   g.setAttribute("color", new THREE.BufferAttribute(photoCol.slice(), 3, true));
   const points = new THREE.Points(g, new THREE.PointsMaterial({ size: parseFloat(document.getElementById("pt-size").value), vertexColors: true, sizeAttenuation: true }));
-  group.add(points);
+  const box = new THREE.Box3().setFromBufferAttribute(g.getAttribute("position"));
+  return { points, n: d.n, nKeep, photoCol, lab: labOut, labelNames: d.label_names, nrmCol, box };
+}
+
+function buildScene(d) {
+  const group = new THREE.Group();
+  const raw = buildCloud(d, "dynamic");
+  group.add(raw.points);
 
   const centers = d.cams.map(m => new THREE.Vector3(m[0][3], m[1][3], m[2][3]));
   const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(centers), new THREE.LineBasicMaterial({ color: cssVar("--accent") }));
@@ -477,12 +538,94 @@ function buildScene(d) {
     for (let k = 0; k < 4; k++) { seg.push(c, w[k], w[k], w[(k + 1) % 4]); }
   });
   const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
-  frusta.visible = showCams;
   group.add(frusta);
-
-  const box = new THREE.Box3().setFromBufferAttribute(g.getAttribute("position"));
-  return { group, points, path, frusta, centers, cams: d.cams, box, n: d.n, nKeep, photoCol, lab: labOut, labelNames: d.label_names };
+  return { group, raw, fused: null, rejected: null, path, frusta, centers, cams: d.cams };
 }
+
+function addFusion(s, f) {
+  s.fused = buildCloud(f, null);
+  s.group.add(s.fused.points);
+  const r = f.rejected;
+  const q = new Uint16Array(b64bytes(r.pos).buffer);
+  const pos = new Float32Array(r.n * 3);
+  for (let i = 0; i < r.n; i++) for (let a = 0; a < 3; a++) pos[3 * i + a] = r.lo[a] + (q[3 * i + a] / 65535) * (r.hi[a] - r.lo[a]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  s.rejected = new THREE.Points(g, new THREE.PointsMaterial({ size: parseFloat(document.getElementById("pt-size").value) * 1.3, color: cssVar("--bad"), sizeAttenuation: true }));
+  s.group.add(s.rejected);
+}
+
+function activeCloud(s) { return cloudMode === "fused" && s.fused ? s.fused : s.raw; }
+
+function colourCloud(c) {
+  const attr = c.points.geometry.getAttribute("color");
+  if (colorMode === "classes" && c.lab) {
+    const byLabel = c.labelNames.map(n => rgbBytes(cssVar(`--c-${n}`)));
+    for (let i = 0; i < c.n; i++) { const k = byLabel[c.lab[i]]; attr.array[3 * i] = k[0]; attr.array[3 * i + 1] = k[1]; attr.array[3 * i + 2] = k[2]; }
+  } else if (colorMode === "normals" && c.nrmCol) {
+    attr.array.set(c.nrmCol);
+  } else {
+    attr.array.set(c.photoCol);
+  }
+  attr.needsUpdate = true;
+}
+
+function refreshScene() {
+  if (!current) return;
+  const s = current;
+  const fusedOn = cloudMode === "fused" && Boolean(s.fused);
+  s.raw.points.visible = !fusedOn;
+  if (s.fused) s.fused.points.visible = fusedOn;
+  if (s.rejected) { s.rejected.visible = fusedOn && showRejected; s.rejected.material.color.set(cssVar("--bad")); }
+  s.raw.points.geometry.setDrawRange(0, hideDynamic && s.raw.lab ? s.raw.nKeep : s.raw.n);
+  s.frusta.visible = showCams;
+  s.path.material.color.set(cssVar("--accent"));
+  s.frusta.material.color.set(cssVar("--muted"));
+  const c = activeCloud(s);
+  if (colorMode === "normals" && !c.nrmCol) colorMode = "photo";
+  if (colorMode === "classes" && !c.lab) colorMode = "photo";
+  colourCloud(c);
+  // controls
+  document.getElementById("seg-cloud").hidden = !s.fused;
+  document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn));
+  document.getElementById("cloud-fused").setAttribute("aria-pressed", String(fusedOn));
+  document.getElementById("seg-color").hidden = !c.lab && !c.nrmCol;
+  document.getElementById("color-classes").disabled = !c.lab;
+  document.getElementById("color-normals").disabled = !c.nrmCol;
+  for (const m of ["photo", "classes", "normals"]) document.getElementById(`color-${m}`).setAttribute("aria-pressed", String(colorMode === m));
+  document.getElementById("toggle-dynamic").hidden = fusedOn || !s.raw.lab;
+  document.getElementById("toggle-rejected").hidden = !fusedOn;
+  const extra = document.getElementById("legend-extra");
+  if (colorMode === "classes") {
+    extra.innerHTML = c.labelNames.filter(n => n !== "other").map(swatch).join(" ") + swatch("other");
+  } else if (colorMode === "normals") {
+    extra.innerHTML = '<span class="mono">normal x→R · y→G · z→B</span>';
+  } else {
+    extra.innerHTML = "";
+  }
+  if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
+  extra.hidden = extra.innerHTML === "";
+  render();
+}
+
+function applyTheme() {
+  renderer.setClearColor(new THREE.Color(cssVar("--canvas")));
+  refreshScene();
+  render();
+}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+function resize() {
+  const w = viewer.clientWidth, h = viewer.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+  render();
+}
+new ResizeObserver(resize).observe(viewer);
+
+function render() { renderer.render(scene3, camera); }
 
 function driverView() {
   if (!current) return;
@@ -496,30 +639,14 @@ function driverView() {
 }
 function topView() {
   if (!current) return;
-  const center = new THREE.Vector3(); current.box.getCenter(center);
-  const size = new THREE.Vector3(); current.box.getSize(size);
+  const box = activeCloud(current).box;
+  const center = new THREE.Vector3(); box.getCenter(center);
+  const size = new THREE.Vector3(); box.getSize(size);
   const extent = Math.max(size.x, size.y);
   const dist = extent / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.05;
   camera.position.set(center.x - 0.001 * extent, center.y, center.z + dist);
   controls.target.copy(center);
   controls.update(); render();
-}
-
-function show(id) {
-  if (current) scene3.remove(current.group);
-  if (!loaded[id]) loaded[id] = buildScene(window.SCENES[id]);
-  current = loaded[id];
-  scene3.add(current.group);
-  current.frusta.visible = showCams;
-  current.path.material.color.set(cssVar("--accent"));
-  current.frusta.material.color.set(cssVar("--muted"));
-  const hasLab = Boolean(current.lab);
-  document.getElementById("toggle-classes").hidden = !hasLab;
-  document.getElementById("toggle-dynamic").hidden = !hasLab;
-  document.getElementById("legend-classes").hidden = !(hasLab && classMode);
-  applyPointColors(current);
-  statusEl.hidden = true;
-  driverView();
 }
 
 function loadScript(src) {
@@ -535,12 +662,24 @@ async function selectScene(id) {
   document.querySelectorAll(".scene-btn").forEach(b => b.setAttribute("aria-pressed", String(b.id === "scene-" + id)));
   renderReadout(SCENES_META.find(s => s.id === id));
   renderMaskTable(id);
+  renderFusionTable(id);
   statusEl.hidden = false;
   statusEl.textContent = `Loading ${id}…`;
   try {
     if (!(window.SCENES && window.SCENES[id])) await loadScript(`scenes/${id}.js`);
+    if (FUSION && !(window.FUSION && window.FUSION[id])) await loadScript(`scenes/${id}.fusion.js`);
     if (currentId !== id) return;
-    show(id);
+    if (current) scene3.remove(current.group);
+    if (!loaded[id]) {
+      loaded[id] = buildScene(window.SCENES[id]);
+      if (FUSION) addFusion(loaded[id], window.FUSION[id]);
+    }
+    current = loaded[id];
+    scene3.add(current.group);
+    statusEl.hidden = true;
+    refreshScene();
+    driverView();
+    if (FUSION) drawFunnel(id);
     if (MASKS) {
       if (!(window.MASKS && window.MASKS[id])) await loadScript(`scenes/${id}.masks.js`);
       if (currentId !== id) return;
@@ -557,27 +696,89 @@ document.getElementById("view-top").addEventListener("click", topView);
 document.getElementById("toggle-cams").addEventListener("click", e => {
   showCams = !showCams;
   e.currentTarget.setAttribute("aria-pressed", String(showCams));
-  if (current) current.frusta.visible = showCams;
-  render();
+  refreshScene();
 });
-document.getElementById("toggle-classes").addEventListener("click", e => {
-  classMode = !classMode;
-  e.currentTarget.setAttribute("aria-pressed", String(classMode));
-  document.getElementById("legend-classes").hidden = !classMode;
-  if (current) applyPointColors(current);
-  render();
-});
+document.getElementById("cloud-raw").addEventListener("click", () => { cloudMode = "raw"; refreshScene(); });
+document.getElementById("cloud-fused").addEventListener("click", () => { cloudMode = "fused"; refreshScene(); });
+for (const m of ["photo", "classes", "normals"]) {
+  document.getElementById(`color-${m}`).addEventListener("click", () => { colorMode = m; refreshScene(); });
+}
 document.getElementById("toggle-dynamic").addEventListener("click", e => {
   hideDynamic = !hideDynamic;
   e.currentTarget.setAttribute("aria-pressed", String(hideDynamic));
-  if (current) applyPointColors(current);
-  render();
+  refreshScene();
+});
+document.getElementById("toggle-rejected").addEventListener("click", e => {
+  showRejected = !showRejected;
+  e.currentTarget.setAttribute("aria-pressed", String(showRejected));
+  refreshScene();
 });
 document.getElementById("pt-size").addEventListener("input", e => {
   const v = parseFloat(e.target.value);
-  Object.values(loaded).forEach(s => { s.points.material.size = v; });
+  Object.values(loaded).forEach(s => {
+    s.raw.points.material.size = v;
+    if (s.fused) { s.fused.points.material.size = v; s.rejected.material.size = v * 1.3; }
+  });
   render();
 });
+
+// ---------- svg helpers ----------
+const NS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const e = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  parent.appendChild(e);
+  return e;
+}
+
+// ---------- fusion funnel ----------
+const funnelWrap = document.getElementById("funnel-wrap");
+const funnel = document.getElementById("funnel");
+const funnelTip = document.getElementById("funnel-tip");
+function drawFunnel(id) {
+  const f = FUSION.scenes[id], c = f.counts;
+  const W = funnelWrap.clientWidth, rowH = 34, barH = 14, top = 6;
+  const labelW = Math.min(230, W * 0.45), numW = 118;
+  const H = top + FSTEPS.length * rowH;
+  const x0 = labelW, x1 = W - numW;
+  const max = c[FSTEPS[0][0]];
+  funnel.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  funnel.setAttribute("height", H);
+  funnel.replaceChildren();
+  FSTEPS.forEach(([key, name], i) => {
+    const y = top + i * rowH;
+    const val = c[key], prev = i ? c[FSTEPS[i - 1][0]] : val;
+    const len = Math.max(2, (x1 - x0) * val / max);
+    el("text", { x: 0, y: y + barH - 2 }, funnel).textContent = `${i + 1}. ${name}`;
+    // bar anchored at the baseline (left), 4px rounded data-end on the right
+    const r = 4, bx = x0, by = y + 2, bw = len;
+    el("path", { d: `M${bx},${by} H${bx + bw - r} Q${bx + bw},${by} ${bx + bw},${by + r} V${by + barH - r} Q${bx + bw},${by + barH} ${bx + bw - r},${by + barH} H${bx} Z`, style: "fill: var(--accent)" }, funnel);
+    el("text", { x: bx + bw + 8, y: y + barH - 2, class: "num" }, funnel).textContent = `${mega(val)}${i ? ` · ${pct(val / prev)}` : ""}`;
+    const hit = el("rect", { x: 0, y: y - 4, width: W, height: rowH, fill: "transparent" }, funnel);
+    hit.addEventListener("pointerenter", () => {
+      funnelTip.innerHTML = `<div class="row"><span>${i + 1}. ${name}</span></div>` +
+        `<div class="row"><span>points</span><span class="v">${val.toLocaleString("en-US")}</span></div>` +
+        (i ? `<div class="row"><span>of previous step</span><span class="v">${pct(val / prev)}</span></div>` : "") +
+        `<div class="row"><span>of step 1</span><span class="v">${pct(val / max)}</span></div>`;
+      funnelTip.hidden = false;
+      const rect = funnel.getBoundingClientRect();
+      const tw = funnelTip.offsetWidth;
+      funnelTip.style.transform = `translate(${Math.min(Math.max((x0 + len) / W * rect.width - tw / 2, 0), rect.width - tw)}px, ${(y + rowH) / H * rect.height}px)`;
+    });
+    hit.addEventListener("pointerleave", () => { funnelTip.hidden = true; });
+  });
+  const rd = f.road;
+  document.getElementById("road-stats").innerHTML = [
+    ["Road points moved", mega(rd.moved), `of ${mega(rd.road_points)} road points`],
+    ["Mean |Δz|", rd.mean_abs_dz_moved.toFixed(3), `p95 ${rd.p95_abs_dz_moved.toFixed(3)}`],
+    ["Left unchanged", mega(rd.left_unchanged_far + rd.left_unchanged_no_field), `further than ${FUSION.params.road_max_dz} from the surface or outside it`],
+    ["Frames used", `${f.num_frames_used} / ${f.num_frames_total}`, `${f.runtime_s.toFixed(0)} s fusion time`],
+  ].map(([k, v, sub]) => `<div class="metric"><span class="eyebrow">${k}</span><span class="val">${v}</span><span class="sub">${sub}</span></div>`).join("");
+  document.getElementById("fusion-note").textContent =
+    "Distances are in the pose run's units, which are not metres here (see Metric scale above). Toggle Fused / Raw depth in the 3D view to compare, " +
+    "Normals to check orientation, and Rejected to see what the consistency check removed.";
+}
+new ResizeObserver(() => { if (FUSION && currentId) drawFunnel(currentId); }).observe(funnelWrap);
 
 // ---------- masks panel ----------
 const scrub = document.getElementById("mask-scrub");
@@ -600,13 +801,6 @@ function setThumb(i) {
 }
 scrub.addEventListener("input", () => setThumb(parseInt(scrub.value, 10)));
 
-const NS = "http://www.w3.org/2000/svg";
-function el(name, attrs, parent) {
-  const e = document.createElementNS(NS, name);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  parent.appendChild(e);
-  return e;
-}
 let chartGeom = null;
 function drawChart(markerFrame) {
   if (!maskData) return;
