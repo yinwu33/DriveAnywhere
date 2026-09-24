@@ -100,6 +100,7 @@
 │   │   ├── sam_text.py       # Grounding DINO + SAM 2.1（transformers）
 │   │   └── segformer.py      # 天空与路面（SegFormer-B5 Cityscapes）
 │   ├── fusion/               # Phase 5：点云融合与清理
+│   │   ├── backproject.py    # 深度反投影与投影
 │   │   ├── consistency.py    # 多视图深度一致性过滤
 │   │   ├── cleanup.py        # 降采样、离群点去除
 │   │   └── road.py           # 路面平滑
@@ -116,7 +117,7 @@
 ├── data/data/                # 符号链接 → Waymo perception v1.4.3 原始 tfrecord（共享盘，只读）
 │                             #   training 无 LiDAR；validation 有 LiDAR；两者都不是 scene-flow 版本
 ├── configs/dashrecon/        # 实验配置（E0–E5）
-├── scripts/                  # 每个 Phase 的命令行入口：scene_stats、run_pose、run_masks、vis_pose、vis_masks、diagnose_pose、build_viewer
+├── scripts/                  # 每个 Phase 的命令行入口：scene_stats、run_pose、run_masks、run_fusion、vis_pose、vis_masks、vis_fusion、diagnose_pose、build_viewer
 ├── tests/                    # 小型单元测试
 └── results/                  # 实验输出（不入 git，只提交 summary）
 ```
@@ -358,7 +359,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 0：环境与数据（2026-09-24：3 个 uv venv；5 个 validation 开发场景）
 - [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
 - [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
-- [ ] Phase 5：点云融合与清理
+- [x] Phase 5：点云融合与清理（2026-09-24：按临时标准验收；5 个场景都有逐步点数和截图/网页；"一致性过滤后几何指标更好"需要 LiDAR 评测，延后。见 DECISIONS H）
 - [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
 - [ ] Phase 6：E3–E4（含横向偏移渲染）
 - [ ] Phase 7：NKSR 与 E5
@@ -370,7 +371,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ---
 
-## 13. 复现：Phase 0、Phase 3、Phase 4 与网页可视化
+## 13. 复现：Phase 0、Phase 3–5 与网页可视化
 
 所有命令都在仓库根目录执行。
 
@@ -434,7 +435,22 @@ for s in val056 val039 val041 val087 val094; do
 done
 ```
 
-### 13.5 可视化数据与网页组装
+### 13.5 点云融合与清理（Phase 5）
+
+```bash
+for s in val056 val039 val041 val087 val094; do
+  .venvs/main/bin/python scripts/run_fusion.py --scene_id $s \
+      --pose_dir data/dashrecon/$s/pose-mapanything_depth-mapanything --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer \
+      --processed_root data/waymo/processed/validation --out_root data/dashrecon --test_stride 10 \
+      --conf_percentile 30 --max_depth 60 --consistency_k 4 --consistency_rel 0.05 --consistency_min 2 \
+      --voxel 0.05 --outlier_nb 20 --outlier_std 2.0 --road_cell 0.5 --road_sigma 2.0 --road_min_points 5 \
+      --road_max_dz 0.3 --normal_knn 30 --rejected_sample 200000 --seed 0
+done
+```
+
+做消融时加 `--skip consistency voxel outlier road` 中的任意几项，同时把 `--out_root` 换成别的目录，避免覆盖主结果。
+
+### 13.6 可视化数据与网页组装
 
 ```bash
 for s in val056 val039 val041 val087 val094; do
@@ -445,22 +461,26 @@ for s in val056 val039 val041 val087 val094; do
   .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id $s --scene_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
       --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 --max_depth 60 \
       --max_points 300000 --seed 0 --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer
+  # 融合点云抽样（25 万点，含法向和路面标签）以及一致性检查剔除的点（10 万点）
+  .venvs/main/bin/python scripts/vis_fusion.py --scene_id $s \
+      --fusion_dir data/dashrecon/$s/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer \
+      --max_points 250000 --rejected_points 100000 --seed 0
 done
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer \
+    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion \
     --out_dir data/dashrecon/viewer/review
 ```
 
-不加 `--mask_dir` 和 `--mask_tag` 时，组装出的是只有 Phase 3 内容的网页。
+不加 `--fusion` 时，网页里没有 Phase 5 的内容；再去掉 `--mask_dir` 和 `--mask_tag`，就只剩 Phase 3。
 
-### 13.6 查看网页
+### 13.7 查看网页
 
 - **本地**：直接用浏览器打开 `data/dashrecon/viewer/review/index.html`。也可以起一个静态服务器：
   ```bash
   cd data/dashrecon/viewer/review && python3 -m http.server 8000
   ```
   然后访问 http://localhost:8000。远程机器需先转发端口，例如 `ssh -L 8000:localhost:8000 <host>`。页面需要联网，才能从 CDN 加载 three.js r128 和字体。
-- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
+- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js` 和 `*.fusion.js`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
 
 网页的工作方式：
 - 模板 `dashrecon/viewer/index.html` 用 three.js 渲染点云、相机轨迹和视锥。
@@ -469,11 +489,13 @@ done
   - `scenes/<id>.js`：点云。30 万个点，坐标量化为 uint16，颜色和类别为 uint8，都做了 base64 编码。
   - `scenes/<id>.masks.js`：掩码叠加缩略图和逐帧比例。
 - 3D 视图的交互：
-  - "Classes" 按类别给点着色。
-  - "Hide dynamic" 隐藏动态物体的点，用来预览 Phase 5 剔除动态像素后的效果。
+  - "Raw depth / Fused"：在 Phase 3 的原始反投影点云和 Phase 5 的融合点云之间切换。
+  - "Photo / Classes / Normals"：分别按图像颜色、类别、法向（x→R、y→G、z→B）着色。
+  - "Hide dynamic"（仅原始点云）：隐藏动态物体的点。
+  - "Rejected"（仅融合点云）：用红色显示被一致性检查剔除的点。
 - 类别颜色取自 dataviz 参考调色板的 1–3 号色。用 `validate_palette.js` 在两种主题下做了全配对验证，均通过。
 
-### 13.7 产物位置（均不入 git）
+### 13.8 产物位置（均不入 git）
 
 | 产物 | 路径 |
 |---|---|
@@ -482,6 +504,7 @@ done
 | Phase 4 掩码（第 5 节约定，独立的 backend tag） | `data/dashrecon/<scene_id>/mask-gsam2_sky-segformer/`：`mask_{dynamic,sky,road}/`、`meta.json`（含逐帧比例） |
 | 点云可视化 | Phase 3 目录下的 `vis/`：`points_vis.ply`（可用 CloudCompare 或 MeshLab 打开）、`bev.png`、`viewer_data.js`、`vis_params.json` |
 | 掩码可视化 | Phase 4 目录下的 `vis/masks_view.js` |
+| Phase 5 融合点云（第 5 节约定） | `data/dashrecon/<scene_id>/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer/`：`points_fused.ply`（xyz、法向、rgb、`label` 0 = 其他 / 1 = 路面，可用 CloudCompare 打开）、`frames.txt`（用到的训练帧）、`meta.json`（逐步点数、路面平滑统计）、`diagnostics/consistency_rejected.ply`、`vis/fusion_view.js` |
 | Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
 | 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
 | 组装好的网页 | `data/dashrecon/viewer/review/` |
@@ -502,3 +525,4 @@ done
   - §12：checklist 顺序。
 - 2026-09-24：Phase 0、Phase 3 完成（§12）；§4 补上新增的文件；新增 §13（Phase 0 / Phase 3 / 网页可视化的复现命令、查看方式和产物位置）。网页源码在 `dashrecon/viewer/`，数据由 `scripts/vis_pose.py`、`scripts/diagnose_pose.py`、`scripts/build_viewer.py` 生成。
 - 2026-09-24：Phase 4 完成（§12）；§4 列出 masks 后端；§13 重排为 Phase 3 → Phase 4 → 可视化 → 查看网页 → 产物位置，网页输出目录改为 `data/dashrecon/viewer/review`。
+- 2026-09-24：Phase 5 完成（§12）；§4 列出 fusion/backproject.py 和新脚本；§13 新增 13.5（Phase 5 命令），可视化命令加入 `vis_fusion.py` 和 `build_viewer.py --fusion`。
