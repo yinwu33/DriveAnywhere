@@ -96,8 +96,9 @@
 │   │   └── vggt.py           # 等（尚未实现）
 │   ├── masks/                # Phase 4：动态与天空掩码后端
 │   │   ├── base.py
-│   │   ├── gt_boxes.py       # oracle：GT 3D 框投影
-│   │   └── sam_text.py
+│   │   ├── gt_boxes.py       # oracle：GT 3D 框投影（尚未实现）
+│   │   ├── sam_text.py       # Grounding DINO + SAM 2.1（transformers）
+│   │   └── segformer.py      # 天空与路面（SegFormer-B5 Cityscapes）
 │   ├── fusion/               # Phase 5：点云融合与清理
 │   │   ├── consistency.py    # 多视图深度一致性过滤
 │   │   ├── cleanup.py        # 降采样、离群点去除
@@ -115,7 +116,7 @@
 ├── data/data/                # 符号链接 → Waymo perception v1.4.3 原始 tfrecord（共享盘，只读）
 │                             #   training 无 LiDAR；validation 有 LiDAR；两者都不是 scene-flow 版本
 ├── configs/dashrecon/        # 实验配置（E0–E5）
-├── scripts/                  # 每个 Phase 的命令行入口：scene_stats、run_pose、vis_pose、diagnose_pose、build_viewer
+├── scripts/                  # 每个 Phase 的命令行入口：scene_stats、run_pose、run_masks、vis_pose、vis_masks、diagnose_pose、build_viewer
 ├── tests/                    # 小型单元测试
 └── results/                  # 实验输出（不入 git，只提交 summary）
 ```
@@ -368,7 +369,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ---
 
-## 13. 复现：Phase 0、Phase 3 与网页可视化
+## 13. 复现：Phase 0、Phase 3、Phase 4 与网页可视化
 
 所有命令都在仓库根目录执行。
 
@@ -385,7 +386,8 @@ data/dashrecon/<scene_id>/<backend_tag>/
 CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=8.6 bash envs/setup_main.sh   # 主训练环境（Phase 6 用）
 bash envs/setup_waymo.sh                                                          # Waymo 预处理
 bash envs/setup_mapanything.sh                                                    # Phase 3
-PYTHONPATH=. .venvs/mapanything/bin/python -m pytest tests -q                     # 单元测试
+bash envs/setup_masks.sh                                                          # Phase 4
+PYTHONPATH=. .venvs/masks/bin/python -m pytest tests -q                           # 单元测试
 ```
 
 ### 13.2 数据（Phase 0）
@@ -400,7 +402,7 @@ CUDA_VISIBLE_DEVICES="" PYTHONPATH=. .venvs/waymo/bin/python datasets/preprocess
     --scene_ids 56 39 41 87 94 --workers 5 --process_keys images calib pose dynamic_masks objects
 ```
 
-### 13.3 位姿与点图（Phase 3）以及可视化数据
+### 13.3 位姿与点图（Phase 3）
 
 ```bash
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -412,45 +414,76 @@ for s in val056 val039 val041 val087 val094; do
   .venvs/mapanything/bin/python scripts/run_pose.py --scene_id $s --backend mapanything --model_id facebook/map-anything-apache \
       --processed_root data/waymo/processed/validation --out_root data/dashrecon/_checkpoint_compare/map-anything-apache \
       --scale model --max_views 300
-  # 点云、俯视图和网页数据
-  .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id $s --scene_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
-      --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 --max_depth 60 \
-      --max_points 300000 --seed 0
 done
 # 评测侧诊断（读 GT 位姿和标定，仅用于诊断）
 .venvs/mapanything/bin/python scripts/diagnose_pose.py --processed_root data/waymo/processed/validation \
     --tag pose-mapanything_depth-mapanything --run cc-by-nc=data/dashrecon \
     --run apache=data/dashrecon/_checkpoint_compare/map-anything-apache --primary cc-by-nc \
     --out data/dashrecon/diagnostics/phase3_pose.json
-# 组装网页
-.venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --out_dir data/dashrecon/viewer/phase3
 ```
 
-### 13.4 查看网页
+### 13.4 动态、天空与路面掩码（Phase 4）
 
-- **本地**：直接用浏览器打开 `data/dashrecon/viewer/phase3/index.html`。也可以起一个静态服务器：
+```bash
+for s in val056 val039 val041 val087 val094; do
+  .venvs/masks/bin/python scripts/run_masks.py --scene_id $s --processed_root data/waymo/processed/validation \
+      --out_root data/dashrecon --detector_id IDEA-Research/grounding-dino-base --sam_id facebook/sam2.1-hiera-large \
+      --box_threshold 0.25 --text_threshold 0.25 --dilate_px 5 \
+      --seg_model_id nvidia/segformer-b5-finetuned-cityscapes-1024-1024 --seg_input_hw 1024 1536
+done
+```
+
+### 13.5 可视化数据与网页组装
+
+```bash
+for s in val056 val039 val041 val087 val094; do
+  # 掩码叠加缩略图（每 10 帧一张）和逐帧掩掉像素比例
+  .venvs/masks/bin/python scripts/vis_masks.py --scene_id $s --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer \
+      --processed_root data/waymo/processed/validation --thumb_stride 10 --thumb_width 640
+  # 点云、俯视图和网页数据；--mask_dir 给每个点加上类别（other / road / dynamic / sky）
+  .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id $s --scene_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
+      --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 --max_depth 60 \
+      --max_points 300000 --seed 0 --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer
+done
+.venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
+    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer \
+    --out_dir data/dashrecon/viewer/review
+```
+
+不加 `--mask_dir` 和 `--mask_tag` 时，组装出的是只有 Phase 3 内容的网页。
+
+### 13.6 查看网页
+
+- **本地**：直接用浏览器打开 `data/dashrecon/viewer/review/index.html`。也可以起一个静态服务器：
   ```bash
-  cd data/dashrecon/viewer/phase3 && python3 -m http.server 8000
+  cd data/dashrecon/viewer/review && python3 -m http.server 8000
   ```
   然后访问 http://localhost:8000。远程机器需先转发端口，例如 `ssh -L 8000:localhost:8000 <host>`。页面需要联网，才能从 CDN 加载 three.js r128 和字体。
-- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/phase3/index.html`，把 `config.js` 和 `scenes/*.js` 作为 supporting files，并传入上面的 URL，这样链接保持不变。
+- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
 
 网页的工作方式：
 - 模板 `dashrecon/viewer/index.html` 用 three.js 渲染点云、相机轨迹和视锥。
-- 场景列表、诊断数字和可视化参数都来自 `build_viewer.py` 生成的 `config.js`，页面里没有硬编码的数字。
-- 每个场景的点云在 `scenes/<id>.js` 中，点到该场景时才加载。点云是 30 万个点，坐标量化为 uint16、颜色为 uint8，都做了 base64 编码。
+- 场景列表、诊断数字、可视化参数和掩码统计都来自 `build_viewer.py` 生成的 `config.js`，页面里没有硬编码的数字。
+- 每个场景的数据按需加载：
+  - `scenes/<id>.js`：点云。30 万个点，坐标量化为 uint16，颜色和类别为 uint8，都做了 base64 编码。
+  - `scenes/<id>.masks.js`：掩码叠加缩略图和逐帧比例。
+- 3D 视图的交互：
+  - "Classes" 按类别给点着色。
+  - "Hide dynamic" 隐藏动态物体的点，用来预览 Phase 5 剔除动态像素后的效果。
+- 类别颜色取自 dataviz 参考调色板的 1–3 号色。用 `validate_palette.js` 在两种主题下做了全配对验证，均通过。
 
-### 13.5 产物位置（均不入 git）
+### 13.7 产物位置（均不入 git）
 
 | 产物 | 路径 |
 |---|---|
 | 预处理后的场景 | `data/waymo/processed/validation/<idx>/` |
 | Phase 3 数据（第 5 节约定） | `data/dashrecon/<scene_id>/pose-mapanything_depth-mapanything/` |
-| 每个场景的可视化 | 同一目录下的 `vis/`：`points_vis.ply`（可用 CloudCompare 或 MeshLab 打开）、`bev.png`、`viewer_data.js`、`vis_params.json` |
+| Phase 4 掩码（第 5 节约定，独立的 backend tag） | `data/dashrecon/<scene_id>/mask-gsam2_sky-segformer/`：`mask_{dynamic,sky,road}/`、`meta.json`（含逐帧比例） |
+| 点云可视化 | Phase 3 目录下的 `vis/`：`points_vis.ply`（可用 CloudCompare 或 MeshLab 打开）、`bev.png`、`viewer_data.js`、`vis_params.json` |
+| 掩码可视化 | Phase 4 目录下的 `vis/masks_view.js` |
 | Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
 | 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
-| 组装好的网页 | `data/dashrecon/viewer/phase3/` |
+| 组装好的网页 | `data/dashrecon/viewer/review/` |
 
 ---
 

@@ -1,10 +1,12 @@
 <!--
-  DashRecon Pose Review: static viewer for Phase 3 point clouds and trajectories.
+  DashRecon Pose Review: static viewer for Phase 3 point clouds / trajectories and Phase 4 masks.
   This is a template. Build a runnable copy with scripts/build_viewer.py, which writes next to it:
-    config.js          window.VIEWER_CONFIG (scene list, diagnostics, vis parameters)
-    scenes/<id>.js     window.SCENES[<id>] (from scripts/vis_pose.py viewer_data.js)
+    config.js              window.VIEWER_CONFIG (scene list, diagnostics, vis parameters, mask summary)
+    scenes/<id>.js         window.SCENES[<id>] (scripts/vis_pose.py viewer_data.js)
+    scenes/<id>.masks.js   window.MASKS[<id>]  (scripts/vis_masks.py masks_view.js; only with --mask_tag)
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
+  Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
 -->
 <title>DashRecon Pose Review</title>
 <meta charset="utf-8">
@@ -19,6 +21,7 @@
   --ink: #172026;
   --muted: #5a6872;
   --rule: #d5dde1;
+  --grid: #e6ebee;
   --accent: #0a7c83;
   --accent-ink: #ffffff;
   --canvas: #dfe5e8;
@@ -28,6 +31,10 @@
   --good-bg: #e3f2e9;
   --warn-bg: #f8ecd8;
   --bad-bg: #f8e1dc;
+  --c-sky: #2a78d6;
+  --c-dynamic: #eb6834;
+  --c-road: #1baf7a;
+  --c-other: #a3adb3;
   --display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
   --body: "Barlow", "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -40,6 +47,7 @@
     --ink: #e3eaee;
     --muted: #8fa0aa;
     --rule: #26323a;
+    --grid: #1f2a31;
     --accent: #3fc1c4;
     --accent-ink: #0b1417;
     --canvas: #0a0f12;
@@ -49,6 +57,10 @@
     --good-bg: #173326;
     --warn-bg: #3a2d14;
     --bad-bg: #3d1f1a;
+    --c-sky: #3987e5;
+    --c-dynamic: #d95926;
+    --c-road: #199e70;
+    --c-other: #4f5c64;
   }
 }
 :root[data-theme="dark"] {
@@ -58,6 +70,7 @@
   --ink: #e3eaee;
   --muted: #8fa0aa;
   --rule: #26323a;
+  --grid: #1f2a31;
   --accent: #3fc1c4;
   --accent-ink: #0b1417;
   --canvas: #0a0f12;
@@ -67,6 +80,10 @@
   --good-bg: #173326;
   --warn-bg: #3a2d14;
   --bad-bg: #3d1f1a;
+  --c-sky: #3987e5;
+  --c-dynamic: #d95926;
+  --c-road: #199e70;
+  --c-other: #4f5c64;
 }
 
 * { box-sizing: border-box; }
@@ -121,6 +138,7 @@ header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
 .slider input { width: 90px; accent-color: var(--accent); }
 .legend { position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 5px 10px; border-radius: 5px; max-width: calc(100% - 20px); }
 .legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; background: var(--accent); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-family: var(--display); font-size: 15px; letter-spacing: 0.04em; pointer-events: none; }
 
 .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
@@ -133,6 +151,8 @@ header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
 .chip.bad { color: var(--bad); background: var(--bad-bg); }
 
 section { display: grid; gap: 10px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.section-sub { color: var(--muted); font-size: 12.5px; font-family: var(--mono); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
 table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px; }
 th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -142,13 +162,29 @@ td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: 0; }
 thead tr.group th { border-bottom: 0; padding-bottom: 0; }
 td.sel { color: var(--accent); font-weight: 500; }
+tr.cur td:first-child { color: var(--accent); font-weight: 500; }
 .notes { color: var(--muted); font-size: 13.5px; max-width: 80ch; margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+
+.mask-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .mask-grid { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px; display: grid; gap: 8px; }
+.card img { width: 100%; max-width: 100%; height: auto; aspect-ratio: 3 / 2; display: block; border-radius: 4px; background: var(--canvas); }
+.scrub { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.scrub input { flex: 1; min-width: 0; accent-color: var(--accent); }
+.key { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }
+.chart-wrap { position: relative; }
+.chart-wrap svg { display: block; width: 100%; height: 250px; }
+.chart-wrap svg text { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.chart-wrap svg text.dl { fill: var(--ink); font-family: var(--body); font-size: 12.5px; }
+.tip { position: absolute; top: 0; left: 0; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 6px 9px; font-size: 12.5px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14); white-space: nowrap; display: grid; gap: 2px; }
+.tip .row { display: flex; gap: 12px; justify-content: space-between; align-items: center; }
+.tip .v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 </style>
 
 <div class="wrap">
   <header>
     <div>
-      <div class="eyebrow">DriveAnywhere · AGENTS.md Phase 3 · pose + pointmap</div>
+      <div class="eyebrow" id="eyebrow">DriveAnywhere · AGENTS.md Phase 3 pose + pointmap</div>
       <h1>DashRecon Pose Review</h1>
       <p class="lede" id="lede"></p>
     </div>
@@ -162,11 +198,14 @@ td.sel { color: var(--accent); font-weight: 500; }
         <button class="tool" id="view-chase" type="button">Driver view</button>
         <button class="tool" id="view-top" type="button">Top view</button>
         <button class="tool" id="toggle-cams" type="button" aria-pressed="true">Cameras</button>
+        <button class="tool" id="toggle-classes" type="button" aria-pressed="false" hidden>Classes</button>
+        <button class="tool" id="toggle-dynamic" type="button" aria-pressed="false" hidden>Hide dynamic</button>
         <label class="slider" for="pt-size">Point size <input id="pt-size" type="range" min="0.02" max="0.4" step="0.01" value="0.1"></label>
       </div>
       <div class="legend">
         <span><i></i>FRONT camera path</span>
         <span id="legend-frusta"></span>
+        <span id="legend-classes" hidden></span>
         <span class="mono">x forward · y left · z up</span>
       </div>
       <div class="status" id="status">Loading scene…</div>
@@ -174,6 +213,40 @@ td.sel { color: var(--accent); font-weight: 500; }
   </div>
 
   <div class="readout" id="readout" aria-live="polite"></div>
+
+  <section id="masks" hidden>
+    <div class="section-head">
+      <h2>Masks</h2>
+      <span class="section-sub" id="masks-sub"></span>
+    </div>
+    <div class="mask-grid">
+      <div class="card">
+        <img id="mask-img" alt="FRONT frame with dynamic, sky and road masks overlaid">
+        <div class="scrub">
+          <label for="mask-scrub" id="mask-frame-label" class="mono"></label>
+          <input id="mask-scrub" type="range" min="0" max="0" step="1" value="0">
+        </div>
+        <div class="key" id="mask-key"></div>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Share of pixels masked, every frame</div>
+        <div class="chart-wrap" id="chart-wrap">
+          <svg id="chart" role="img" aria-label="Share of pixels masked per frame for dynamic objects, sky and road"></svg>
+          <div class="tip" id="tip" hidden></div>
+        </div>
+        <div class="key" id="chart-key"></div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr class="group"><th></th><th colspan="2">dynamic objects</th><th colspan="2">sky</th><th colspan="2">road</th><th colspan="3">per frame</th></tr>
+          <tr><th>scene</th><th>mean</th><th>max</th><th>mean</th><th>max</th><th>mean</th><th>max</th><th>detections</th><th>time</th><th>peak VRAM</th></tr>
+        </thead>
+        <tbody id="mask-table"></tbody>
+      </table>
+    </div>
+  </section>
 
   <section>
     <h2 id="cmp-title">Run comparison, all scenes</h2>
@@ -195,24 +268,33 @@ const CFG = window.VIEWER_CONFIG;
 const DIAG = CFG.diagnostics;
 const RUNS = DIAG.runs;
 const PRIMARY = DIAG.primary;
+const MASKS = CFG.masks;
 const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
+const KINDS = ["sky", "dynamic", "road"];  // categorical slots 1-3, fixed order
+const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road" };
 const SCENES_META = CFG.scenes.map(s => ({ ...s, diag: DIAG.scenes.find(d => d.scene_id === s.id) }));
 SCENES_META.forEach(s => { if (!s.diag) throw new Error(`no diagnostics for ${s.id}`); });
 
 const fmtRange = (xs, digits) => `${Math.min(...xs).toFixed(digits)}–${Math.max(...xs).toFixed(digits)}`;
 const ordinal = n => n === 1 ? "every frame" : `every ${n}${[, "st", "nd", "rd"][n % 10 > 3 || Math.floor(n / 10) === 1 ? 0 : n % 10] || "th"} frame`;
+const pct = x => `${(100 * x).toFixed(1)}%`;
 const prim = s => s.diag.runs[PRIMARY];
+const swatch = k => `<span><span class="sw" style="background: var(--c-${k})"></span>${KIND_LABEL[k]}</span>`;
 
 // ---------- header ----------
 const vis = CFG.vis;
 const p0 = prim(SCENES_META[0]);
+if (MASKS) document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap · Phase 4 masks";
 document.getElementById("lede").textContent =
   `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
   `no calibration, LiDAR, GT poses or boxes. Each cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
-  `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).`;
+  `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).` +
+  (MASKS ? " Dynamic-object, sky and road masks come from text-prompted detection and semantic segmentation of the same frames." : "");
 document.getElementById("pipeline").innerHTML =
   [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
 document.getElementById("legend-frusta").textContent = `frusta ${ordinal(5 * vis.frame_stride)}`;
+document.getElementById("legend-classes").innerHTML = ["road", "dynamic", "sky"].map(swatch).join(" ") +
+  `<span><span class="sw" style="background: var(--c-other)"></span>Other</span>`;
 
 // ---------- comparison table ----------
 const grade = {
@@ -239,6 +321,26 @@ document.getElementById("notes").innerHTML = [
   `The viewer shows the ${PRIMARY} run. Each run is one MapAnything call over all frames of a segment.`,
 ].map(t => `<li>${t}</li>`).join("");
 
+// ---------- mask summary table ----------
+if (MASKS) {
+  const d = MASKS.dynamic, sem = MASKS.semantic;
+  document.getElementById("masks").hidden = false;
+  document.getElementById("masks-sub").textContent =
+    `${d.detector_id} → ${d.sam_id} · box ≥ ${d.box_threshold} · dilate ${d.dilate_px} px · ${sem.model_id.replace("nvidia/", "")} @ ${sem.input_hw[1]}×${sem.input_hw[0]}`;
+  document.getElementById("mask-key").innerHTML = KINDS.map(swatch).join("") + "<span>overlay at 50% opacity</span>";
+  document.getElementById("chart-key").innerHTML = KINDS.map(swatch).join("") + "<span>dashed line: frame shown on the left</span>";
+}
+function renderMaskTable(currentId) {
+  if (!MASKS) return;
+  document.getElementById("mask-table").innerHTML = SCENES_META.map(s => {
+    const m = MASKS.scenes[s.id], sm = m.summary;
+    return `<tr class="${s.id === currentId ? "cur" : ""}"><td>${s.id}</td>
+      <td>${pct(sm.dynamic.mean)}</td><td>${pct(sm.dynamic.max)}</td><td>${pct(sm.sky.mean)}</td><td>${pct(sm.sky.max)}</td>
+      <td>${pct(sm.road.mean)}</td><td>${pct(sm.road.max)}</td><td>${sm.num_boxes_mean.toFixed(1)}</td>
+      <td>${m.seconds_per_frame.toFixed(2)} s</td><td>${m.peak_vram_gb.toFixed(1)} GB</td></tr>`;
+  }).join("");
+}
+
 // ---------- scene rail ----------
 const rail = document.getElementById("rail");
 SCENES_META.forEach(s => {
@@ -259,6 +361,10 @@ function renderReadout(s) {
     { k: "Trajectory jitter", v: r.path_over_chord.toFixed(2), sub: `path / chord · GT is ${s.diag.gt.path_over_chord.toFixed(2)}`, g: grade.jitter(r.path_over_chord) },
     { k: "Inference", v: `${r.runtime_s.toFixed(0)} s`, sub: `one call, all frames · peak ${r.peak_vram_gb.toFixed(1)} GB`, g: null },
   ];
+  if (MASKS) {
+    const sm = MASKS.scenes[s.id].summary;
+    cards.push({ k: "Dynamic pixels", v: pct(sm.dynamic.mean), sub: `mean per frame · max ${pct(sm.dynamic.max)} · ${sm.num_boxes_mean.toFixed(1)} detections/frame`, g: null });
+  }
   document.getElementById("readout").innerHTML = cards.map(c => `
     <div class="metric"><span class="eyebrow">${c.k}</span><span class="val">${c.v}</span>
     ${c.g ? `<span class="chip ${c.g}">${label[c.g]}${c.note ? " · " + c.note : ""}</span>` : ""}
@@ -279,15 +385,31 @@ controls.enableDamping = false;
 controls.addEventListener("change", render);
 
 let current = null;
-let showCams = true;
+let currentId = null;
+let showCams = true, classMode = false, hideDynamic = false;
 const loaded = {};
 
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function rgbBytes(hex) { const c = new THREE.Color(hex); return [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)]; }
+
+function applyPointColors(s) {
+  const attr = s.points.geometry.getAttribute("color");
+  if (classMode && s.lab) {
+    const byLabel = s.labelNames.map(n => rgbBytes(cssVar(`--c-${n}`)));
+    for (let i = 0; i < s.n; i++) { const c = byLabel[s.lab[i]]; attr.array[3 * i] = c[0]; attr.array[3 * i + 1] = c[1]; attr.array[3 * i + 2] = c[2]; }
+  } else {
+    attr.array.set(s.photoCol);
+  }
+  attr.needsUpdate = true;
+  s.points.geometry.setDrawRange(0, hideDynamic && s.lab ? s.nKeep : s.n);
+}
+
 function applyTheme() {
   renderer.setClearColor(new THREE.Color(cssVar("--canvas")));
   if (current) {
     current.path.material.color.set(cssVar("--accent"));
     current.frusta.material.color.set(cssVar("--muted"));
+    applyPointColors(current);
   }
   render();
 }
@@ -316,13 +438,24 @@ function buildScene(d) {
   const group = new THREE.Group();
   const q = new Uint16Array(b64bytes(d.pos).buffer);
   const col = b64bytes(d.col);
-  const pos = new Float32Array(d.n * 3);
-  for (let i = 0; i < d.n; i++) {
-    for (let a = 0; a < 3; a++) pos[3 * i + a] = d.lo[a] + (q[3 * i + a] / 65535) * (d.hi[a] - d.lo[a]);
-  }
+  const lab = d.lab ? b64bytes(d.lab) : null;
+  // dynamic points go last so "Hide dynamic" is a draw range
+  const dynCode = d.label_names.indexOf("dynamic");
+  const order = [];
+  if (lab) { for (let i = 0; i < d.n; i++) if (lab[i] !== dynCode) order.push(i); }
+  const nKeep = lab ? order.length : d.n;
+  if (lab) { for (let i = 0; i < d.n; i++) if (lab[i] === dynCode) order.push(i); } else { for (let i = 0; i < d.n; i++) order.push(i); }
+  const pos = new Float32Array(d.n * 3), photoCol = new Uint8Array(d.n * 3), labOut = lab ? new Uint8Array(d.n) : null;
+  order.forEach((src, i) => {
+    for (let a = 0; a < 3; a++) {
+      pos[3 * i + a] = d.lo[a] + (q[3 * src + a] / 65535) * (d.hi[a] - d.lo[a]);
+      photoCol[3 * i + a] = col[3 * src + a];
+    }
+    if (lab) labOut[i] = lab[src];
+  });
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  g.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+  g.setAttribute("color", new THREE.BufferAttribute(photoCol.slice(), 3, true));
   const points = new THREE.Points(g, new THREE.PointsMaterial({ size: parseFloat(document.getElementById("pt-size").value), vertexColors: true, sizeAttenuation: true }));
   group.add(points);
 
@@ -348,7 +481,7 @@ function buildScene(d) {
   group.add(frusta);
 
   const box = new THREE.Box3().setFromBufferAttribute(g.getAttribute("position"));
-  return { group, points, path, frusta, centers, cams: d.cams, box };
+  return { group, points, path, frusta, centers, cams: d.cams, box, n: d.n, nKeep, photoCol, lab: labOut, labelNames: d.label_names };
 }
 
 function driverView() {
@@ -380,21 +513,43 @@ function show(id) {
   current.frusta.visible = showCams;
   current.path.material.color.set(cssVar("--accent"));
   current.frusta.material.color.set(cssVar("--muted"));
+  const hasLab = Boolean(current.lab);
+  document.getElementById("toggle-classes").hidden = !hasLab;
+  document.getElementById("toggle-dynamic").hidden = !hasLab;
+  document.getElementById("legend-classes").hidden = !(hasLab && classMode);
+  applyPointColors(current);
   statusEl.hidden = true;
   driverView();
 }
 
-function selectScene(id) {
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = src; tag.onload = resolve; tag.onerror = () => reject(new Error(`Could not load ${src}. Rebuild with scripts/build_viewer.py.`));
+    document.body.appendChild(tag);
+  });
+}
+
+async function selectScene(id) {
+  currentId = id;
   document.querySelectorAll(".scene-btn").forEach(b => b.setAttribute("aria-pressed", String(b.id === "scene-" + id)));
   renderReadout(SCENES_META.find(s => s.id === id));
-  if (window.SCENES && window.SCENES[id]) { show(id); return; }
+  renderMaskTable(id);
   statusEl.hidden = false;
   statusEl.textContent = `Loading ${id}…`;
-  const tag = document.createElement("script");
-  tag.src = `scenes/${id}.js`;
-  tag.onload = () => show(id);
-  tag.onerror = () => { statusEl.textContent = `Could not load scenes/${id}.js. Rebuild with scripts/build_viewer.py.`; };
-  document.body.appendChild(tag);
+  try {
+    if (!(window.SCENES && window.SCENES[id])) await loadScript(`scenes/${id}.js`);
+    if (currentId !== id) return;
+    show(id);
+    if (MASKS) {
+      if (!(window.MASKS && window.MASKS[id])) await loadScript(`scenes/${id}.masks.js`);
+      if (currentId !== id) return;
+      showMasks(id);
+    }
+  } catch (err) {
+    statusEl.hidden = false;
+    statusEl.textContent = err.message;
+  }
 }
 
 document.getElementById("view-chase").addEventListener("click", driverView);
@@ -405,11 +560,133 @@ document.getElementById("toggle-cams").addEventListener("click", e => {
   if (current) current.frusta.visible = showCams;
   render();
 });
+document.getElementById("toggle-classes").addEventListener("click", e => {
+  classMode = !classMode;
+  e.currentTarget.setAttribute("aria-pressed", String(classMode));
+  document.getElementById("legend-classes").hidden = !classMode;
+  if (current) applyPointColors(current);
+  render();
+});
+document.getElementById("toggle-dynamic").addEventListener("click", e => {
+  hideDynamic = !hideDynamic;
+  e.currentTarget.setAttribute("aria-pressed", String(hideDynamic));
+  if (current) applyPointColors(current);
+  render();
+});
 document.getElementById("pt-size").addEventListener("input", e => {
   const v = parseFloat(e.target.value);
   Object.values(loaded).forEach(s => { s.points.material.size = v; });
   render();
 });
+
+// ---------- masks panel ----------
+const scrub = document.getElementById("mask-scrub");
+const chartWrap = document.getElementById("chart-wrap");
+const svg = document.getElementById("chart");
+const tip = document.getElementById("tip");
+let maskData = null;
+
+function showMasks(id) {
+  maskData = window.MASKS[id];
+  scrub.max = String(maskData.thumbs.length - 1);
+  scrub.value = String(Math.floor((maskData.thumbs.length - 1) / 2));
+  setThumb(parseInt(scrub.value, 10));
+}
+function setThumb(i) {
+  const frame = maskData.thumb_frames[i];
+  document.getElementById("mask-img").src = maskData.thumbs[i];
+  document.getElementById("mask-frame-label").textContent = `frame ${String(frame).padStart(3, "0")} / ${maskData.frames[maskData.frames.length - 1]}`;
+  drawChart(frame);
+}
+scrub.addEventListener("input", () => setThumb(parseInt(scrub.value, 10)));
+
+const NS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const e = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  parent.appendChild(e);
+  return e;
+}
+let chartGeom = null;
+function drawChart(markerFrame) {
+  if (!maskData) return;
+  const W = chartWrap.clientWidth, H = 250;
+  const m = { l: 40, r: 128, t: 10, b: 24 };
+  const frames = maskData.frames;
+  const f0 = frames[0], f1 = frames[frames.length - 1];
+  const x = f => m.l + (f - f0) / Math.max(f1 - f0, 1) * (W - m.l - m.r);
+  const y = v => m.t + (1 - v) * (H - m.t - m.b);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), style: "stroke: var(--grid)", "stroke-width": 1 }, svg);
+    el("text", { x: m.l - 6, y: y(v) + 4, "text-anchor": "end" }, svg).textContent = `${v * 100}%`;
+  }
+  const step = f1 - f0 > 120 ? 50 : 25;
+  for (let f = Math.ceil(f0 / step) * step; f <= f1; f += step) {
+    el("text", { x: x(f), y: H - 6, "text-anchor": "middle" }, svg).textContent = f;
+  }
+  el("line", { x1: x(markerFrame), x2: x(markerFrame), y1: m.t, y2: H - m.b, style: "stroke: var(--muted)", "stroke-width": 1, "stroke-dasharray": "3 3" }, svg);
+  const ends = [];
+  for (const k of KINDS) {
+    const vals = maskData.ratio[k];
+    const d = vals.map((v, i) => `${i ? "L" : "M"}${x(frames[i]).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    el("path", { d, fill: "none", style: `stroke: var(--c-${k})`, "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+    ends.push({ k, y: y(vals[vals.length - 1]) });
+  }
+  // direct labels at the right end, spread apart so they never collide
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 15);
+  const overflow = ends[ends.length - 1].y - (H - m.b);
+  if (overflow > 0) ends.forEach(e => { e.y -= overflow; });
+  for (const e of ends) {
+    el("rect", { x: W - m.r + 8, y: e.y - 5, width: 10, height: 10, rx: 2, style: `fill: var(--c-${e.k})` }, svg);
+    el("text", { x: W - m.r + 23, y: e.y + 4, class: "dl" }, svg).textContent = KIND_LABEL[e.k];
+  }
+  const hover = el("g", {}, svg);
+  el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent", style: "cursor: crosshair" }, svg);
+  chartGeom = { W, H, m, x, y, f0, f1, hover };
+}
+function nearestIndex(frame) {
+  const frames = maskData.frames;
+  let best = 0;
+  for (let i = 1; i < frames.length; i++) if (Math.abs(frames[i] - frame) < Math.abs(frames[best] - frame)) best = i;
+  return best;
+}
+function frameAtEvent(ev) {
+  const r = svg.getBoundingClientRect();
+  const { m, W, f0, f1 } = chartGeom;
+  const px = (ev.clientX - r.left) * (W / r.width);
+  return f0 + (px - m.l) / (W - m.l - m.r) * (f1 - f0);
+}
+svg.addEventListener("pointermove", ev => {
+  if (!chartGeom) return;
+  const i = nearestIndex(frameAtEvent(ev));
+  const frame = maskData.frames[i];
+  const { x, y, m, H, hover } = chartGeom;
+  hover.replaceChildren();
+  el("line", { x1: x(frame), x2: x(frame), y1: m.t, y2: H - m.b, style: "stroke: var(--ink)", "stroke-width": 1, opacity: 0.35 }, hover);
+  for (const k of KINDS) {
+    el("circle", { cx: x(frame), cy: y(maskData.ratio[k][i]), r: 4.5, style: `fill: var(--c-${k}); stroke: var(--surface)`, "stroke-width": 2 }, hover);
+  }
+  tip.innerHTML = `<div class="row"><span class="mono">frame ${frame}</span><span class="v">${maskData.boxes[i]} det.</span></div>` +
+    KINDS.map(k => `<div class="row"><span><span class="sw" style="background: var(--c-${k})"></span>${KIND_LABEL[k]}</span><span class="v">${pct(maskData.ratio[k][i])}</span></div>`).join("");
+  tip.hidden = false;
+  const r = svg.getBoundingClientRect();
+  const left = (x(frame) / chartGeom.W) * r.width;
+  const tw = tip.offsetWidth;
+  tip.style.transform = `translate(${Math.min(Math.max(left + 12, 0), r.width - tw)}px, 8px)`;
+});
+svg.addEventListener("pointerleave", () => { tip.hidden = true; if (chartGeom) chartGeom.hover.replaceChildren(); });
+svg.addEventListener("click", ev => {
+  if (!chartGeom) return;
+  const frame = frameAtEvent(ev);
+  let best = 0;
+  maskData.thumb_frames.forEach((f, i) => { if (Math.abs(f - frame) < Math.abs(maskData.thumb_frames[best] - frame)) best = i; });
+  scrub.value = String(best);
+  setThumb(best);
+});
+new ResizeObserver(() => { if (maskData) drawChart(maskData.thumb_frames[parseInt(scrub.value, 10)]); }).observe(chartWrap);
 
 applyTheme();
 resize();

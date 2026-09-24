@@ -4,7 +4,7 @@ Reads only the section-5 products of one scene (via ``dashrecon.io``) plus the F
 colour. Outputs go to ``<scene_dir>/vis/`` and are not part of the data contract:
     points_vis.ply   subsampled coloured point cloud (world frame of poses_c2w.npy)
     bev.png          top-down orthographic view with the camera trajectory in red
-    viewer_data.js   compact point cloud + cameras for the HTML viewer
+    viewer_data.js   compact point cloud + cameras (+ per-point class labels with --mask_dir) for the viewer
 
 Example:
     .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id val056 \
@@ -68,8 +68,19 @@ def render_bev(xyz: np.ndarray, rgb: np.ndarray, cam_xyz: np.ndarray, size: int)
     return img
 
 
-def viewer_payload(scene_id: str, xyz: np.ndarray, rgb: np.ndarray, poses: np.ndarray, k: np.ndarray,
-                   image_hw: list[int], meta: dict) -> str:
+LABEL_NAMES = ("other", "road", "dynamic", "sky")
+
+
+def point_labels(mask_dir: str, t: int, grid: dict) -> np.ndarray:
+    """Per-pixel class codes on the depth grid (index into LABEL_NAMES); dynamic overrides sky and road."""
+    lab = np.zeros(grid["depth_hw"], dtype=np.uint8)
+    for kind in ("road", "sky", "dynamic"):
+        lab[io.mask_to_depth_grid(io.read_mask(mask_dir, kind, t), grid)] = LABEL_NAMES.index(kind)
+    return lab
+
+
+def viewer_payload(scene_id: str, xyz: np.ndarray, rgb: np.ndarray, labels: np.ndarray | None, poses: np.ndarray,
+                   k: np.ndarray, image_hw: list[int], meta: dict) -> str:
     """JS snippet registering the scene for the HTML viewer (uint16-quantised positions, base64)."""
     lo, hi = xyz.min(0), xyz.max(0)
     q = np.round((xyz - lo) / np.maximum(hi - lo, 1e-6) * 65535).astype("<u2")
@@ -80,6 +91,8 @@ def viewer_payload(scene_id: str, xyz: np.ndarray, rgb: np.ndarray, poses: np.nd
         "hi": hi.tolist(),
         "pos": base64.b64encode(q.tobytes()).decode("ascii"),
         "col": base64.b64encode(rgb.astype(np.uint8).tobytes()).decode("ascii"),
+        "lab": None if labels is None else base64.b64encode(labels.astype(np.uint8).tobytes()).decode("ascii"),
+        "label_names": list(LABEL_NAMES),
         "cams": [np.round(p, 5).tolist() for p in poses],
         "fx": float(k[0, 0]), "fy": float(k[1, 1]), "w": image_hw[1], "h": image_hw[0],
         "stats": {
@@ -103,6 +116,7 @@ def main() -> None:
     parser.add_argument("--max_depth", type=float, required=True)
     parser.add_argument("--max_points", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--mask_dir", default=None, help="Phase 4 mask dir; adds per-point class labels")
     args = parser.parse_args()
 
     scene = get_scene(args.scene_id)
@@ -118,7 +132,7 @@ def main() -> None:
     confs = np.concatenate([io.read_depth_conf(args.scene_dir, int(frames[i]))[io.read_depth(args.scene_dir, int(frames[i])) > 0] for i in sel])
     conf_thr = float(np.percentile(confs, args.conf_percentile))
 
-    all_xyz, all_rgb = [], []
+    all_xyz, all_rgb, all_lab = [], [], []
     for i in sel:
         t = int(frames[i])
         depth = io.read_depth(args.scene_dir, t)
@@ -127,18 +141,21 @@ def main() -> None:
         rgb = image_on_depth_grid(os.path.join(img_dir, f"{t:03d}_{FRONT_CAM_ID}.jpg"), grid)
         all_xyz.append(backproject(depth, k_depth[i], poses[i], mask))
         all_rgb.append(rgb[mask])
+        if args.mask_dir is not None:
+            all_lab.append(point_labels(args.mask_dir, t, grid)[mask])
     xyz = np.concatenate(all_xyz).astype(np.float32)
     rgb = np.concatenate(all_rgb).astype(np.uint8)
     rng = np.random.default_rng(args.seed)
     keep = rng.choice(len(xyz), size=min(args.max_points, len(xyz)), replace=False)
     xyz, rgb = xyz[keep], rgb[keep]
+    labels = np.concatenate(all_lab)[keep] if args.mask_dir is not None else None
 
     out_dir = os.path.join(args.scene_dir, "vis")
     io.write_ply(os.path.join(out_dir, "points_vis.ply"), xyz, rgb)
     render_bev(xyz, rgb, poses[:, :3, 3], size=1400).save(os.path.join(out_dir, "bev.png"))
     k_mean = k_img.mean(axis=0) if k_img.ndim == 3 else k_img
     with open(os.path.join(out_dir, "viewer_data.js"), "w") as f:
-        f.write(viewer_payload(args.scene_id, xyz, rgb, poses[:: args.frame_stride], k_mean, grid["image_hw"], meta))
+        f.write(viewer_payload(args.scene_id, xyz, rgb, labels, poses[:: args.frame_stride], k_mean, grid["image_hw"], meta))
     with open(os.path.join(out_dir, "vis_params.json"), "w") as f:
         json.dump({**vars(args), "conf_threshold": conf_thr, "num_points": int(len(xyz)), "dashrecon_commit": git_commit()}, f, indent=2)
     print(f"[vis_pose] {args.scene_id}: {len(xyz)} points (conf >= {conf_thr:.3f}) -> {out_dir}", flush=True)

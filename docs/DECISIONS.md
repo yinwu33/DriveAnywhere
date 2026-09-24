@@ -192,3 +192,31 @@ D3 的具体影响：
 - 网页模板在 `dashrecon/viewer/index.html`，由 `scripts/build_viewer.py` 组装到 `data/dashrecon/viewer/phase3/`。
 - `meta.json` 中的 `dashrecon_commit` 由 `dashrecon/provenance.py` 生成：代码目录有未提交改动时加 `-dirty` 后缀。
 - 第一批 Phase 3 结果记录的是 `e59bda4`，但当时代码尚未提交；已从提交 `3d0e64e` 按 §13 的命令全部重跑。
+
+---
+
+## G. Phase 4 执行记录（2026-09-24）
+
+**实现方式**
+- Grounded-SAM-2（D5）没有用 IDEA-Research 仓库的脚本，而是用 Hugging Face `transformers` 5.17.0 里的 Grounding DINO 与 SAM 2.1，checkpoint 相同：`IDEA-Research/grounding-dino-base` 和 `facebook/sam2.1-hiera-large`。天空和路面分割（D6）在同一个 venv（`.venvs/masks`）里完成，这样一个库就覆盖了三个模型。
+- `facebook/sam2.1-hiera-large` 是 `sam2_video` 类型的 checkpoint，加载进 `Sam2Model` 时 transformers 会给出类型警告。实测 `missing_keys`、`unexpected_keys`、`mismatched_keys` 都为 0，这个警告可以忽略。
+- 逐帧独立处理，没有做视频跟踪。先做最简单的版本，漏检造成的帧间闪烁留待 Phase 5 的点云评估来判断影响。transformers 里有 `sam2_video`，需要时可以接入。
+
+**参数**
+- 检测分辨率用 Grounding DINO processor 的默认值（短边 800，即 800×1200）。在 1280×1920 全分辨率下，val041 和 val087 的检测数都降为 0。
+- 框阈值 `box_threshold` 取 0.25（官方默认 0.35）。在 val041 第 100 帧，阈值 0.3 检出 9 个框，0.25 检出 14 个。漏掉一辆运动车辆会在重建里留下拖影，而多检只会多丢一些静态像素，所以偏向召回。`text_threshold` 取 0.25。
+- 文本提示为 car、truck、bus、motorcycle、bicycle、person（AGENTS §3）。掩码膨胀 5 px，结构元素为圆盘。
+- 天空取 Cityscapes 类 10，路面取类 0，加载时会对照模型 config 断言类别 id。输入尺寸取 1024×1536：processor 默认的 1024×1024 会把 3:2 的画面压扁。
+- 掩码按原图分辨率（1920×1280）保存。Phase 5 用 `dashrecon.io.mask_to_depth_grid` 把掩码映射到深度网格，方法是最近邻缩放加裁剪，与 MapAnything 的预处理一致。
+
+**目录约定**（对 AGENTS §5 的补充）
+- 掩码与位姿后端无关，所以单独放在一个 backend tag 目录：`data/dashrecon/<scene_id>/mask-gsam2_sky-segformer/`。目录里有自己的 `frames.txt` 和 `meta.json`（逐帧掩掉的像素比例和检测框数也记在这里）。
+- Phase 5 同时读取位姿目录和掩码目录。
+
+**环境**
+- `envs/setup_masks.sh`：torch 2.6.0 cu124。transformers 5.x 在 torch < 2.6 时拒绝用 `torch.load` 读取 `.bin` 权重（CVE-2025-32434），SegFormer 的权重正好是 `.bin`。
+
+**已知局限**（Phase 5 评估后再定是否处理）
+- 文本分割会把停着的车也掩掉，行为接近 GT 的 `all` 模式，见 OPEN_QUESTIONS 5。
+- 远处的小车仍有漏检。
+- 逐帧处理，没有利用时间上的一致性。
