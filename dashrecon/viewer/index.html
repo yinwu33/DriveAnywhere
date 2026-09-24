@@ -7,6 +7,7 @@
     scenes/<id>.masks.js   window.MASKS[<id>]  (scripts/vis_masks.py masks_view.js; only with --mask_tag)
     scenes/<id>.fusion.js  window.FUSION[<id>] (scripts/vis_fusion.py fusion_view.js; only with --fusion)
     scenes/<id>.mesh.js    window.MESH[<id>]   (scripts/vis_mesh.py mesh_view.js; only with --mesh)
+    training/<scene>_<t>.jpg  Phase 6 comparison sheets (scripts/vis_training.py; only with --training_dir)
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
   Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
@@ -194,6 +195,15 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
 .funnel-wrap svg text.num { font-family: var(--mono); font-size: 11.5px; fill: var(--muted); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .stats .metric { border: 0; padding: 0; background: none; }
+.sheet { position: relative; }
+.sheet img { display: block; width: 100%; height: auto; border-radius: 4px; background: var(--canvas); }
+.sheet-cols { display: grid; gap: 0; margin-bottom: 4px; }
+.sheet-cols span { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--muted); text-align: center; }
+.sheet-label { position: absolute; display: grid; place-items: center; text-align: center; padding: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
+.sheet-label.on-image { place-items: start; }
+.sheet-label.on-image span { background: color-mix(in srgb, var(--surface) 85%, transparent); color: var(--ink); border-radius: 4px; padding: 2px 6px; }
+td.best { font-weight: 600; color: var(--ink); }
+tr.mean td { border-top: 2px solid var(--rule); }
 </style>
 
 <div class="wrap">
@@ -319,6 +329,31 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
     <ul class="notes" id="surface-notes"></ul>
   </section>
 
+  <section id="training" hidden>
+    <div class="section-head">
+      <h2>Gaussian splatting</h2>
+      <span class="section-sub" id="training-sub"></span>
+    </div>
+    <div class="card">
+      <div class="toolbar-inline" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+        <span class="eyebrow">Frame</span>
+        <div class="seg" id="train-frames" role="group" aria-label="Frame"></div>
+        <span class="section-sub" id="train-frame-note"></span>
+      </div>
+      <div class="sheet-cols" id="sheet-cols"></div>
+      <div class="sheet" id="sheet">
+        <img id="sheet-img" alt="Ground truth and E3, E4, E5 renders at lateral offsets">
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead id="train-head"></thead>
+        <tbody id="train-table"></tbody>
+      </table>
+    </div>
+    <ul class="notes" id="train-notes"></ul>
+  </section>
+
   <section>
     <h2 id="cmp-title">Run comparison, all scenes</h2>
     <div class="table-wrap">
@@ -342,6 +377,7 @@ const PRIMARY = DIAG.primary;
 const MASKS = CFG.masks;
 const FUSION = CFG.fusion;
 const MESH = CFG.mesh;
+const TRAIN = CFG.training;
 const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
 const KINDS = ["sky", "dynamic", "road"];  // categorical slots 1-3, fixed order
 const KIND_LABEL = { sky: "Sky", dynamic: "Dynamic objects", road: "Road", other: "Other" };
@@ -359,7 +395,7 @@ const swatch = k => `<span><span class="sw" style="background: var(--c-${k})"></
 const vis = CFG.vis;
 const p0 = prim(SCENES_META[0]);
 document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap" +
-  (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "") + (MESH ? " · Phase 7 mesh" : "");
+  (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "") + (MESH ? " · Phase 7 mesh" : "") + (TRAIN ? " · Phase 6 3DGS" : "");
 document.getElementById("lede").textContent =
   `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
   `no calibration, LiDAR, GT poses or boxes. The raw cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
@@ -466,6 +502,61 @@ function renderSurfaceTable(currentId) {
       <td>${st.boundary_edges.toLocaleString("en-US")}</td><td>${st.boundary_length.toFixed(0)}</td>
       <td>${m.runtime_s.toFixed(0)} s</td><td>${m.peak_vram_gb.toFixed(1)} GB</td></tr>`;
   }).join("");
+}
+
+// ---------- training section ----------
+let trainFrame = 0;
+if (TRAIN) {
+  document.getElementById("training").hidden = false;
+  document.getElementById("training-sub").textContent =
+    `drivestudio static background · FRONT only · ${TRAIN.exps.join(" / ")} · offsets ${TRAIN.offsets.map(o => o === 0 ? "0" : "+" + o).join(", ")} estimated m`;
+  const cols = ["Ground truth", ...TRAIN.exps];
+  const colsEl = document.getElementById("sheet-cols");
+  colsEl.style.gridTemplateColumns = `repeat(${cols.length}, 1fr)`;
+  colsEl.innerHTML = cols.map(c => `<span>${c}</span>`).join("");
+  const seg = document.getElementById("train-frames");
+  seg.innerHTML = TRAIN.frames.map((f, i) => `<button class="tool" type="button" id="train-frame-${i}" aria-pressed="${i === 0}">${String(f).padStart(3, "0")}</button>`).join("");
+  TRAIN.frames.forEach((f, i) => document.getElementById(`train-frame-${i}`).addEventListener("click", () => { trainFrame = i; renderTraining(currentId); }));
+  document.getElementById("train-frame-note").textContent = "held-out frames (every 10th is excluded from training)";
+  const m = ["PSNR", "SSIM", "LPIPS"];
+  document.getElementById("train-head").innerHTML =
+    `<tr class="group"><th></th>${TRAIN.exps.map(e => `<th colspan="3">${e}</th>`).join("")}<th colspan="${TRAIN.exps.length}">training time</th></tr>` +
+    `<tr><th>scene</th>${TRAIN.exps.map(() => m.map(x => `<th>${x}</th>`).join("")).join("")}${TRAIN.exps.map(e => `<th>${e}</th>`).join("")}</tr>`;
+  document.getElementById("train-notes").innerHTML = [
+    "Metrics are drivestudio's held-out-frame metrics over the full image (every 10th FRONT frame, 19–20 per scene). Bold marks the best experiment per scene; PSNR and SSIM higher is better, LPIPS lower.",
+    "Held-out frames use MapAnything poses without pose refinement (CamPose only refines training frames), so these numbers include pose error. They are not the Phase 1 evaluation protocol.",
+    "Rows below the first are lateral shifts along the camera's right axis with no ground truth. Metres are MapAnything's metric estimate, which the diagnostics above put at 0.4–0.7 of true scale.",
+    "Parked and moving vehicles are masked out of every loss, so they are not reconstructed and render as blur (OPEN_QUESTIONS 18).",
+  ].map(x => `<li>${x}</li>`).join("");
+}
+function renderTraining(id) {
+  if (!TRAIN) return;
+  TRAIN.frames.forEach((f, i) => document.getElementById(`train-frame-${i}`).setAttribute("aria-pressed", String(i === trainFrame)));
+  const sc = TRAIN.scenes[id];
+  document.getElementById("sheet-img").src = `training/${sc.sheets[trainFrame]}`;
+  const sheet = document.getElementById("sheet");
+  sheet.querySelectorAll(".sheet-label").forEach(e => e.remove());
+  const nc = 1 + TRAIN.exps.length, nr = TRAIN.offsets.length;
+  TRAIN.offsets.forEach((o, r) => {
+    const d = document.createElement("div");
+    d.className = "sheet-label" + (r === 0 ? " on-image" : "");
+    d.style.left = "0"; d.style.top = `${100 * r / nr}%`; d.style.width = `${100 / nc}%`; d.style.height = `${100 / nr}%`;
+    d.innerHTML = r === 0 ? `<span>held-out frame · offset 0</span>` : `<span>shifted +${o} m right<br>no ground truth</span>`;
+    sheet.appendChild(d);
+  });
+  const rows = SCENES_META.map(s => {
+    const runs = TRAIN.scenes[s.id].runs;
+    const best = { psnr: Math.max(...TRAIN.exps.map(e => runs[e].test.psnr)), ssim: Math.max(...TRAIN.exps.map(e => runs[e].test.ssim)), lpips: Math.min(...TRAIN.exps.map(e => runs[e].test.lpips)) };
+    const cells = TRAIN.exps.map(e => {
+      const t = runs[e].test;
+      return `<td class="${t.psnr === best.psnr ? "best" : ""}">${t.psnr.toFixed(2)}</td><td class="${t.ssim === best.ssim ? "best" : ""}">${t.ssim.toFixed(3)}</td><td class="${t.lpips === best.lpips ? "best" : ""}">${t.lpips.toFixed(3)}</td>`;
+    }).join("");
+    const times = TRAIN.exps.map(e => `<td>${runs[e].runtime_min.toFixed(0)} min</td>`).join("");
+    return `<tr class="${s.id === id ? "cur" : ""}"><td>${s.id}</td>${cells}${times}</tr>`;
+  });
+  const mean = (e, k) => SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].test[k], 0) / SCENES_META.length;
+  const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(e => `<td>${mean(e, "psnr").toFixed(2)}</td><td>${mean(e, "ssim").toFixed(3)}</td><td>${mean(e, "lpips").toFixed(3)}</td>`).join("")}${TRAIN.exps.map(e => `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>`).join("")}</tr>`;
+  document.getElementById("train-table").innerHTML = rows.join("") + meanRow;
 }
 
 // ---------- scene rail ----------
@@ -779,6 +870,7 @@ async function selectScene(id) {
     driverView();
     if (FUSION) drawFunnel(id);
     renderSurfaceTable(id);
+    renderTraining(id);
     if (MASKS) {
       if (!(window.MASKS && window.MASKS[id])) await loadScript(`scenes/${id}.masks.js`);
       if (currentId !== id) return;

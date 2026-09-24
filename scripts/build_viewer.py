@@ -8,16 +8,17 @@ Inputs:
     <scene_root>/<scene_id>/<mask_tag>/vis/masks_view.js from scripts/vis_masks.py (optional, Phase 4)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/fusion_view.js from scripts/vis_fusion.py (optional, Phase 5)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/mesh_view.js   from scripts/vis_mesh.py (optional, Phase 7 mesh)
+    <training_dir>/{summary.json, <scene>_<t>.jpg}                from scripts/vis_training.py (optional, Phase 6)
 Output directory:
     index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js,
-    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js
+    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js, training/<scene>_<t>.jpg
 
 Open <out_dir>/index.html in a browser (or `python -m http.server` inside it). three.js loads from CDN.
 The same directory can be published as a Claude Artifact (index.html + config.js + scenes/*.js).
 
 Example:
     python3 scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
+        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh --training_dir results/_vis \
         --out_dir data/dashrecon/viewer/review
 """
 import argparse
@@ -43,6 +44,7 @@ def main() -> None:
     parser.add_argument("--mask_tag", default=None, help="Phase 4 mask backend tag; adds the mask panel")
     parser.add_argument("--fusion", action="store_true", help="add Phase 5 fusion (<tag>__<mask_tag>); needs --mask_tag")
     parser.add_argument("--mesh", action="store_true", help="add the Phase 7 NKSR mesh; needs --fusion")
+    parser.add_argument("--training_dir", default=None, help="Phase 6 comparison sheets + summary.json (vis_training.py)")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
     assert not args.fusion or args.mask_tag is not None, "--fusion needs --mask_tag"
@@ -106,6 +108,15 @@ def main() -> None:
                                            "peak_vram_gb": info["peak_vram_gb"], "input_points": info["input_points"],
                                            "dashrecon_commit": info["dashrecon_commit"]}
 
+    training = None
+    if args.training_dir is not None:
+        with open(os.path.join(args.training_dir, "summary.json")) as f:
+            training = json.load(f)
+        os.makedirs(os.path.join(args.out_dir, "training"), exist_ok=True)
+        for sc in DEV_SCENES:
+            for name in training["scenes"][sc.scene_id]["sheets"]:
+                shutil.copyfile(os.path.join(args.training_dir, name), os.path.join(args.out_dir, "training", name))
+
     config = {
         "tag": args.tag,
         "built_from_commit": git_commit(),
@@ -115,6 +126,7 @@ def main() -> None:
         "masks": masks,
         "fusion": fusion,
         "mesh": mesh,
+        "training": training,
     }
     with open(os.path.join(args.out_dir, "config.js"), "w") as f:
         f.write(f"window.VIEWER_CONFIG = {json.dumps(config, indent=1)};\n")
