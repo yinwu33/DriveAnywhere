@@ -12,6 +12,7 @@
 | `waymo` | Waymo 预处理、选场景用的统计 | `bash envs/setup_waymo.sh` | Python 3.10.16，tensorflow 2.11.0，waymo-open-dataset-tf-2-11-0 1.6.0，numpy 1.21.5 |
 | `mapanything` | Phase 3 位姿与点图 | `bash envs/setup_mapanything.sh` | Python 3.12.12，torch 2.5.1+cu121，mapanything 1.1.4（commit `3d10cf7`），uniception 0.1.7，numpy 2.5.2 |
 | `masks` | Phase 4 掩码 | `bash envs/setup_masks.sh` | Python 3.12.12，torch 2.6.0+cu124，transformers 5.17.0，accelerate 1.15.0，scipy |
+| `nksr` | Phase 7 网格 | `CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=8.6 bash envs/setup_nksr.sh` | Python 3.10.16，torch 2.4.1+cu121，torch-scatter 2.1.2（pt24cu121），nksr 1.0.3（源码 commit `e403368`，编译约 15 min），python-pycg，Open3D 0.19.0 |
 
 ## 各依赖
 
@@ -24,7 +25,7 @@
 | 预处理 | waymo-open-dataset-tf-2-11-0 1.6.0 | waymo-research / Apache-2.0（数据另有条款） | `waymo` venv | — | 已验证 |
 | 动态分割 | Grounded-SAM-2：Grounding DINO base + SAM 2.1 large | 通过 HF transformers 使用；Grounding DINO 为 Apache-2.0，SAM 2.1 为 Apache-2.0 | `masks` venv | 检测输入 800×1200（全分辨率时检测失效）；实测每帧约 0.85 s（含 SegFormer），峰值约 4–7 GB | 已验证（Phase 4），见 DECISIONS G |
 | 天空/路面 | SegFormer-B5 Cityscapes（HF） | nvidia/segformer-b5-finetuned-cityscapes-1024-1024（NVIDIA SegFormer license，仅限非商业用途） | `masks` venv | 输入 1024×1536，logits 上采样回原图 | 已验证（Phase 4）；类别 id 0 = road、10 = sky，加载时断言 |
-| 表面重建 | NKSR | nv-tlabs/NKSR / NVIDIA Source Code License，模型 CC-BY-SA-4.0 | — | — | 待确认（Phase 7）。2025-09 起支持 torch 2.7 / CUDA 12.8 |
+| 表面重建 | NKSR | nv-tlabs/NKSR / NVIDIA Source Code License（仅限非商业用途），模型 CC-BY-SA-4.0 | `nksr` venv（上游改为源码编译，官方配方是 conda + CUDA 12.8；这里用 uv 针对系统 CUDA 12.1 编译） | kitchen-sink 权重（`ks.pth`，54.9 MB，从 HF `heiwang1997/nksr-checkpoints` 下载）的体素为 0.1（米）；val056 的 300 万点输入耗时 10 s，峰值 2.8 GB | 已验证（Phase 7），见 DECISIONS I |
 | 点云处理 | Open3D 0.16.0 | isl-org/Open3D / MIT | `main` venv | — | 已安装 |
 | 位姿评测 | evo | MichaelGrupp/evo / GPL-3.0 | — | — | 待确认（Phase 1，延后） |
 | 图像评测 | torchmetrics 0.10.3、lpips 0.1.4 | Apache-2.0 / BSD | `main` venv | — | 已安装 |
@@ -34,3 +35,4 @@
 - torchmetrics 0.10.3 会 import `pkg_resources`，而 setuptools ≥81 已经移除了它，因此固定 `setuptools<81`。
 - uv 通过 git 拉取时偶尔会遇到代理报错 `Proxy CONNECT aborted`，重试即可。
 - transformers 5.x 在 torch < 2.6 时拒绝读取 `.bin` checkpoint（CVE-2025-32434），所以 `masks` venv 用 torch 2.6.0 cu124。驱动 555 支持 CUDA 12.5，可以运行。
+- NKSR 在模块级 import `pycg.vis`，而它需要 Open3D，所以 `nksr` venv 额外装了 Open3D 0.19.0。
