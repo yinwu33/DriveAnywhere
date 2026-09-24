@@ -81,15 +81,19 @@
 │   ├── DEPENDENCIES.md       # Phase 0 的依赖确认结果
 │   ├── OPEN_QUESTIONS.md     # 待确认问题
 │   └── UPSTREAM_PATCHES.md   # 对上游的每一处改动
+├── envs/                     # uv 环境脚本：setup_{main,waymo,mapanything}.sh、main-requirements.txt
 ├── dashrecon/
 │   ├── __init__.py
 │   ├── io.py                 # 第 5 节数据约定的读写函数（唯一入口）
+│   ├── provenance.py         # meta.json 里的 git commit（代码有未提交改动时加 -dirty）
 │   ├── scenes.py             # 开发场景列表与划分
+│   ├── viewer/index.html     # Phase 3 网页可视化模板（DashRecon Pose Review），见第 13 节
 │   ├── pose/                 # Phase 3：位姿 + 点图后端（可插拔）
 │   │   ├── base.py           # 抽象接口
-│   │   ├── gt.py             # oracle：读取 Waymo GT
+│   │   ├── world.py          # 重力对齐的世界系与尺度策略
+│   │   ├── gt.py             # oracle：读取 Waymo GT（尚未实现）
 │   │   ├── mapanything.py
-│   │   └── vggt.py           # 等
+│   │   └── vggt.py           # 等（尚未实现）
 │   ├── masks/                # Phase 4：动态与天空掩码后端
 │   │   ├── base.py
 │   │   ├── gt_boxes.py       # oracle：GT 3D 框投影
@@ -111,7 +115,7 @@
 ├── data/data/                # 符号链接 → Waymo perception v1.4.3 原始 tfrecord（共享盘，只读）
 │                             #   training 无 LiDAR；validation 有 LiDAR；两者都不是 scene-flow 版本
 ├── configs/dashrecon/        # 实验配置（E0–E5）
-├── scripts/                  # 每个 Phase 的命令行入口
+├── scripts/                  # 每个 Phase 的命令行入口：scene_stats、run_pose、vis_pose、diagnose_pose、build_viewer
 ├── tests/                    # 小型单元测试
 └── results/                  # 实验输出（不入 git，只提交 summary）
 ```
@@ -364,6 +368,92 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ---
 
+## 13. 复现：Phase 0、Phase 3 与网页可视化
+
+所有命令都在仓库根目录执行。
+
+前提：
+- `data/data` 链接到 Waymo perception v1.4.3（至少包含 `validation/`）；
+- 已安装 uv；
+- 有 CUDA 12.1 toolkit。
+
+每个产物的 `meta.json` 或 `vis_params.json` 都记录了生成它的 `dashrecon_commit`；带 `-dirty` 后缀的结果无法仅凭 commit 复现。
+
+### 13.1 环境（Phase 0）
+
+```bash
+CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=8.6 bash envs/setup_main.sh   # 主训练环境（Phase 6 用）
+bash envs/setup_waymo.sh                                                          # Waymo 预处理
+bash envs/setup_mapanything.sh                                                    # Phase 3
+PYTHONPATH=. .venvs/mapanything/bin/python -m pytest tests -q                     # 单元测试
+```
+
+### 13.2 数据（Phase 0）
+
+```bash
+# 可选：重新统计 100 个 validation 段；选出的结果已写死在 dashrecon/scenes.py
+CUDA_VISIBLE_DEVICES="" .venvs/waymo/bin/python scripts/scene_stats.py --raw_dir data/data/validation \
+    --file_list data/waymo_val_list.txt --out data/dashrecon/scene_selection/validation_stats.json --workers 12
+# 预处理 5 个开发场景（不处理 lidar）
+CUDA_VISIBLE_DEVICES="" PYTHONPATH=. .venvs/waymo/bin/python datasets/preprocess.py --data_root data/data/validation \
+    --target_dir data/waymo/processed --dataset waymo --split validation --waymo_file_list data/waymo_val_list.txt \
+    --scene_ids 56 39 41 87 94 --workers 5 --process_keys images calib pose dynamic_masks objects
+```
+
+### 13.3 位姿与点图（Phase 3）以及可视化数据
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+for s in val056 val039 val041 val087 val094; do
+  # 主 run（DECISIONS F 节：facebook/map-anything）
+  .venvs/mapanything/bin/python scripts/run_pose.py --scene_id $s --backend mapanything --model_id facebook/map-anything \
+      --processed_root data/waymo/processed/validation --out_root data/dashrecon --scale model --max_views 300
+  # 对比 run（Apache 权重），只用于诊断表
+  .venvs/mapanything/bin/python scripts/run_pose.py --scene_id $s --backend mapanything --model_id facebook/map-anything-apache \
+      --processed_root data/waymo/processed/validation --out_root data/dashrecon/_checkpoint_compare/map-anything-apache \
+      --scale model --max_views 300
+  # 点云、俯视图和网页数据
+  .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id $s --scene_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
+      --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 --max_depth 60 \
+      --max_points 300000 --seed 0
+done
+# 评测侧诊断（读 GT 位姿和标定，仅用于诊断）
+.venvs/mapanything/bin/python scripts/diagnose_pose.py --processed_root data/waymo/processed/validation \
+    --tag pose-mapanything_depth-mapanything --run cc-by-nc=data/dashrecon \
+    --run apache=data/dashrecon/_checkpoint_compare/map-anything-apache --primary cc-by-nc \
+    --out data/dashrecon/diagnostics/phase3_pose.json
+# 组装网页
+.venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
+    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --out_dir data/dashrecon/viewer/phase3
+```
+
+### 13.4 查看网页
+
+- **本地**：直接用浏览器打开 `data/dashrecon/viewer/phase3/index.html`。也可以起一个静态服务器：
+  ```bash
+  cd data/dashrecon/viewer/phase3 && python3 -m http.server 8000
+  ```
+  然后访问 http://localhost:8000。远程机器需先转发端口，例如 `ssh -L 8000:localhost:8000 <host>`。页面需要联网，才能从 CDN 加载 three.js r128 和字体。
+- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/phase3/index.html`，把 `config.js` 和 `scenes/*.js` 作为 supporting files，并传入上面的 URL，这样链接保持不变。
+
+网页的工作方式：
+- 模板 `dashrecon/viewer/index.html` 用 three.js 渲染点云、相机轨迹和视锥。
+- 场景列表、诊断数字和可视化参数都来自 `build_viewer.py` 生成的 `config.js`，页面里没有硬编码的数字。
+- 每个场景的点云在 `scenes/<id>.js` 中，点到该场景时才加载。点云是 30 万个点，坐标量化为 uint16、颜色为 uint8，都做了 base64 编码。
+
+### 13.5 产物位置（均不入 git）
+
+| 产物 | 路径 |
+|---|---|
+| 预处理后的场景 | `data/waymo/processed/validation/<idx>/` |
+| Phase 3 数据（第 5 节约定） | `data/dashrecon/<scene_id>/pose-mapanything_depth-mapanything/` |
+| 每个场景的可视化 | 同一目录下的 `vis/`：`points_vis.ply`（可用 CloudCompare 或 MeshLab 打开）、`bev.png`、`viewer_data.js`、`vis_params.json` |
+| Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
+| 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
+| 组装好的网页 | `data/dashrecon/viewer/phase3/` |
+
+---
+
 ## 变更记录
 
 - 2026-09-24：按可执行性评估和用户决定修订了以下各节，详情与代码引用见 `docs/DECISIONS.md`。
@@ -376,3 +466,4 @@ data/dashrecon/<scene_id>/<backend_tag>/
   - §10：第 6、7 条。
   - §11：已确认项和畸变风险。
   - §12：checklist 顺序。
+- 2026-09-24：Phase 0、Phase 3 完成（§12）；§4 补上新增的文件；新增 §13（Phase 0 / Phase 3 / 网页可视化的复现命令、查看方式和产物位置）。网页源码在 `dashrecon/viewer/`，数据由 `scripts/vis_pose.py`、`scripts/diagnose_pose.py`、`scripts/build_viewer.py` 生成。

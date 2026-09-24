@@ -5,8 +5,8 @@ calibration: AGENTS.md section 10, DECISIONS D3) and writes the section-5 produc
 ``<out_root>/<scene_id>/pose-<backend>_depth-<backend>/``.
 
 Example (mapanything venv):
-    .venvs/mapanything/bin/python scripts/run_pose.py --scene_id val_static_a --backend mapanything \
-        --model_id facebook/map-anything-apache --processed_root data/waymo/processed/validation \
+    .venvs/mapanything/bin/python scripts/run_pose.py --scene_id val056 --backend mapanything \
+        --model_id facebook/map-anything --processed_root data/waymo/processed/validation \
         --out_root data/dashrecon --scale model --max_views 300
 """
 import argparse

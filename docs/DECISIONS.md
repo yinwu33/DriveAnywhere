@@ -185,3 +185,10 @@ D3 的具体影响：
   - CC-BY-NC 版的焦距在全部 5 个场景都更接近真值，且逐帧稳定得多：val056 的 fx 标准差 7 px，Apache 版为 68 px。
   - 抖动方面两者互有胜负：Apache 在 val039、val094 抖动更小，在 val041 更大。
   - 两个权重的对比表见 `OPEN_QUESTIONS.md` 第 14–16 条和 Phase 3 可视化页面。
+
+**可复现的诊断与可视化**（AGENTS §13）
+- 两个权重的对比数字由 `scripts/diagnose_pose.py` 生成，写入 `data/dashrecon/diagnostics/phase3_pose.json`。
+- Apache 对比 run 在 `data/dashrecon/_checkpoint_compare/map-anything-apache/`。
+- 网页模板在 `dashrecon/viewer/index.html`，由 `scripts/build_viewer.py` 组装到 `data/dashrecon/viewer/phase3/`。
+- `meta.json` 中的 `dashrecon_commit` 由 `dashrecon/provenance.py` 生成：代码目录有未提交改动时加 `-dirty` 后缀。
+- 第一批 Phase 3 结果记录的是 `e59bda4`，但当时代码尚未提交；已从提交 `3d0e64e` 按 §13 的命令全部重跑。

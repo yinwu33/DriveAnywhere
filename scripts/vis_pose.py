@@ -7,8 +7,8 @@ colour. Outputs go to ``<scene_dir>/vis/`` and are not part of the data contract
     viewer_data.js   compact point cloud + cameras for the HTML viewer
 
 Example:
-    .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id val_static_a \
-        --scene_dir data/dashrecon/val_static_a/pose-mapanything_depth-mapanything \
+    .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id val056 \
+        --scene_dir data/dashrecon/val056/pose-mapanything_depth-mapanything \
         --processed_root data/waymo/processed/validation --frame_stride 2 --conf_percentile 30 \
         --max_depth 60 --max_points 400000 --seed 0
 """
