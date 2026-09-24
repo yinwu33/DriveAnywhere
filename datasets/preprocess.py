@@ -148,6 +148,13 @@ if __name__ == "__main__":
         default=0,
         help="Interpolate to get frames at higher frequency, this is only used for nuscene dataset",
     )
+    # dashrecon patch P1: line i of this file is waymo scene id i
+    parser.add_argument(
+        "--waymo_file_list",
+        type=str,
+        default="data/waymo_train_list.txt",
+        help="waymo only: file listing segment names, one per line",
+    )
     parser.add_argument(
         "--process_keys",
         nargs="+",
@@ -184,6 +191,7 @@ if __name__ == "__main__":
             process_keys=args.process_keys,
             process_id_list=scene_ids_list,
             workers=args.workers,
+            file_list=args.waymo_file_list,
         )
     elif args.dataset == "pandaset":
         from datasets.pandaset.pandaset_preprocess import PandaSetProcessor

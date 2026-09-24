@@ -1,0 +1,378 @@
+# AGENTS.md — 单目前视（dashcam 式）街景重建原型
+
+> 本文件是 coding agent 的工作说明。开始任何任务前先完整阅读。
+> 遇到本文件与上游 repo 实际代码不一致时，**以代码为准，并在 `docs/DECISIONS.md` 记录差异**，不要猜测 API。
+
+---
+
+## 0. Agent 工作规则
+
+1. 每次只推进一个 Phase 中的一个任务；完成后更新第 12 节的 checklist。
+2. 任何外部库的函数名、参数、配置键，**必须先在源码或 README 中确认**再使用。不确定就停下来，在 `docs/OPEN_QUESTIONS.md` 记录问题。
+3. 对上游 drivestudio 的修改保持最小化：新功能放在独立包 `dashrecon/` 中，上游只做必要的钩子改动，并在 `docs/UPSTREAM_PATCHES.md` 逐条记录。
+4. 每个模块都要能通过命令行单独运行，输入输出都是磁盘文件（见第 5 节数据约定）。
+5. 所有随机过程固定种子；所有实验结果写入 `results/`，格式见第 8 节。
+6. 不要为了"跑通"而静默降级（例如检测到 GT 不可用就偷偷用 GT 替代）。任何回退都必须显式报错或打印警告。
+7. 不要使用防御性代码，比如get(key, default), try except, 部分if else的防御性代码。如果某个条件可能失败，应显式检查并报错，而不是静默降级。
+
+---
+
+## 1. 项目目标
+
+**目标**：从单个前视相机视频重建静态街景（3D Gaussian Splatting），使得 ego 车辆可以在重建场景中沿原轨迹及小幅偏离轨迹渲染相机画面。最终用于 dashcam 视频；当前阶段用 Waymo Open Dataset 的 `FRONT` 相机模拟 dashcam，利用 Waymo 的真值逐模块定位误差来源。
+
+**非目标（当前阶段明确不做）**：
+
+- 不做任何生成式补全（扩散模型、视频生成、score distillation 等）。
+- 不重建未被观测的区域。
+- 不重建动态物体（只掩掉，不建模）。
+- 不做风格/外观迁移。
+- 不做闭环仿真集成（后续阶段再考虑）。
+
+---
+
+## 2. 硬约束
+
+| 约束 | 说明 |
+|---|---|
+| 算力 | 单张 NVIDIA RTX A6000（48GB），即本机实际硬件。 |
+| 不训练网络 | 只使用 off-the-shelf 预训练模型做推理。**唯一允许的优化是逐场景的 Gaussian 场景优化和 NKSR 推理**。禁止微调任何网络。 |
+| 训练输入 | 非 oracle 实验中，重建只允许使用 `FRONT` 相机图像。其他相机只用于评测。 |
+| 真值隔离 | 非 oracle 实验中，重建流程**不得读取** GT 位姿、LiDAR、GT 3D 框。GT 只能被评测代码读取。见第 10 节。 |
+| 不用标定 | 非 oracle 实验中**不得使用 Waymo 标定**：内参、畸变、外参、相机高度都不行。在原始（未去畸变）图像上重建，内参由模型估计。见 DECISIONS D3。 |
+
+---
+
+## 3. 技术栈与外部依赖
+
+以下为候选，agent 在 Phase 0 需逐一确认：仓库地址、许可证、安装方式、推理显存、输入分辨率/帧数上限。确认结果写入 `docs/DEPENDENCIES.md`。
+
+| 用途 | 候选 | 备注 |
+|---|---|---|
+| 基础重建框架 | **drivestudio**（OmniRe 官方代码库） | 主仓库，fork 后开发。确认其 Waymo 预处理、单相机训练配置、天空掩码、动态掩码的实现方式。 |
+| 高斯光栅化 | gsplat | drivestudio 的后端；2DGS 备选。 |
+| 位姿 + 点图（主选） | MapAnything | 直接输出度量尺度，优先尝试。 |
+| 位姿 + 点图（备选） | VGGT、π3、MegaSaM | VGGT/π3 需另行恢复尺度；MegaSaM 针对动态视频。 |
+| 单目度量深度（辅助） | MoGe-2、Metric3D v2、UniDepth | 用于尺度校准或对比。 |
+| 动态物体分割 | Grounded-SAM-2 或 SAM 3（文本提示） | 类别：car, truck, bus, motorcycle, bicycle, person。 |
+| 天空 / 路面分割 | drivestudio 自带天空掩码；路面用 Cityscapes 语义分割模型（如 SegFormer / Mask2Former） | 确认 drivestudio 使用的分割模型。 |
+| 表面重建 | NKSR（nv-tlabs/NKSR，预训练模型） | 需要法向或传感器位置；大场景需分块。 |
+| 点云处理 | Open3D | 降采样、离群点去除、法向估计。 |
+| 位姿评测 | evo | Sim(3) Umeyama 对齐、ATE、RPE。 |
+| 图像评测 | torchmetrics / lpips | PSNR、SSIM、LPIPS。 |
+
+**已选定**（2026-09-24，见 `docs/DECISIONS.md` D5、D6 和 D 节）：
+- 位姿和点图：MapAnything，使用 `facebook/map-anything-apache` 权重。
+- 动态分割：Grounded-SAM-2。
+- 天空和路面：HF transformers 版 SegFormer-B5 Cityscapes，一次推理同时输出天空（类 10）和路面（类 0）掩码。
+- 环境工具：**uv**，不用 conda。
+
+---
+
+## 4. 仓库结构
+
+在 drivestudio fork 中新增以下内容，不要重排上游目录：
+
+```
+<drivestudio-fork>/
+├── AGENTS.md
+├── docs/
+│   ├── DECISIONS.md          # 设计决策与"代码与本文件不一致"的记录
+│   ├── DEPENDENCIES.md       # Phase 0 的依赖确认结果
+│   ├── OPEN_QUESTIONS.md     # 待确认问题
+│   └── UPSTREAM_PATCHES.md   # 对上游的每一处改动
+├── dashrecon/
+│   ├── __init__.py
+│   ├── io.py                 # 第 5 节数据约定的读写函数（唯一入口）
+│   ├── scenes.py             # 开发场景列表与划分
+│   ├── pose/                 # Phase 3：位姿 + 点图后端（可插拔）
+│   │   ├── base.py           # 抽象接口
+│   │   ├── gt.py             # oracle：读取 Waymo GT
+│   │   ├── mapanything.py
+│   │   └── vggt.py           # 等
+│   ├── masks/                # Phase 4：动态与天空掩码后端
+│   │   ├── base.py
+│   │   ├── gt_boxes.py       # oracle：GT 3D 框投影
+│   │   └── sam_text.py
+│   ├── fusion/               # Phase 5：点云融合与清理
+│   │   ├── consistency.py    # 多视图深度一致性过滤
+│   │   ├── cleanup.py        # 降采样、离群点去除
+│   │   └── road.py           # 路面平滑
+│   ├── mesh/                 # Phase 7：NKSR
+│   │   └── nksr_recon.py
+│   ├── train/                # Phase 6：与 drivestudio 训练的对接
+│   │   └── hooks.py
+│   └── eval/                 # Phase 1：评测工具
+│       ├── image_metrics.py
+│       ├── cross_camera.py
+│       ├── geometry.py
+│       ├── pose_metrics.py
+│       └── lateral_render.py
+├── data/data/                # 符号链接 → Waymo perception v1.4.3 原始 tfrecord（共享盘，只读）
+│                             #   training 无 LiDAR；validation 有 LiDAR；两者都不是 scene-flow 版本
+├── configs/dashrecon/        # 实验配置（E0–E5）
+├── scripts/                  # 每个 Phase 的命令行入口
+├── tests/                    # 小型单元测试
+└── results/                  # 实验输出（不入 git，只提交 summary）
+```
+
+---
+
+## 5. 数据约定
+
+**单位与坐标**：长度单位为米。相机坐标系统一使用 OpenCV 约定（x 右、y 下、z 前）。位姿为 camera-to-world 的 4×4 矩阵。如 drivestudio 使用其他约定，在 `dashrecon/io.py` 中统一转换，并在 `docs/DECISIONS.md` 记录。
+
+**每个场景的中间产物目录**：
+
+```
+data/dashrecon/<scene_id>/<backend_tag>/
+├── frames.txt            # 使用的帧索引（与 drivestudio 帧索引一致）
+├── intrinsics.npy        # (3,3) float64；若逐帧不同则 (N,3,3)
+├── poses_c2w.npy         # (N,4,4) float64
+├── depth/{idx:06d}.npy   # (H,W) float32，米；无效值为 0
+├── depth_conf/{idx:06d}.npy  # (H,W) float32，可选
+├── mask_dynamic/{idx:06d}.png  # uint8，255 = 动态（需掩掉）
+├── mask_sky/{idx:06d}.png      # uint8，255 = 天空
+├── mask_road/{idx:06d}.png     # uint8，255 = 路面
+├── points_fused.ply      # Phase 5 输出：xyz + rgb + normal
+├── mesh_nksr.ply         # Phase 7 输出
+└── meta.json             # 后端名、版本、参数、运行时间、显存峰值
+```
+
+`backend_tag` 示例：`pose-gt_depth-lidar`、`pose-mapanything_depth-mapanything`。所有读写只能通过 `dashrecon/io.py`。
+
+---
+
+## 6. 分阶段计划
+
+每个 Phase 都有「产出」和「验收标准」。验收未通过不得进入下一 Phase。
+
+> **当前执行顺序（DECISIONS D1）：Phase 0 → 3 → 4 → 5 → 6 → 7。**
+> - 先搭非 oracle 的 FRONT 单目 pipeline。**Phase 1（评测工具）和 Phase 2（E0）延后。**
+> - 延后期间，下文所有依赖 GT 的任务和验收（位姿指标、IoU、LiDAR Chamfer 等）都标为「延后」，改用 `docs/DECISIONS.md` E 节的临时验收标准。
+> - Phase 1 任务 5（横向偏移渲染）不需要 GT，提前纳入 Phase 6。
+
+### Phase 0：环境与数据
+
+任务：
+
+1. 仓库已 fork（`yinwu33/DriveAnywhere`）。用 **uv** 建环境：一个主训练 venv，另外每个冲突的后端各一个 venv（见 DECISIONS D 节）。记录 CUDA、PyTorch、gsplat 版本。
+2. 从**本地 validation**（有 LiDAR，供以后评测）中选 **5 个开发场景**：至少 2 个以静态为主的街道、2 个有较多动态车辆、1 个有明显坡度或弯道。场景 ID 写入 `dashrecon/scenes.py`。
+   - 预处理需要上游补丁 P1（文件列表参数化）。
+   - `--process_keys` 不含 `lidar`：上游 lidar 处理要求 scene-flow 版本，而 pipeline 用不到 LiDAR。
+3. 确认 drivestudio 中以下几点：`FRONT` 相机的索引；只用单相机训练的配置方式；天空掩码和动态掩码的来源；如何关闭动态物体建模、只训练静态背景。已在 DECISIONS B 节确认（C1、C7、C11）。
+4. 完成 `docs/DEPENDENCIES.md`。
+
+产出：可运行环境；5 个预处理完的场景；依赖确认文档。
+
+验收：
+- 各 venv 都能 import 各自的依赖；gsplat 1.3.0 CUDA 扩展编译通过，并能跑通一次光栅化；5 个场景的 FRONT 图像预处理完成。
+- 原验收是"drivestudio 默认配置完整训练"。但默认配置强制读 LiDAR（C5），而开发场景不处理 LiDAR，所以完整训练的验证移到 Phase 6，在 P2 落地后进行。
+
+### Phase 1：评测工具（原定先于所有实验；现延后，见 D1）
+
+任务：
+
+1. **插值视角评测**：训练时每隔 10 帧留出 1 帧 `FRONT` 图像作为测试帧（与 OmniRe 协议一致）。指标：PSNR、SSIM、LPIPS。动态区域和天空在计算时掩掉，并同时报告不掩的结果。
+2. **跨相机外推评测**：用 `FRONT_LEFT`、`FRONT_RIGHT` 相机作为 held-out 偏离视角。
+   - 重叠区域掩码：渲染累积不透明度 > 0.5 的像素（阈值可配置）。
+   - 颜色对齐：在重叠区域上对渲染图做逐通道仿射拟合后再算 PSNR/SSIM；LPIPS 同时报告对齐前后。
+   - 渲染这些视角时使用真值相机位姿（评测允许读取 GT）。对于估计位姿的实验，先用 Sim(3) 把估计轨迹对齐到 GT，再用对齐后的变换放置评测相机。
+3. **几何评测**：把 LiDAR 投影到留出的 `FRONT` 帧，与渲染深度比较，范围 0–80 米。指标：AbsRel、RMSE、δ<1.25。点云与 mesh 对 LiDAR 聚合点云计算 Chamfer 距离和 precision/recall（阈值 0.2 米、0.5 米）。
+4. **位姿评测**：Sim(3) 对齐后的 ATE、RPE（平移/旋转）、恢复的尺度比。
+5. **横向偏移渲染**：沿相机 x 轴偏移 0.5 / 1.0 / 2.0 米，渲染整段轨迹视频，用于定性检查。
+6. `scripts/summarize.py`：汇总 `results/` 下所有 `metrics.json`，生成 markdown 表格。
+
+产出：`dashrecon/eval/*`，对应脚本与单元测试。
+验收：用 drivestudio 默认输出跑通全部评测并生成汇总表。
+
+### Phase 2：Oracle 上界（实验 E0；延后，见 D1）
+
+任务：单 `FRONT` 相机，GT 位姿，LiDAR 初始化与深度监督，GT 框投影的动态掩码，只训练静态背景。
+
+产出：5 个场景的 E0 结果。
+验收：插值视角指标合理（可与 drivestudio 公开结果对照量级）；外推与横向偏移结果已记录。
+
+### Phase 3：位姿与点图估计
+
+任务：
+
+1. 在 `dashrecon/pose/base.py` 定义接口：输入图像序列和（可选）内参；输出第 5 节格式的内参、位姿、深度、置信度。
+2. 实现 `gt.py`（oracle）和至少一个估计后端（优先 MapAnything）。
+3. 处理帧数与显存限制：若单次推理放不下全部帧，实现带重叠的分块推理，并用重叠帧做 Sim(3) 对齐拼接。记录分块边界处的误差。
+4. 尺度策略（可配置），**默认 `model`**：
+   - `model`：直接使用模型输出的度量尺度；
+   - `camera_height`：用路面掩码拟合地平面，按已知相机离地高度校准。**本阶段不用**：D3 禁止读取标定，暂时没有高度来源，见 OPEN_QUESTIONS 11；
+   - `oracle`：Sim(3) 对齐到 GT（仅用于上界分析，结果必须标注为 oracle）。**延后**，随 Phase 1 一起做。
+5. 内参：由模型估计，可以是逐帧的。"使用标定内参"的选项**延后**（D3）。
+6. 世界系：把估计位姿转换到"前-左-上"的度量世界系。上方向先取相机 −y 轴的平均，再用路面平面拟合细化；这是 drivestudio 的 AABB 和 EnvLight 所要求的（DECISIONS C6、D3）。
+
+产出：各后端的中间产物；位姿评测结果**延后**。
+验收：至少一个估计后端在 5 个场景上全部跑通。位姿指标**延后**；在此之前按 DECISIONS E 节的临时标准验收。
+
+### Phase 4：动态与天空掩码
+
+任务：
+
+1. `gt_boxes.py`（oracle）：两种模式——`all`（掩掉所有物体）和 `moving`（仅速度超过阈值的物体，默认 0.5 m/s）。**延后**，随 Phase 2 一起做。上游的 `dynamic_masks/` 用的是轴对齐 2D 框和 1.0 m/s 阈值，与这里的定义不同，不能复用（C11）。
+2. `sam_text.py`：文本提示分割，后端用 Grounded-SAM-2（D5），可配置掩码膨胀像素数（默认 5）。
+3. 天空与路面掩码：用 HF transformers 版 SegFormer-B5 Cityscapes 一次推理同时生成（D6），取代上游基于 mmcv 的 `extract_masks.py`。
+4. 统计每帧被掩掉的像素比例。与 GT `moving` 掩码的 IoU 统计**延后**。
+
+产出：各掩码后端的输出与统计。
+验收：SAM 掩码、天空和路面掩码在 5 个场景上跑通，像素比例统计已记录。
+
+### Phase 5：点云融合与清理
+
+任务（每一步可单独开关，便于消融）：
+
+1. 反投影：用深度、位姿、内参生成逐帧点云，剔除动态和天空像素，以及置信度低于阈值的像素。
+2. **多视图深度一致性过滤**：把每帧深度投影到前后 K 帧（默认 K=4），深度相对误差 < 5% 视为一致；至少在 2 帧中一致的点才保留。
+3. 体素降采样（默认 5 厘米）和统计离群点去除。
+4. 路面平滑：取路面掩码内的点，拟合平滑高度场（分段平面或 B 样条），将路面点投影到拟合曲面上。
+5. 法向估计：用相机中心作为朝向参考统一法向方向。
+6. 输出 `points_fused.ply`，不包含留出帧（D7）。对 LiDAR 计算 Chamfer 与 precision/recall 的部分**延后**。
+
+产出：融合点云，以及每一步前后的点数和截图；几何指标**延后**。
+验收：
+- 原标准是"一致性过滤后的点云几何指标优于未过滤版本；如果没有，先排查再继续"，**延后**到评测补上之后。
+- 在此之前按 DECISIONS E 节的临时标准验收。
+
+### Phase 6：高斯重建集成（实验 E1–E4；当前只跑 E3、E4）
+
+任务：
+
+1. 在 drivestudio 中接入 `dashrecon` 产物：
+   - 用 `points_fused.ply` 初始化；
+   - 读取估计位姿和内参；
+   - 用估计深度做逆深度 L1 监督（权重可配置）；
+   - 用动态和天空掩码屏蔽光度损失。
+   - 上游钩子见 `docs/UPSTREAM_PATCHES.md` P2–P4；位姿、深度和掩码的注入用 pixel source 子类实现（`data.pixel_source.type`）。
+2. 关闭动态物体建模，只训练静态背景：新写一份只含 Background + Sky 的 yaml，放在 `configs/dashrecon/`（C1）。
+   - 其余设置：CamPose、Affine 沿用上游默认开启（D4）；`test_image_stride: 10`（D7）；`undistort: False`（D3）；分辨率 960×640。
+3. 训练时不得读取任何 GT（见第 10 节）；在训练入口加断言。
+4. 按第 7 节实验矩阵运行。**当前只跑 E3、E4**；E1、E2 需要 GT，延后。
+5. 沿原轨迹以及沿相机 x 轴横向偏移 0.5 / 1.0 / 2.0 m，渲染整段轨迹视频。这一项从 Phase 1 任务 5 提前而来。
+
+产出：各实验的渲染结果；汇总表**延后**。
+验收：
+- E3、E4 在 5 个场景上完成训练和渲染（临时标准）。
+- 原标准"E1–E4 完成且汇总表能看出每替换一个模块带来的下降"，**延后**到评测补上之后。
+
+### Phase 7：NKSR 表面重建（实验 E5，可选正则）
+
+任务：
+
+1. 安装 NKSR，使用预训练模型推理。输入 `points_fused.ply`，并提供传感器位置（每个点对应的相机中心）或法向。
+2. 大场景分块重建，记录显存与耗时。
+3. 输出 `mesh_nksr.ply`。对 LiDAR 做几何评测的部分**延后**。
+4. 可选：在高斯训练中加入 mesh 渲染的法向与深度正则（E5），与 E4 对比。
+
+产出：mesh 与几何指标；E5 结果。
+验收：mesh 能覆盖路面主体且无大面积穿洞；E5 与 E4 的对比已记录。
+
+---
+
+## 7. 实验矩阵
+
+| ID | 位姿 | 初始化 / 深度监督 | 动态掩码 | 其他 | 性质 |
+|---|---|---|---|---|---|
+| E0 | GT | LiDAR | GT boxes（moving） | — | oracle 上界 |
+| E1 | 估计 | LiDAR | GT boxes（moving） | — | 仅测位姿影响（半 oracle） |
+| E2 | 估计 | 估计点图 | GT boxes（moving） | — | 位姿 + 深度影响（半 oracle） |
+| E3 | 估计 | 估计点图 | SAM 文本分割 | — | **完全非 oracle** |
+| E4 | 估计 | 估计点图 + Phase 5 清理 | SAM 文本分割 | — | 完全非 oracle |
+| E5 | 同 E4 | 同 E4 | 同 E4 | NKSR mesh 正则 | 完全非 oracle |
+
+注意：E1 使用估计位姿但 LiDAR 在 GT 世界坐标下，需要先把估计轨迹 Sim(3) 对齐到 GT，才能使用 LiDAR；该实验必须标注为半 oracle。
+
+当前状态（2026-09-24）：
+- **E0–E2 延后**（D1）。
+- E3–E5 的"估计"位姿与内参都不使用标定（D3），CamPose、Affine 开启（D4）。
+- E2→E3 之间还混有 GT `moving` 与"文本分割掩掉所有车辆"的差异，见 OPEN_QUESTIONS 5。
+
+---
+
+## 8. 结果记录
+
+- 路径：`results/<exp_id>/<scene_id>/`
+- 必须包含：
+  - `metrics.json`：第 1 Phase 定义的全部指标，键名固定；
+  - `config.yaml`：完整配置快照；
+  - `meta.json`：git commit hash、各依赖版本、运行时间、显存峰值、是否使用 oracle 信息（布尔值 + 说明）；
+  - `renders/`：留出帧渲染图、跨相机渲染图、横向偏移视频。
+- `scripts/summarize.py` 生成 `results/SUMMARY.md`，按实验 × 场景列出指标及 5 场景均值。
+
+---
+
+## 9. 编码规范
+
+- Python 3.10+，类型标注，函数写 docstring。
+- 环境用 **uv** 管理：`uv python install`、`uv venv`、`uv pip install`，不用 conda。
+  - 主训练、MapAnything（Python 3.12）、Grounded-SAM-2、NKSR、Waymo 预处理（TF 2.11，Python ≤3.10）各用一个独立 venv，模块之间只通过磁盘文件交接。
+  - `dashrecon/io.py` 只依赖 numpy / PIL / json，保证能在所有 venv 中 import。
+  - uv 不提供 CUDA toolkit，CUDA 扩展针对系统的 `/usr/local/cuda-12.1` 编译：torch 用 cu121 构建，安装时加 `--no-build-isolation`。
+- 配置沿用 drivestudio 的配置系统；新增参数集中在 `configs/dashrecon/`。
+- 禁止硬编码绝对路径；数据根目录通过环境变量或配置传入。
+- 每个后端实现 `base.py` 中的抽象接口，通过配置名选择。
+- `tests/` 中为 `io.py`、几何变换、Sim(3) 对齐、一致性过滤写小型单元测试（用合成数据，不依赖 Waymo）。
+- 日志中打印每个阶段的耗时与显存峰值。
+
+---
+
+## 10. 禁止事项
+
+1. **禁止 GT 泄漏**：非 oracle 实验中，重建流程不得读取 GT 位姿、LiDAR、GT 3D 框。特别注意 drivestudio 预处理产物中可能默认包含这些数据，训练入口必须显式断言不加载。评测代码可以读取 GT。
+2. 禁止训练或微调任何神经网络；禁止引入扩散模型或其他生成模型。
+3. 禁止在训练中使用 `FRONT` 以外的相机。
+4. 禁止为了指标好看而更改评测协议；协议改动必须记录在 `docs/DECISIONS.md`，并对所有实验重跑。
+5. 禁止在不确认的情况下假设第三方库 API。
+6. **禁止在非 oracle 实验中使用 Waymo 标定**，包括内参、畸变系数、外参和相机离地高度（D3）。
+7. 非 oracle 实验禁止读取上游预处理产出的 `dynamic_masks/`、`fine_dynamic_masks/`（两者都由 GT 框生成，C11），以及 `ego_pose/`、`extrinsics/`、`intrinsics/`、`lidar/`、`instances/`。
+
+---
+
+## 11. 已知风险与待确认问题
+
+- 前向运动视差不足：估计位姿可能在长序列上出现尺度漂移，重点关注分块边界。
+- 掩掉所有车辆会移除停放车辆，背景留下空洞；对比 `all` 与 `moving` 两种 GT 掩码可量化影响。
+- Waymo 相机为卷帘快门，dashcam 同样存在该问题。**已确认 drivestudio 没有建模**（C13）。
+- 跨相机评测中，侧前相机与前视相机的重叠有限，重叠掩码与颜色对齐方式会影响数值，需要固定下来并记录。
+- NKSR 在观测稀疏区域可能产生鼓包或过度平滑。
+- **镜头畸变**：不使用标定（D3），就是在原始畸变图像上按针孔模型重建。FRONT 的 k2≈-0.33，图像边缘的几何和光度会不一致，见 OPEN_QUESTIONS 12。
+- ~~待确认：drivestudio 单相机配置的具体写法；关闭动态建模的方式~~：已确认，见 DECISIONS C1 和 C7。单相机配置是 `dataset=waymo/1cams`（`cameras: [0]`），FRONT=0。
+- 待确认：MapAnything 在 A6000 48GB 上一次可处理的最大帧数与分辨率，见 OPEN_QUESTIONS 13。
+
+---
+
+## 12. 进度 Checklist
+
+执行顺序为 0 → 3 → 4 → 5 → 6 → 7；Phase 1、2 延后（D1）。
+
+- [x] 可执行性评估：结论见 `docs/DECISIONS.md`，待定问题见 `docs/OPEN_QUESTIONS.md`
+- [x] Phase 0：环境与数据（2026-09-24：3 个 uv venv；5 个 validation 开发场景）
+- [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
+- [ ] Phase 4：动态与天空掩码
+- [ ] Phase 5：点云融合与清理
+- [ ] Phase 6：E3–E4（含横向偏移渲染）
+- [ ] Phase 7：NKSR 与 E5
+- [ ] （延后）Phase 1：评测工具
+- [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
+- [ ] （延后）汇总报告 `results/SUMMARY.md`
+
+后续阶段（当前不做）：迁移到真实 dashcam 视频；多次通行融合；未观测区域补全；闭环仿真集成。
+
+---
+
+## 变更记录
+
+- 2026-09-24：按可执行性评估和用户决定修订了以下各节，详情与代码引用见 `docs/DECISIONS.md`。
+  - §2：硬件改为 A6000；新增"不用标定"。
+  - §3：写入已选后端和 uv。
+  - §4：数据版本 v1.4.3，写明 LiDAR 情况。
+  - §6：执行顺序；Phase 0 改用 validation 场景和 uv；GT 相关任务标为延后。
+  - §7：当前状态。
+  - §9：uv 多环境约定。
+  - §10：第 6、7 条。
+  - §11：已确认项和畸变风险。
+  - §12：checklist 顺序。

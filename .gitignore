@@ -30,6 +30,14 @@ fine_dynamic_masks_example/
 *.sh
 pandaset-devkit/
 
+# dashrecon
+data/data
+data/dashrecon/
+results/*
+!results/SUMMARY.md
+.venvs/
+!envs/*.sh
+
 # C extensions
 *.so
 

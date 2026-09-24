@@ -80,6 +80,7 @@ class WaymoProcessor(object):
         ],
         process_id_list=None,
         workers=64,
+        file_list="data/waymo_train_list.txt",
     ):
         self.filter_no_label_zone_points = True
 
@@ -110,7 +111,8 @@ class WaymoProcessor(object):
         self.save_dir = f"{save_dir}/{prefix}"
         self.workers = int(workers)
         # a list of tfrecord pathnames
-        training_files = open("data/waymo_train_list.txt").read().splitlines()
+        # dashrecon patch P1: the segment list is a parameter (upstream hardcoded the training list)
+        training_files = open(file_list).read().splitlines()
         self.tfrecord_pathnames = [
             f"{self.load_dir}/{f}.tfrecord" for f in training_files
         ]
