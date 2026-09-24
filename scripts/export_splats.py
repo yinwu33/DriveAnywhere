@@ -2,7 +2,9 @@
 
 Reads <log_dir>/checkpoint_final.pth (drivestudio VanillaGaussians state: _means, _scales (log), _quats,
 _features_dc, _opacities (logit)) and keeps the ``max_splats`` Gaussians with the largest
-opacity x geometric-mean scale among those with opacity >= ``min_opacity``. Per Gaussian 20 bytes:
+opacity x geometric-mean scale among those with opacity >= ``min_opacity`` and a largest axis below the
+``max_scale_pct`` percentile (the few huge Gaussians are mostly unconstrained backdrop that smears over
+novel views). Per Gaussian 20 bytes:
     position   uint16 x3, quantised to the kept bounding box
     colour     uint8 x4, RGB from the degree-0 SH coefficient (0.5 + C0 * dc, view-independent) + opacity
     log-scale  float16 x3
@@ -12,7 +14,7 @@ exported. Output: <log_dir>/renders/splat_view.js (registers ``window.SPLAT[<sce
 
 Example (main venv):
     .venvs/main/bin/python scripts/export_splats.py --log_dir results/E5/val056 --scene_id val056 \
-        --max_splats 150000 --min_opacity 0.05
+        --max_splats 150000 --min_opacity 0.05 --max_scale_pct 99.5
 """
 import argparse
 import base64
@@ -40,6 +42,7 @@ def main() -> None:
     parser.add_argument("--scene_id", required=True)
     parser.add_argument("--max_splats", type=int, required=True)
     parser.add_argument("--min_opacity", type=float, required=True)
+    parser.add_argument("--max_scale_pct", type=float, required=True, help="drop Gaussians whose largest axis is above this percentile")
     args = parser.parse_args()
 
     ckpt = torch.load(os.path.join(args.log_dir, "checkpoint_final.pth"), map_location="cpu", weights_only=False)
@@ -53,6 +56,8 @@ def main() -> None:
     assert log_scales.shape[1] == 3 and rgb.shape[1] == 3, (log_scales.shape, rgb.shape)
 
     candidates = np.flatnonzero(opacity >= args.min_opacity)
+    max_axis = log_scales[candidates].max(axis=1)
+    candidates = candidates[max_axis <= np.percentile(max_axis, args.max_scale_pct)]
     importance = opacity[candidates] * np.exp(log_scales[candidates].mean(axis=1))
     keep = candidates[np.argsort(-importance)[: args.max_splats]]
 

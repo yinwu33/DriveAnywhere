@@ -1003,8 +1003,14 @@ function driverView() {
   const c = current.centers[0];
   const fwd = new THREE.Vector3(m[0][2], m[1][2], m[2][2]).normalize();
   const up = new THREE.Vector3(0, 0, 1);
-  camera.position.copy(c).addScaledVector(fwd, -10).addScaledVector(up, 4);
-  controls.target.copy(c).addScaledVector(fwd, 25);
+  if (cloudMode === "splat" && current.splat) {
+    // Gaussians are only reliable near the training views: start from the first FRONT camera itself
+    camera.position.copy(c).addScaledVector(fwd, 0.01);
+    controls.target.copy(c).addScaledVector(fwd, 20);
+  } else {
+    camera.position.copy(c).addScaledVector(fwd, -10).addScaledVector(up, 4);
+    controls.target.copy(c).addScaledVector(fwd, 25);
+  }
   controls.update(); render();
 }
 function topView() {
@@ -1093,7 +1099,7 @@ document.getElementById("toggle-cams").addEventListener("click", e => {
 document.getElementById("cloud-raw").addEventListener("click", () => { cloudMode = "raw"; refreshScene(); });
 document.getElementById("cloud-fused").addEventListener("click", () => { cloudMode = "fused"; refreshScene(); });
 document.getElementById("cloud-mesh").addEventListener("click", () => { cloudMode = "mesh"; refreshScene(); });
-document.getElementById("cloud-splat").addEventListener("click", () => { cloudMode = "splat"; refreshScene(); });
+document.getElementById("cloud-splat").addEventListener("click", () => { cloudMode = "splat"; refreshScene(); driverView(); });
 for (const m of ["photo", "classes", "normals", "shaded"]) {
   document.getElementById(`color-${m}`).addEventListener("click", () => { colorMode = m; refreshScene(); });
 }
