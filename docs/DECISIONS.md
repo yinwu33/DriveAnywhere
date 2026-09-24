@@ -118,6 +118,9 @@ AGENTS §11 待确认项的答复：
 | D7 | **保留每 10 帧留出 1 帧**（`test_image_stride: 10`，可配置） | 位姿估计用全部帧，留出帧不进入融合点云、深度监督和光度损失，方便以后补评测时不用重训 |
 | D8 | **执行顺序改为：Phase 5 之后先做 Phase 7 的网格重建（NKSR），再做 Phase 6，E4 和 E5 一起训练**（2026-09-24） | 用户参照 LSD-3D 的"先网格、后 3DGS"。保留无网格的 E4 作对照组，所以网格带来的收益仍能量化 |
 | D9 | **E5 按 LSD-3D 的几何部分使用网格：在网格面上初始化 Gaussian（朝向与尺度按三角面设定），训练时用网格渲染的深度和法向做正则**（2026-09-24） | 这比 AGENTS 原定的"只做正则"多了网格初始化。LSD-3D 的外观来自扩散模型的分数蒸馏（GGDS），属于 AGENTS §1 非目标和 §10 第 2 条禁止的内容，不采用；外观只来自真实 FRONT 图像的光度损失 |
+| D10 | **引入生成式后处理（范围变更，2026-09-24）**：新增 Phase 8 和实验 E6。修改 AGENTS §1 非目标和 §10 第 2 条：在 Phase 8 内允许使用冻结的现成扩散模型，只做推理，不训练、不微调（§2 的"不训练网络"仍然有效） | 用户认为纯 3DGS 在偏离轨迹的视角上失真太严重，要参考 LSD-3D 的 GGDS。LSD-3D 先在 Waymo 上微调了 SDXL 再冻结；我们按 AGENTS 不微调，所以缺少驾驶场景的风格先验，要靠真实训练图像、网格视差条件和较低的噪声等级来约束 |
+| D11 | **扩散模型用 SDXL base 1.0 + ControlNet depth（SDXL），条件为 NKSR 网格渲染的视差图**，贴近 GGDS | 权重是 OpenRAIL++ 许可；不使用 Difix |
+| D12 | **生成模型的用法：E6 蒸馏进 3DGS 作为主方案；逐帧后处理（记作 E5+pp，渲染后逐帧去噪）作为对照。暂时不做跨相机评测，先把流程搭起来** | 蒸馏后的结果多视角、多帧一致；后处理的结果不写回 3D。评测延后意味着暂时无法区分"修复"和"编造"，结果必须标注为生成内容（见 OPEN_QUESTIONS 28） |
 
 D3 的具体影响：
 - `undistort: False`，直接在原始畸变图像上按针孔模型重建。FRONT 的 k2≈-0.33，图像边缘会不一致，已列为已知风险。
@@ -284,3 +287,54 @@ D3 的具体影响：
 **显示**
 - 网页里的网格用 Open3D 二次误差简化到 15 万个面，完整网格保留在磁盘上。
 - 为了把整个网页控制在 Claude Artifact 单版本 64 MB 以内，其余显示抽样也同步下调：原始点云 20 万点、融合点云 20 万点、剔除点 5 万点。
+
+---
+
+## J. Phase 6 执行记录（2026-09-24）
+
+**接入方式**
+- **上游改动：**只在 P2–P5 四处加钩子（见 UPSTREAM_PATCHES.md），在上游原有配置下都不生效。
+- **其余逻辑放在 `dashrecon/train/`：**
+  - `DashreconPixelSource` / `DashreconCameraData`：只读 FRONT 图像和 dashrecon 产物，接口是 `data.pixel_source.type`。
+  - `DashreconTrainer(MultiTrainer)`：接口是 `trainer.type`。
+- **训练入口 `scripts/train_gs.py`：**先用 `dashrecon.train.guard.assert_non_oracle` 检查合并后的配置，确认不读 LiDAR、GT 框和 `ego_pose/`，只用 FRONT，不去畸变，且所有输入都来自 `data/dashrecon/`。检查通过后才调用上游的 `tools/train.py:main`。
+- **输出目录：**`results/<exp>/<scene_id>/`（AGENTS §8），包含：
+  - drivestudio 原有的 `config.yaml`、checkpoint、`videos/`、`metrics/`；
+  - 我们新增的 `metrics.json`、`meta.json`，以及 `renders/`（横向偏移视频和静帧）。
+
+**约定**
+- **像素中心：**dashrecon 的内参按 OpenCV 约定，像素中心在整数坐标；drivestudio / gsplat 的像素中心在 +0.5。所以 cx、cy 先加 0.5，再按加载分辨率缩放。这了结了 F 节留下的待确认项。
+- **估计深度：**
+  - 新键 `est_depth_map`，从深度网格用最近邻重采样到训练分辨率。
+  - 只保留静态、非天空、置信度不低于训练帧第 30 百分位、且深度小于 60 的像素，规则与 Phase 5 相同。
+  - 监督方式为逆深度 L1，权重 0.1。这个权重沿用 pvg.yaml 的逆深度设置，没有调过。
+- **动态掩码：**`losses.exclude_dynamic` 把动态像素从 rgb、ssim、天空不透明度和深度这四项 loss 中去掉。
+- **天空：**用 SegFormer 的天空掩码训练 EnvLight，天空不透明度 loss 权重 0.05（与上游相同）。
+
+**E3 / E4 / E5 的差别**
+
+各实验取 80 万个初始点（与 streetgs 的 LiDAR 采样数相同），另加 10 万近处随机点和 10 万远处随机点。
+
+| 实验 | 初始点来源 | 网格正则 |
+|---|---|---|
+| E3 | 跳过全部清理步骤的反投影点云 `data/dashrecon/_e3_nocleanup/…`（`run_fusion.py --skip consistency voxel outlier road`，每个场景 940 万–1420 万点） | 无 |
+| E4 | Phase 5 融合点云 `points_fused.ply` | 无 |
+| E5 | 在 NKSR 网格上按面积均匀采样 | 网格深度 L1（权重 0.1）和法向 1 − cos（权重 0.05） |
+
+E5 的细节：
+- **初始化：**每个采样点成为一个扁平 Gaussian。切向尺度取"总面积 / 采样数"对应圆盘的半径，法向尺度取切向的 0.2 倍，使尺度比低于上游 `sharp_shape_reg` 的阈值 10。
+- **网格深度：**用 nvdiffrast 在当前相机（已做位姿优化）下光栅化网格，逆深度 L1，权重 0.1。
+- **法向：**
+  - Gaussian 法向取最小尺度轴，朝向相机，再用 gsplat 渲染一遍；
+  - 网格法向为面法向，同样朝向相机；
+  - loss 为 1 − cos，只在 Gaussian 不透明度 > 0.5 的像素上计算，权重 0.05。
+- **生效范围：**两项网格正则都只在网格覆盖、非动态、非天空的像素上计算。
+
+**其余设置**（沿用上游 streetgs）：30,000 步；分辨率从 1/4 起每 250 步翻倍；CamPose 与 Affine 开启（D4）；每 10 帧留出一帧（D7）。
+
+**验证**
+- 在 val056 上分别对 E4 和 E5 做了 600 步冒烟测试，整条链路跑通。
+- 网格渲染深度与 MapAnything 深度的中位相对差为 0.9–1.4%；故意把网格深度上下翻转后，差异变为 50.8%。说明 nvdiffrast 的投影约定正确。
+- 批量训练：5 个场景 × 3 个实验，GPU 上同时跑两个。
+
+**首轮运行中的问题**：val041 的 E4、E5 在第 795 步因深度 loss 为 NaN 崩溃。原因是末尾帧的估计深度被全部过滤，有效像素为 0（OPEN_QUESTIONS 27）。用上游补丁 P6 修复后，把这两个训练排到批量末尾补跑；失败的输出移到 `results/_failed/` 留档。另外，批量脚本的退出码记录有 bug：`$?` 取到的是同一行里 `$(date)` 的退出码，所以失败也显示为 exit=0。补跑脚本已改正。

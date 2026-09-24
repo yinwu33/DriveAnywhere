@@ -23,7 +23,7 @@
 
 **非目标（当前阶段明确不做）**：
 
-- 不做任何生成式补全（扩散模型、视频生成、score distillation 等）。
+- ~~不做任何生成式补全（扩散模型、视频生成、score distillation 等）。~~ **2026-09-24 范围变更（DECISIONS D10）：**Phase 8 允许用冻结的现成扩散模型，对偏离轨迹的视角做生成式蒸馏和后处理，不训练、不微调；其余阶段仍然禁止。
 - 不重建未被观测的区域。
 - 不重建动态物体（只掩掉，不建模）。
 - 不做风格/外观迁移。
@@ -265,6 +265,17 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - E3、E4 在 5 个场景上完成训练和渲染（临时标准）。
 - 原标准"E1–E4 完成且汇总表能看出每替换一个模块带来的下降"，**延后**到评测补上之后。
 
+### Phase 8：生成式蒸馏与后处理（D10–D12，实验 E6、E5+pp）
+
+任务：
+
+1. 冻结的 SDXL base 1.0 + ControlNet depth（SDXL），条件为 NKSR 网格渲染的视差图；不训练、不微调。
+2. E6：从 E5 的 checkpoint 继续训练。真实 FRONT 训练视角照常训练；偏离轨迹的视角（横移 ±0.5–3 m 加小角度偏转）用 GGDS 生成的目标图，按 L1 + LPIPS 监督。目标图生成方式为：DDIM 反演到噪声等级 t，再去噪 5 步，t 的下界线性退火。
+3. E5+pp：对 E5 的渲染结果逐帧做同样的去噪，作为对照。
+4. 生成内容在结果和网页中都要明确标注。
+
+验收（临时）：5 个场景跑通，并产出横向偏移的对比渲染。跨相机评测延后（D12）。
+
 ### Phase 7：NKSR 表面重建（实验 E5，可选正则）
 
 任务：
@@ -289,6 +300,8 @@ data/dashrecon/<scene_id>/<backend_tag>/
 | E3 | 估计 | 估计点图 | SAM 文本分割 | — | **完全非 oracle** |
 | E4 | 估计 | 估计点图 + Phase 5 清理 | SAM 文本分割 | — | 完全非 oracle |
 | E5 | 同 E4 | 同 E4 | 同 E4 | NKSR 网格：在网格面上初始化 Gaussian，并用网格渲染的深度/法向正则（D9，参照 LSD-3D 的几何部分） | 完全非 oracle |
+| E6 | 同 E5 | 同 E5 | 同 E5 | 从 E5 继续训练，对偏离轨迹的视角做 GGDS 式蒸馏：冻结的 SDXL + ControlNet depth，以网格视差为条件（D10–D12） | 完全非 oracle，**含生成内容** |
+| E5+pp | 同 E5 | 同 E5 | 同 E5 | 不训练，对 E5 的渲染逐帧做同样的去噪（对照组） | 完全非 oracle，**含生成内容** |
 
 注意：E1 使用估计位姿但 LiDAR 在 GT 世界坐标下，需要先把估计轨迹 Sim(3) 对齐到 GT，才能使用 LiDAR；该实验必须标注为半 oracle。
 
@@ -329,7 +342,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 ## 10. 禁止事项
 
 1. **禁止 GT 泄漏**：非 oracle 实验中，重建流程不得读取 GT 位姿、LiDAR、GT 3D 框。特别注意 drivestudio 预处理产物中可能默认包含这些数据，训练入口必须显式断言不加载。评测代码可以读取 GT。
-2. 禁止训练或微调任何神经网络；禁止引入扩散模型或其他生成模型。
+2. 禁止训练或微调任何神经网络。生成模型只能在 Phase 8 中以冻结推理的方式使用（D10），生成内容必须在结果里明确标注。
 3. 禁止在训练中使用 `FRONT` 以外的相机。
 4. 禁止为了指标好看而更改评测协议；协议改动必须记录在 `docs/DECISIONS.md`，并对所有实验重跑。
 5. 禁止在不确认的情况下假设第三方库 API。
@@ -363,6 +376,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
 - [ ] Phase 6：E3–E4（含横向偏移渲染）
 - [ ] Phase 7：NKSR 与 E5（2026-09-24：任务 1–3 的网格重建已完成，按临时标准验收，见 DECISIONS I；E5 与 Phase 6 一起训练）
+- [ ] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）
 - [ ] （延后）Phase 1：评测工具
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
@@ -371,7 +385,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 
 ---
 
-## 13. 复现：Phase 0、Phase 3–5、Phase 7 网格与网页可视化
+## 13. 复现：Phase 0、Phase 3–7 与网页可视化
 
 所有命令都在仓库根目录执行。
 
@@ -462,7 +476,33 @@ for s in val056 val039 val041 val087 val094; do
 done
 ```
 
-### 13.7 可视化数据与网页组装
+### 13.7 3DGS 训练与渲染（Phase 6：E3、E4、E5）
+
+```bash
+export PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1
+# E3 的初始点云：不做任何清理的反投影点云
+for s in val056 val039 val041 val087 val094; do
+  python scripts/run_fusion.py --scene_id $s --pose_dir data/dashrecon/$s/pose-mapanything_depth-mapanything \
+      --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer --processed_root data/waymo/processed/validation \
+      --out_root data/dashrecon/_e3_nocleanup --test_stride 10 --conf_percentile 30 --max_depth 60 --consistency_k 4 \
+      --consistency_rel 0.05 --consistency_min 2 --voxel 0.05 --outlier_nb 20 --outlier_std 2.0 --road_cell 0.5 \
+      --road_sigma 2.0 --road_min_points 5 --road_max_dz 0.3 --normal_knn 30 --rejected_sample 200000 --seed 0 \
+      --skip consistency voxel outlier road
+done
+# 训练（每次训练前都会做 GT 隔离断言）→ results/<exp>/<scene>/；A6000 上可以同时跑两个
+for e in E4 E5 E3; do for s in val056 val041 val087 val039 val094; do
+  python scripts/train_gs.py --exp $e --scene_id $s --output_root results
+done; done
+# 沿原轨迹以及横向偏移 0.5 / 1 / 2（估计米）渲染 → results/<exp>/<scene>/renders/
+for e in E3 E4 E5; do for s in val056 val039 val041 val087 val094; do
+  python scripts/render_lateral.py --log_dir results/$e/$s --offsets 0 0.5 1 2 --still_frames 50 100 150 --fps 10
+done; done
+# 网页用的对比拼图和指标汇总 → results/_vis/
+python scripts/vis_training.py --results_root results --exps E3 E4 E5 --frames 50 100 150 --offsets 0 0.5 1 2 \
+    --cell_width 480 --processed_root data/waymo/processed/validation --out_dir results/_vis
+```
+
+### 13.8 可视化数据与网页组装
 
 ```bash
 for s in val056 val039 val041 val087 val094; do
@@ -483,22 +523,23 @@ for s in val056 val039 val041 val087 val094; do
 done
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
     --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
-    --out_dir data/dashrecon/viewer/review
+    --training_dir results/_vis --out_dir data/dashrecon/viewer/review
 ```
 
+- 不加 `--training_dir`：网页里没有 Phase 6 的内容。
 - 不加 `--mesh`：网页里没有网格。
 - 再去掉 `--fusion`：没有 Phase 5 的内容。
 - 再去掉 `--mask_dir` 和 `--mask_tag`：只剩 Phase 3。
 - 显示用的抽样规模（原始 20 万点、融合 20 万点、剔除点 5 万点、网格 15 万个面）是为了让整个网页小于 Claude Artifact 单个版本 64 MB 的上限。
 
-### 13.8 查看网页
+### 13.9 查看网页
 
 - **本地**：直接用浏览器打开 `data/dashrecon/viewer/review/index.html`。也可以起一个静态服务器：
   ```bash
   cd data/dashrecon/viewer/review && python3 -m http.server 8000
   ```
   然后访问 http://localhost:8000。远程机器需先转发端口，例如 `ssh -L 8000:localhost:8000 <host>`。页面需要联网，才能从 CDN 加载 three.js r128 和字体。
-- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`、`*.fusion.js` 和 `*.mesh.js`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
+- **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`、`*.fusion.js`、`*.mesh.js` 和 `training/*.jpg`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
 
 网页的工作方式：
 - 模板 `dashrecon/viewer/index.html` 用 three.js 渲染点云、相机轨迹和视锥。
@@ -513,7 +554,7 @@ done
   - "Rejected"（仅融合点云）：用红色显示被一致性检查剔除的点。
 - 类别颜色取自 dataviz 参考调色板的 1–3 号色。用 `validate_palette.js` 在两种主题下做了全配对验证，均通过。
 
-### 13.9 产物位置（均不入 git）
+### 13.10 产物位置（均不入 git）
 
 | 产物 | 路径 |
 |---|---|
@@ -523,6 +564,8 @@ done
 | 点云可视化 | Phase 3 目录下的 `vis/`：`points_vis.ply`（可用 CloudCompare 或 MeshLab 打开）、`bev.png`、`viewer_data.js`、`vis_params.json` |
 | 掩码可视化 | Phase 4 目录下的 `vis/masks_view.js` |
 | Phase 5 融合点云（第 5 节约定） | `data/dashrecon/<scene_id>/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer/`：`points_fused.ply`（xyz、法向、rgb、`label` 0 = 其他 / 1 = 路面，可用 CloudCompare 打开）、`frames.txt`（用到的训练帧）、`meta.json`（逐步点数、路面平滑统计）、`diagnostics/consistency_rejected.ply`、`vis/fusion_view.js` |
+| Phase 6 训练结果（第 8 节约定） | `results/<exp>/<scene_id>/`：`config.yaml`、`checkpoint_final.pth`、`metrics.json`、`meta.json`、drivestudio 的 `videos/` 和 `metrics/`、`renders/lateral_<offset>.mp4` 与 `renders/frames/`；训练日志在 `results/_logs/` |
+| Phase 6 网页数据 | `results/_vis/`：`<scene>_<t>.jpg` 对比拼图、`summary.json` |
 | Phase 7 网格（第 5 节约定） | 同上的融合目录：`mesh_nksr.ply`（顶点带颜色，可用 MeshLab 打开）、`mesh_nksr.json`（参数、覆盖率、边界边、耗时）、`vis/mesh_view.js` |
 | Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
 | 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
