@@ -166,7 +166,9 @@ class DepthLoss(nn.Module):
         elif self.reduction == "none":
             depth_error = depth_error
         elif self.reduction == "mean_on_hit":
-            depth_error = depth_error.mean()
+            # dashrecon patch P6: a frame with no valid depth (possible for estimated depth maps, e.g. the
+            # low-confidence last frames of val041) contributes zero instead of NaN (mean of an empty tensor)
+            depth_error = depth_error.mean() if depth_error.numel() > 0 else depth_error.sum()
         elif self.reduction == "mean_on_hw":
             n = gt_depth.shape[0]*gt_depth.shape[1]
             depth_error = depth_error.sum() / n
