@@ -37,6 +37,7 @@ results/*
 !results/SUMMARY.md
 .venvs/
 !envs/*.sh
+!dashrecon/viewer/*.html
 
 # C extensions
 *.so

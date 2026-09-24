@@ -11,7 +11,6 @@ Example (mapanything venv):
 """
 import argparse
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -19,6 +18,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
 from dashrecon.pose.world import SCALE_STRATEGIES, apply_scale_strategy, gravity_aligned_transform  # noqa: E402
+from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import FRONT_CAM_ID, get_scene  # noqa: E402
 
 BACKENDS = ("mapanything",)
@@ -37,12 +37,6 @@ def front_image_paths(scene_dir: str, start: int, end: int) -> tuple[np.ndarray,
     for p in paths:
         assert os.path.exists(p), p
     return frames, paths
-
-
-def git_commit() -> str:
-    """Current commit of this repository (for meta.json)."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
 
 
 def main() -> None:

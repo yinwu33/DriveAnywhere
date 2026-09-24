@@ -1,0 +1,417 @@
+<!--
+  DashRecon Pose Review: static viewer for Phase 3 point clouds and trajectories.
+  This is a template. Build a runnable copy with scripts/build_viewer.py, which writes next to it:
+    config.js          window.VIEWER_CONFIG (scene list, diagnostics, vis parameters)
+    scenes/<id>.js     window.SCENES[<id>] (from scripts/vis_pose.py viewer_data.js)
+  Open the built index.html directly or serve the directory (python -m http.server).
+  three.js r128 and OrbitControls load from public CDNs.
+-->
+<title>DashRecon Pose Review</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ground: #eef1f2;
+  --surface: #ffffff;
+  --ink: #172026;
+  --muted: #5a6872;
+  --rule: #d5dde1;
+  --accent: #0a7c83;
+  --accent-ink: #ffffff;
+  --canvas: #dfe5e8;
+  --good: #2e7d4f;
+  --warn: #9a5d0c;
+  --bad: #b93a26;
+  --good-bg: #e3f2e9;
+  --warn-bg: #f8ecd8;
+  --bad-bg: #f8e1dc;
+  --display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #10161a;
+    --surface: #172027;
+    --ink: #e3eaee;
+    --muted: #8fa0aa;
+    --rule: #26323a;
+    --accent: #3fc1c4;
+    --accent-ink: #0b1417;
+    --canvas: #0a0f12;
+    --good: #5cc48a;
+    --warn: #e0a53d;
+    --bad: #f07a64;
+    --good-bg: #173326;
+    --warn-bg: #3a2d14;
+    --bad-bg: #3d1f1a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #10161a;
+  --surface: #172027;
+  --ink: #e3eaee;
+  --muted: #8fa0aa;
+  --rule: #26323a;
+  --accent: #3fc1c4;
+  --accent-ink: #0b1417;
+  --canvas: #0a0f12;
+  --good: #5cc48a;
+  --warn: #e0a53d;
+  --bad: #f07a64;
+  --good-bg: #173326;
+  --warn-bg: #3a2d14;
+  --bad-bg: #3d1f1a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 15px/1.5 var(--body);
+  padding-inline: clamp(16px, 3vw, 32px);
+  padding-block: 24px 40px;
+}
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 20px; }
+h1, h2 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: 0.005em; }
+h1 { font-size: 30px; line-height: 1.1; }
+h2 { font-size: 19px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-family: var(--display); font-weight: 500; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
+header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
+.pipeline { display: flex; flex-wrap: wrap; gap: 6px; }
+.pipeline span { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); background: var(--surface); }
+
+.stage { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; }
+@media (max-width: 820px) { .stage { grid-template-columns: 1fr; } }
+
+.rail { display: grid; gap: 8px; align-content: start; }
+.scene-btn {
+  display: grid; gap: 4px; text-align: left; width: 100%;
+  padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--surface); color: var(--ink); cursor: pointer; font: inherit;
+}
+.scene-btn:hover { border-color: var(--muted); }
+.scene-btn[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.scene-btn:focus-visible, .tool:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scene-btn .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.scene-btn .id { font-family: var(--mono); font-weight: 500; font-size: 14px; }
+.scene-btn .note { font-size: 13px; color: var(--muted); line-height: 1.35; }
+.role { font-family: var(--display); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+
+.viewer { position: relative; border-radius: 8px; overflow: hidden; background: var(--canvas); min-height: 320px; height: min(64vh, 640px); border: 1px solid var(--rule); }
+.viewer canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.toolbar { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; pointer-events: none; }
+.toolbar > * { pointer-events: auto; }
+.tool {
+  font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.03em;
+  padding: 5px 10px; border-radius: 5px; border: 1px solid var(--rule);
+  background: var(--surface); color: var(--ink); cursor: pointer;
+}
+.tool[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.slider { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--surface); font-size: 13px; color: var(--muted); }
+.slider input { width: 90px; accent-color: var(--accent); }
+.legend { position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 5px 10px; border-radius: 5px; max-width: calc(100% - 20px); }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; background: var(--accent); }
+.status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-family: var(--display); font-size: 15px; letter-spacing: 0.04em; pointer-events: none; }
+
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.metric { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 4px; align-content: start; }
+.metric .val { font-family: var(--mono); font-size: 18px; font-variant-numeric: tabular-nums; }
+.metric .sub { font-size: 12.5px; color: var(--muted); }
+.chip { justify-self: start; font-family: var(--display); font-weight: 600; font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; }
+.chip.good { color: var(--good); background: var(--good-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.bad { color: var(--bad); background: var(--bad-bg); }
+
+section { display: grid; gap: 10px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px; }
+th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font-family: var(--display); font-weight: 600; font-size: 12.5px; letter-spacing: 0.04em; color: var(--muted); }
+th:first-child, td:first-child { text-align: left; }
+td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+thead tr.group th { border-bottom: 0; padding-bottom: 0; }
+td.sel { color: var(--accent); font-weight: 500; }
+.notes { color: var(--muted); font-size: 13.5px; max-width: 80ch; margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">DriveAnywhere · AGENTS.md Phase 3 · pose + pointmap</div>
+      <h1>DashRecon Pose Review</h1>
+      <p class="lede" id="lede"></p>
+    </div>
+    <div class="pipeline" id="pipeline" aria-label="Pipeline settings"></div>
+  </header>
+
+  <div class="stage">
+    <nav class="rail" id="rail" aria-label="Scenes"></nav>
+    <div class="viewer" id="viewer">
+      <div class="toolbar">
+        <button class="tool" id="view-chase" type="button">Driver view</button>
+        <button class="tool" id="view-top" type="button">Top view</button>
+        <button class="tool" id="toggle-cams" type="button" aria-pressed="true">Cameras</button>
+        <label class="slider" for="pt-size">Point size <input id="pt-size" type="range" min="0.02" max="0.4" step="0.01" value="0.1"></label>
+      </div>
+      <div class="legend">
+        <span><i></i>FRONT camera path</span>
+        <span id="legend-frusta"></span>
+        <span class="mono">x forward · y left · z up</span>
+      </div>
+      <div class="status" id="status">Loading scene…</div>
+    </div>
+  </div>
+
+  <div class="readout" id="readout" aria-live="polite"></div>
+
+  <section>
+    <h2 id="cmp-title">Run comparison, all scenes</h2>
+    <div class="table-wrap">
+      <table>
+        <thead id="cmp-head"></thead>
+        <tbody id="cmp"></tbody>
+      </table>
+    </div>
+    <ul class="notes" id="notes"></ul>
+  </section>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const CFG = window.VIEWER_CONFIG;
+const DIAG = CFG.diagnostics;
+const RUNS = DIAG.runs;
+const PRIMARY = DIAG.primary;
+const ROLE_LABEL = { static: "static", dynamic: "dynamic", slope_curve: "slope + curve" };
+const SCENES_META = CFG.scenes.map(s => ({ ...s, diag: DIAG.scenes.find(d => d.scene_id === s.id) }));
+SCENES_META.forEach(s => { if (!s.diag) throw new Error(`no diagnostics for ${s.id}`); });
+
+const fmtRange = (xs, digits) => `${Math.min(...xs).toFixed(digits)}–${Math.max(...xs).toFixed(digits)}`;
+const ordinal = n => n === 1 ? "every frame" : `every ${n}${[, "st", "nd", "rd"][n % 10 > 3 || Math.floor(n / 10) === 1 ? 0 : n % 10] || "th"} frame`;
+const prim = s => s.diag.runs[PRIMARY];
+
+// ---------- header ----------
+const vis = CFG.vis;
+const p0 = prim(SCENES_META[0]);
+document.getElementById("lede").textContent =
+  `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
+  `no calibration, LiDAR, GT poses or boxes. Each cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
+  `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).`;
+document.getElementById("pipeline").innerHTML =
+  [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
+document.getElementById("legend-frusta").textContent = `frusta ${ordinal(5 * vis.frame_stride)}`;
+
+// ---------- comparison table ----------
+const grade = {
+  scale: r => (r >= 0.8 && r <= 1.25) ? "good" : (r >= 0.5 ? "warn" : "bad"),
+  jitter: j => j <= 1.15 ? "good" : (j <= 1.5 ? "warn" : "bad"),
+  focal: e => Math.abs(e) <= 0.1 ? "good" : (Math.abs(e) <= 0.3 ? "warn" : "bad"),
+};
+const label = { good: "ok", warn: "off", bad: "poor" };
+const cell = (s, key, digits) => RUNS.map(r => `<td class="${r === PRIMARY ? "sel" : ""}">${s.diag.runs[r][key].toFixed(digits)}</td>`).join("");
+document.getElementById("cmp-title").textContent = RUNS.length > 1 ? "Run comparison, all scenes" : "Diagnostics, all scenes";
+document.getElementById("cmp-head").innerHTML = `
+  <tr class="group"><th></th><th colspan="${RUNS.length + 1}">focal length fx (px)</th><th colspan="${RUNS.length}">scale · chord / GT chord</th>
+  <th colspan="${RUNS.length}">jitter · path / chord</th><th colspan="2">${PRIMARY} run</th></tr>
+  <tr><th>scene</th><th>GT calib</th>${RUNS.map(r => `<th>${r}</th>`).join("").repeat(3)}<th>runtime</th><th>peak VRAM</th></tr>`;
+document.getElementById("cmp").innerHTML = SCENES_META.map(s => `
+  <tr><td>${s.id}</td><td>${s.diag.gt.fx.toFixed(0)}</td>${cell(s, "fx_mean", 0)}${cell(s, "chord_ratio", 2)}${cell(s, "path_over_chord", 2)}
+  <td>${prim(s).runtime_s.toFixed(0)} s</td><td>${prim(s).peak_vram_gb.toFixed(1)} GB</td></tr>`).join("");
+
+const gtFx = SCENES_META.map(s => s.diag.gt.fx);
+document.getElementById("notes").innerHTML = [
+  "GT columns come from Waymo ego poses and calibration (scripts/diagnose_pose.py). They are evaluation-side diagnostics and are never read by the pipeline.",
+  `Chord is the straight-line distance from the first to the last camera. GT path/chord is ${fmtRange(SCENES_META.map(s => s.diag.gt.path_over_chord), 2)} on these scenes, so values above that are pose jitter.`,
+  `The ${PRIMARY} run estimates fx ${fmtRange(SCENES_META.map(s => prim(s).fx_mean), 0)} px against ${fmtRange(gtFx, 0)} px calibrated, with scale ${fmtRange(SCENES_META.map(s => prim(s).chord_ratio), 2)}. A short focal length compresses the scene along the driving direction, which a uniform rescale cannot undo.`,
+  `The viewer shows the ${PRIMARY} run. Each run is one MapAnything call over all frames of a segment.`,
+].map(t => `<li>${t}</li>`).join("");
+
+// ---------- scene rail ----------
+const rail = document.getElementById("rail");
+SCENES_META.forEach(s => {
+  const b = document.createElement("button");
+  b.className = "scene-btn"; b.type = "button"; b.id = "scene-" + s.id;
+  b.setAttribute("aria-pressed", "false");
+  b.innerHTML = `<span class="top"><span class="id">${s.id}</span><span class="role">${ROLE_LABEL[s.category]}</span></span><span class="note">${s.note}</span>`;
+  b.addEventListener("click", () => selectScene(s.id));
+  rail.appendChild(b);
+});
+
+function renderReadout(s) {
+  const r = prim(s);
+  const fxErr = r.fx_mean / s.diag.gt.fx - 1;
+  const cards = [
+    { k: "Estimated focal", v: `${r.fx_mean.toFixed(0)} px`, sub: `GT calibration ${s.diag.gt.fx.toFixed(0)} px · per-frame std ${r.fx_std.toFixed(0)} px`, g: grade.focal(fxErr), note: `${(fxErr * 100).toFixed(0)}%` },
+    { k: "Metric scale", v: `× ${r.chord_ratio.toFixed(2)}`, sub: `start-to-end ${(r.chord_ratio * s.diag.gt.chord_m).toFixed(0)} m vs GT ${s.diag.gt.chord_m.toFixed(0)} m`, g: grade.scale(r.chord_ratio) },
+    { k: "Trajectory jitter", v: r.path_over_chord.toFixed(2), sub: `path / chord · GT is ${s.diag.gt.path_over_chord.toFixed(2)}`, g: grade.jitter(r.path_over_chord) },
+    { k: "Inference", v: `${r.runtime_s.toFixed(0)} s`, sub: `one call, all frames · peak ${r.peak_vram_gb.toFixed(1)} GB`, g: null },
+  ];
+  document.getElementById("readout").innerHTML = cards.map(c => `
+    <div class="metric"><span class="eyebrow">${c.k}</span><span class="val">${c.v}</span>
+    ${c.g ? `<span class="chip ${c.g}">${label[c.g]}${c.note ? " · " + c.note : ""}</span>` : ""}
+    <span class="sub">${c.sub}</span></div>`).join("");
+}
+
+// ---------- three.js viewer ----------
+const viewer = document.getElementById("viewer");
+const statusEl = document.getElementById("status");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+viewer.insertBefore(renderer.domElement, viewer.firstChild);
+const scene3 = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 5000);
+camera.up.set(0, 0, 1);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = false;
+controls.addEventListener("change", render);
+
+let current = null;
+let showCams = true;
+const loaded = {};
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function applyTheme() {
+  renderer.setClearColor(new THREE.Color(cssVar("--canvas")));
+  if (current) {
+    current.path.material.color.set(cssVar("--accent"));
+    current.frusta.material.color.set(cssVar("--muted"));
+  }
+  render();
+}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+function resize() {
+  const w = viewer.clientWidth, h = viewer.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+  render();
+}
+new ResizeObserver(resize).observe(viewer);
+
+function render() { renderer.render(scene3, camera); }
+
+function b64bytes(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function buildScene(d) {
+  const group = new THREE.Group();
+  const q = new Uint16Array(b64bytes(d.pos).buffer);
+  const col = b64bytes(d.col);
+  const pos = new Float32Array(d.n * 3);
+  for (let i = 0; i < d.n; i++) {
+    for (let a = 0; a < 3; a++) pos[3 * i + a] = d.lo[a] + (q[3 * i + a] / 65535) * (d.hi[a] - d.lo[a]);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+  const points = new THREE.Points(g, new THREE.PointsMaterial({ size: parseFloat(document.getElementById("pt-size").value), vertexColors: true, sizeAttenuation: true }));
+  group.add(points);
+
+  const centers = d.cams.map(m => new THREE.Vector3(m[0][3], m[1][3], m[2][3]));
+  const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(centers), new THREE.LineBasicMaterial({ color: cssVar("--accent") }));
+  group.add(path);
+
+  // frusta every 5th stored camera
+  const seg = [];
+  const depth = 1.6, hw = (d.w / 2) / d.fx * depth, hh = (d.h / 2) / d.fy * depth;
+  const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  d.cams.forEach((m, i) => {
+    if (i % 5 !== 0) return;
+    const c = centers[i];
+    const w = corners.map(([x, y]) => new THREE.Vector3(
+      m[0][0] * x + m[0][1] * y + m[0][2] * depth + m[0][3],
+      m[1][0] * x + m[1][1] * y + m[1][2] * depth + m[1][3],
+      m[2][0] * x + m[2][1] * y + m[2][2] * depth + m[2][3]));
+    for (let k = 0; k < 4; k++) { seg.push(c, w[k], w[k], w[(k + 1) % 4]); }
+  });
+  const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
+  frusta.visible = showCams;
+  group.add(frusta);
+
+  const box = new THREE.Box3().setFromBufferAttribute(g.getAttribute("position"));
+  return { group, points, path, frusta, centers, cams: d.cams, box };
+}
+
+function driverView() {
+  if (!current) return;
+  const m = current.cams[0];
+  const c = current.centers[0];
+  const fwd = new THREE.Vector3(m[0][2], m[1][2], m[2][2]).normalize();
+  const up = new THREE.Vector3(0, 0, 1);
+  camera.position.copy(c).addScaledVector(fwd, -10).addScaledVector(up, 4);
+  controls.target.copy(c).addScaledVector(fwd, 25);
+  controls.update(); render();
+}
+function topView() {
+  if (!current) return;
+  const center = new THREE.Vector3(); current.box.getCenter(center);
+  const size = new THREE.Vector3(); current.box.getSize(size);
+  const extent = Math.max(size.x, size.y);
+  const dist = extent / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.05;
+  camera.position.set(center.x - 0.001 * extent, center.y, center.z + dist);
+  controls.target.copy(center);
+  controls.update(); render();
+}
+
+function show(id) {
+  if (current) scene3.remove(current.group);
+  if (!loaded[id]) loaded[id] = buildScene(window.SCENES[id]);
+  current = loaded[id];
+  scene3.add(current.group);
+  current.frusta.visible = showCams;
+  current.path.material.color.set(cssVar("--accent"));
+  current.frusta.material.color.set(cssVar("--muted"));
+  statusEl.hidden = true;
+  driverView();
+}
+
+function selectScene(id) {
+  document.querySelectorAll(".scene-btn").forEach(b => b.setAttribute("aria-pressed", String(b.id === "scene-" + id)));
+  renderReadout(SCENES_META.find(s => s.id === id));
+  if (window.SCENES && window.SCENES[id]) { show(id); return; }
+  statusEl.hidden = false;
+  statusEl.textContent = `Loading ${id}…`;
+  const tag = document.createElement("script");
+  tag.src = `scenes/${id}.js`;
+  tag.onload = () => show(id);
+  tag.onerror = () => { statusEl.textContent = `Could not load scenes/${id}.js. Rebuild with scripts/build_viewer.py.`; };
+  document.body.appendChild(tag);
+}
+
+document.getElementById("view-chase").addEventListener("click", driverView);
+document.getElementById("view-top").addEventListener("click", topView);
+document.getElementById("toggle-cams").addEventListener("click", e => {
+  showCams = !showCams;
+  e.currentTarget.setAttribute("aria-pressed", String(showCams));
+  if (current) current.frusta.visible = showCams;
+  render();
+});
+document.getElementById("pt-size").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  Object.values(loaded).forEach(s => { s.points.material.size = v; });
+  render();
+});
+
+applyTheme();
+resize();
+selectScene(SCENES_META[0].id);
+</script>

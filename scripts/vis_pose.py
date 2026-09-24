@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
+from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import FRONT_CAM_ID, get_scene  # noqa: E402
 
 
@@ -139,7 +140,7 @@ def main() -> None:
     with open(os.path.join(out_dir, "viewer_data.js"), "w") as f:
         f.write(viewer_payload(args.scene_id, xyz, rgb, poses[:: args.frame_stride], k_mean, grid["image_hw"], meta))
     with open(os.path.join(out_dir, "vis_params.json"), "w") as f:
-        json.dump({**vars(args), "conf_threshold": conf_thr, "num_points": int(len(xyz))}, f, indent=2)
+        json.dump({**vars(args), "conf_threshold": conf_thr, "num_points": int(len(xyz)), "dashrecon_commit": git_commit()}, f, indent=2)
     print(f"[vis_pose] {args.scene_id}: {len(xyz)} points (conf >= {conf_thr:.3f}) -> {out_dir}", flush=True)
 
 
