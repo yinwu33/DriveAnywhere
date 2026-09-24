@@ -5,6 +5,8 @@ columns = [ground-truth FRONT image] + experiments; the ground truth exists only
 Still frames should be held-out test frames (every 10th, DECISIONS D7) so that row 0 is an interpolation
 check. Inputs: results/<exp>/<scene>/{metrics.json, meta.json, renders/frames/<t>_<offset>.jpg}
 (scripts/train_gs.py, scripts/render_lateral.py). Output: <out_dir>/<scene>_<t>.jpg and <out_dir>/summary.json.
+With --allow_missing, runs that are not finished and rendered yet are listed as missing (blank sheet cells) so
+the viewer can show partial results while the batch is still running; without it every run must exist.
 
 Example:
     .venvs/main/bin/python scripts/vis_training.py --results_root results --exps E3 E4 E5 \
@@ -15,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from PIL import Image
 
@@ -35,15 +38,22 @@ def main() -> None:
     parser.add_argument("--cell_width", type=int, required=True)
     parser.add_argument("--processed_root", required=True)
     parser.add_argument("--out_dir", required=True)
+    parser.add_argument("--allow_missing", action="store_true", help="partial results while training is running")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
     summary = {"exps": args.exps, "frames": args.frames, "offsets": args.offsets, "scenes": {},
+               "partial": args.allow_missing, "generated_at": time.strftime("%Y-%m-%d %H:%M"),
                "dashrecon_commit": git_commit()}
     for sc in DEV_SCENES:
-        runs = {}
+        runs, missing = {}, []
         for exp in args.exps:
             run_dir = os.path.join(args.results_root, exp, sc.scene_id)
+            done = os.path.exists(os.path.join(run_dir, "meta.json")) and os.path.exists(os.path.join(run_dir, "renders", "render_params.json"))
+            if not done:
+                assert args.allow_missing, f"{exp} {sc.scene_id} is not finished and rendered (use --allow_missing for partial output)"
+                missing.append(exp)
+                continue
             with open(os.path.join(run_dir, "metrics.json")) as f:
                 m = json.load(f)
             with open(os.path.join(run_dir, "meta.json")) as f:
@@ -56,7 +66,7 @@ def main() -> None:
                 "dashrecon_commit": meta["dashrecon_commit"],
             }
         sheets = []
-        for t in args.frames:
+        for t in args.frames if runs else []:
             gt = Image.open(os.path.join(args.processed_root, f"{sc.scene_idx:03d}", "images", f"{t:03d}_{FRONT_CAM_ID}.jpg"))
             cw = args.cell_width
             ch = round(gt.height * cw / gt.width)
@@ -64,14 +74,16 @@ def main() -> None:
             sheet.paste(gt.convert("RGB").resize((cw, ch), Image.LANCZOS), (0, 0))
             for r, off in enumerate(args.offsets):
                 for c, exp in enumerate(args.exps):
+                    if exp in missing:
+                        continue
                     img = Image.open(os.path.join(args.results_root, exp, sc.scene_id, "renders", "frames", f"{t:03d}_{off:g}.jpg"))
                     sheet.paste(img.convert("RGB").resize((cw, ch), Image.LANCZOS), ((c + 1) * cw, r * ch))
             name = f"{sc.scene_id}_{t:03d}.jpg"
             sheet.save(os.path.join(args.out_dir, name), quality=82)
             sheets.append(name)
-        summary["scenes"][sc.scene_id] = {"runs": runs, "sheets": sheets}
+        summary["scenes"][sc.scene_id] = {"runs": runs, "sheets": sheets, "missing": missing}
         print(f"[vis_training] {sc.scene_id}: " + " | ".join(
-            f"{e} test PSNR {r['test']['psnr']:.2f}" for e, r in runs.items()), flush=True)
+            f"{e} test PSNR {r['test']['psnr']:.2f}" for e, r in runs.items()) + (f" | missing {missing}" if missing else ""), flush=True)
     with open(os.path.join(args.out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 

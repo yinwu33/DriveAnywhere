@@ -344,6 +344,7 @@ tr.mean td { border-top: 2px solid var(--rule); }
       <div class="sheet" id="sheet">
         <img id="sheet-img" alt="Ground truth and E3, E4, E5 renders at lateral offsets">
       </div>
+      <p class="section-sub" id="sheet-empty" hidden>No experiment has finished for this scene yet.</p>
     </div>
     <div class="table-wrap">
       <table>
@@ -509,7 +510,8 @@ let trainFrame = 0;
 if (TRAIN) {
   document.getElementById("training").hidden = false;
   document.getElementById("training-sub").textContent =
-    `drivestudio static background · FRONT only · ${TRAIN.exps.join(" / ")} · offsets ${TRAIN.offsets.map(o => o === 0 ? "0" : "+" + o).join(", ")} estimated m`;
+    `drivestudio static background · FRONT only · ${TRAIN.exps.join(" / ")} · offsets ${TRAIN.offsets.map(o => o === 0 ? "0" : "+" + o).join(", ")} estimated m` +
+    (TRAIN.partial ? ` · partial: ${SCENES_META.reduce((a, s) => a + Object.keys(TRAIN.scenes[s.id].runs).length, 0)} of ${SCENES_META.length * TRAIN.exps.length} runs, ${TRAIN.generated_at}` : "");
   const cols = ["Ground truth", ...TRAIN.exps];
   const colsEl = document.getElementById("sheet-cols");
   colsEl.style.gridTemplateColumns = `repeat(${cols.length}, 1fr)`;
@@ -533,10 +535,22 @@ function renderTraining(id) {
   if (!TRAIN) return;
   TRAIN.frames.forEach((f, i) => document.getElementById(`train-frame-${i}`).setAttribute("aria-pressed", String(i === trainFrame)));
   const sc = TRAIN.scenes[id];
-  document.getElementById("sheet-img").src = `training/${sc.sheets[trainFrame]}`;
   const sheet = document.getElementById("sheet");
+  const hasSheet = sc.sheets.length > 0;
+  sheet.hidden = !hasSheet;
+  document.getElementById("sheet-cols").hidden = !hasSheet;
+  document.getElementById("sheet-empty").hidden = hasSheet;
+  if (hasSheet) document.getElementById("sheet-img").src = `training/${sc.sheets[trainFrame]}`;
   sheet.querySelectorAll(".sheet-label").forEach(e => e.remove());
   const nc = 1 + TRAIN.exps.length, nr = TRAIN.offsets.length;
+  sc.missing.forEach(e => {
+    const d = document.createElement("div");
+    d.className = "sheet-label";
+    const c = 1 + TRAIN.exps.indexOf(e);
+    d.style.left = `${100 * c / nc}%`; d.style.top = "0"; d.style.width = `${100 / nc}%`; d.style.height = "100%";
+    d.innerHTML = `<span>${e} is still training</span>`;
+    sheet.appendChild(d);
+  });
   TRAIN.offsets.forEach((o, r) => {
     const d = document.createElement("div");
     d.className = "sheet-label" + (r === 0 ? " on-image" : "");
@@ -546,16 +560,22 @@ function renderTraining(id) {
   });
   const rows = SCENES_META.map(s => {
     const runs = TRAIN.scenes[s.id].runs;
-    const best = { psnr: Math.max(...TRAIN.exps.map(e => runs[e].test.psnr)), ssim: Math.max(...TRAIN.exps.map(e => runs[e].test.ssim)), lpips: Math.min(...TRAIN.exps.map(e => runs[e].test.lpips)) };
+    const have = TRAIN.exps.filter(e => runs[e]);
+    const best = { psnr: Math.max(...have.map(e => runs[e].test.psnr)), ssim: Math.max(...have.map(e => runs[e].test.ssim)), lpips: Math.min(...have.map(e => runs[e].test.lpips)) };
     const cells = TRAIN.exps.map(e => {
+      if (!runs[e]) return `<td>—</td><td>—</td><td>—</td>`;
       const t = runs[e].test;
       return `<td class="${t.psnr === best.psnr ? "best" : ""}">${t.psnr.toFixed(2)}</td><td class="${t.ssim === best.ssim ? "best" : ""}">${t.ssim.toFixed(3)}</td><td class="${t.lpips === best.lpips ? "best" : ""}">${t.lpips.toFixed(3)}</td>`;
     }).join("");
-    const times = TRAIN.exps.map(e => `<td>${runs[e].runtime_min.toFixed(0)} min</td>`).join("");
+    const times = TRAIN.exps.map(e => runs[e] ? `<td>${runs[e].runtime_min.toFixed(0)} min</td>` : `<td>running</td>`).join("");
     return `<tr class="${s.id === id ? "cur" : ""}"><td>${s.id}</td>${cells}${times}</tr>`;
   });
+  // means only over complete experiments, so partial results are never compared on different scene sets
+  const complete = e => SCENES_META.every(s => TRAIN.scenes[s.id].runs[e]);
   const mean = (e, k) => SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].test[k], 0) / SCENES_META.length;
-  const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(e => `<td>${mean(e, "psnr").toFixed(2)}</td><td>${mean(e, "ssim").toFixed(3)}</td><td>${mean(e, "lpips").toFixed(3)}</td>`).join("")}${TRAIN.exps.map(e => `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>`).join("")}</tr>`;
+  const meanCells = e => complete(e) ? `<td>${mean(e, "psnr").toFixed(2)}</td><td>${mean(e, "ssim").toFixed(3)}</td><td>${mean(e, "lpips").toFixed(3)}</td>` : `<td colspan="3">after all ${SCENES_META.length} scenes</td>`;
+  const meanTime = e => complete(e) ? `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>` : `<td>—</td>`;
+  const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(meanCells).join("")}${TRAIN.exps.map(meanTime).join("")}</tr>`;
   document.getElementById("train-table").innerHTML = rows.join("") + meanRow;
 }
 
