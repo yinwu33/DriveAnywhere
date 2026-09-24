@@ -55,7 +55,12 @@ class DrivingDataset(SceneDataset):
             self.data_path = os.path.join(self.data_cfg.data_root, self.scene_idx)
             
         assert os.path.exists(self.data_path), f"{self.data_path} does not exist"
-        if os.path.exists(os.path.join(self.data_path, "ego_pose")):
+        # dashrecon patch P2: count frames from the images when the config asks for it, so non-oracle
+        # runs never touch ego_pose/ (AGENTS.md section 10.7); upstream configs keep the old behaviour
+        if "frames_from_images" in self.data_cfg and self.data_cfg.frames_from_images:
+            cam0 = self.data_cfg.pixel_source.cameras[0]
+            total_frames = len([f for f in os.listdir(os.path.join(self.data_path, "images")) if f.endswith(f"_{cam0}.jpg")])
+        elif os.path.exists(os.path.join(self.data_path, "ego_pose")):
             total_frames = len(os.listdir(os.path.join(self.data_path, "ego_pose")))
         elif os.path.exists(os.path.join(self.data_path, "lidar_pose")):
             total_frames = len(os.listdir(os.path.join(self.data_path, "lidar_pose")))
@@ -76,11 +81,13 @@ class DrivingDataset(SceneDataset):
 
         # ---- create data source ---- #
         self.pixel_source, self.lidar_source = self.build_data_source()
-        assert self.pixel_source is not None and self.lidar_source is not None, \
-            "Must have both pixel source and lidar source"
-        self.project_lidar_pts_on_images(
-            delete_out_of_view_points=True
-        )
+        # dashrecon patch P2: the lidar source is optional (load_lidar: False); without it the scene AABB
+        # falls back to the camera trajectory (SceneDataset.get_aabb) and nothing is projected
+        assert self.pixel_source is not None, "Must have a pixel source"
+        if self.lidar_source is not None:
+            self.project_lidar_pts_on_images(
+                delete_out_of_view_points=True
+            )
         self.aabb = self.get_aabb()
 
         # ---- define train and test indices ---- #

@@ -122,10 +122,16 @@ class MultiTrainer(BasicTrainer):
                 # ------ initialize gaussians ------
                 init_cfg = model_cfg.pop('init')
                 # sample points from the lidar point clouds
+                init_geometry = None
                 if init_cfg.get("from_lidar", None) is not None:
                     sampled_pts, sampled_color, sampled_time = dataset.get_lidar_samples(
                         **init_cfg.from_lidar, device=self.device
                     )
+                elif init_cfg.get("from_dashrecon", None) is not None:
+                    # dashrecon patch P3: init from a fused point cloud or an NKSR mesh (DECISIONS D9)
+                    from dashrecon.train.init import sample_init_points
+                    sampled_pts, sampled_color, init_geometry = sample_init_points(init_cfg.from_dashrecon, self.device)
+                    sampled_time = None
                 else:
                     sampled_pts, sampled_color, sampled_time = \
                         torch.empty(0, 3).to(self.device), torch.empty(0, 3).to(self.device), None
@@ -158,6 +164,10 @@ class MultiTrainer(BasicTrainer):
                 model.create_from_pcd(
                     init_means=processed_init_pts["pts"], init_colors=processed_init_pts["colors"]
                 )
+                if init_geometry is not None:
+                    # dashrecon patch P3: mesh samples come first; set their orientation and scale
+                    from dashrecon.train.init import apply_init_geometry
+                    apply_init_geometry(model, init_geometry)
                 
             if class_name == 'RigidNodes':
                 empty = self.safe_init_models(

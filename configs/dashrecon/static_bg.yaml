@@ -1,0 +1,166 @@
+# dashrecon Phase 6: static background only, FRONT camera only, no LiDAR / GT boxes / calibration.
+# Derived from configs/streetgs.yaml (DECISIONS C1): RigidNodes removed, Background + Sky + Affine + CamPose kept
+# (CamPose / Affine on, DECISIONS D4). Per-scene / per-experiment values (scene_idx, pose_dir, mask_dir,
+# Background init, mesh losses) are filled in by scripts/train_gs.py.
+seed: 0
+
+# ------------- Trainer ------------ #
+trainer:
+  type: dashrecon.train.trainer.DashreconTrainer
+  optim:
+    num_iters: 30000
+    use_grad_scaler: false
+    cache_buffer_freq: -1
+  render:
+    near_plane: 0.1
+    far_plane: 10000000000.0
+    antialiased: false
+    packed: false
+    absgrad: true
+    sparse_grad: false
+    batch_size: 1
+  losses:
+    rgb:
+      w: 0.8
+    ssim:
+      w: 0.2
+    mask:
+      w: 0.05
+      opacity_loss_type: bce
+    depth:                      # estimated MapAnything depth, inverse-depth L1 (AGENTS Phase 6 task 1)
+      w: 0.1
+      inverse_depth: True
+      normalize: False
+      loss_type: l1
+      key: est_depth_map        # upstream patch P4
+    exclude_dynamic: {}         # upstream patch P4: dynamic pixels excluded from every loss
+    affine:
+      w: 0.00001
+  res_schedule:
+    double_steps: 250
+    downscale_times: 2
+  gaussian_optim_general_cfg:
+    xyz:
+      lr: 1.6e-04
+      lr_final: 1.6e-06
+      scale_factor: scene_radius
+    sh_dc:
+      lr: 0.0025
+    sh_rest:
+      lr: 0.000125
+    opacity:
+      lr: 0.05
+    scaling:
+      lr: 0.005
+    rotation:
+      lr: 0.001
+  gaussian_ctrl_general_cfg:
+    warmup_steps: 500
+    reset_alpha_interval: 3000
+    refine_interval: 100
+    sh_degree_interval: 1000
+    n_split_samples: 2
+    reset_alpha_value: 0.01
+    densify_grad_thresh: 0.0005
+    densify_size_thresh: 0.003
+    cull_alpha_thresh: 0.005
+    cull_scale_thresh: 0.5
+    cull_screen_size: 0.15
+    split_screen_size: 0.05
+    stop_screen_size_at: 4000
+    stop_split_at: 15000
+    sh_degree: 3
+
+# ------------- Model ------------ #
+model:
+  Background:
+    type: models.gaussians.VanillaGaussians
+    init:
+      from_dashrecon:           # upstream patch P3; source / path set per experiment
+        source: ???
+        path: ???
+        num_samples: 800_000
+        seed: 0
+        normal_scale_ratio: 0.2
+      near_randoms: 100_000
+      far_randoms: 100_000
+    reg:
+      sharp_shape_reg:
+        w: 1.
+        step_interval: 10
+        max_gauss_ratio: 10.
+  Sky:
+    type: models.modules.EnvLight
+    params:
+      resolution: 1024
+    optim:
+      all:
+        lr: 0.01
+  Affine:
+    type: models.modules.AffineTransform
+    params:
+      embedding_dim: 4
+      base_mlp_layer_width: 64
+      pixel_affine: False
+    optim:
+      all:
+        lr: 1.0e-5
+        weight_decay: 1.0e-6
+  CamPose:
+    type: models.modules.CameraOptModule
+    optim:
+      all:
+        lr: 1.0e-5
+        weight_decay: 1.0e-6
+
+# ------------- Data ------------ #
+data:
+  data_root: data/waymo/processed/validation
+  dataset: waymo
+  scene_idx: ???
+  start_timestep: 0
+  end_timestep: -1
+  preload_device: cuda
+  frames_from_images: True      # upstream patch P2: never list ego_pose/
+  pixel_source:
+    type: dashrecon.train.pixel_source.DashreconPixelSource
+    cameras: [0]
+    downscale_when_loading: [2] # 1920x1280 -> 960x640 (DECISIONS D)
+    downscale: 1
+    undistort: False            # DECISIONS D3
+    test_image_stride: 10       # DECISIONS D7
+    load_sky_mask: True         # SegFormer sky (Phase 4)
+    load_dynamic_mask: True     # Grounded-SAM-2 (Phase 4)
+    load_objects: False
+    load_smpl: False
+    pose_dir: ???
+    mask_dir: ???
+    depth_conf_percentile: 30
+    depth_max: 60
+    sampler:
+      buffer_downscale: 8
+      buffer_ratio: 0.5
+      start_enhance_weight: 3
+  lidar_source:
+    type: datasets.waymo.waymo_sourceloader.WaymoLiDARSource
+    load_lidar: False           # upstream patch P2
+
+# ------------- render ------------ #
+render:
+  fps: 10
+  render_full: True
+  render_test: True
+  render_novel:
+    traj_types:
+      - front_center_interp
+    fps: 24
+  vis_lidar: False
+  vis_sky: False
+  vis_error: False
+
+# ------------- logging ------------ #
+logging:
+  vis_freq: 5000
+  print_freq: 500
+  saveckpt_freq: 15000
+  save_seperate_video: True

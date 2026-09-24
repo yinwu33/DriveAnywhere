@@ -529,6 +529,10 @@ class BasicTrainer(nn.Module):
             valid_loss_mask = (1.0 - image_infos["egocar_masks"]).float()
         else:
             valid_loss_mask = torch.ones_like(image_infos["sky_masks"])
+        # dashrecon patch P4: with `losses.exclude_dynamic` present, dynamic-object pixels are excluded from
+        # every loss below (rgb, ssim, sky opacity, depth); upstream configs do not have the key
+        if "exclude_dynamic" in self.losses_dict:
+            valid_loss_mask = valid_loss_mask * (1.0 - image_infos["dynamic_masks"])
             
         gt_rgb = image_infos["pixels"] * valid_loss_mask[..., None]
         predicted_rgb = outputs["rgb"] * valid_loss_mask[..., None]
@@ -551,7 +555,9 @@ class BasicTrainer(nn.Module):
         
         # depth loss
         if self.depth_loss_fn is not None:
-            gt_depth = image_infos["lidar_depth_map"] 
+            # dashrecon patch P4: the supervising depth map key is configurable (default: upstream lidar depth)
+            depth_key = self.losses_dict.depth.key if "key" in self.losses_dict.depth else "lidar_depth_map"
+            gt_depth = image_infos[depth_key]
             lidar_hit_mask = (gt_depth > 0).float() * valid_loss_mask
             pred_depth = outputs["depth"]
             depth_loss = self.depth_loss_fn(pred_depth, gt_depth, lidar_hit_mask)

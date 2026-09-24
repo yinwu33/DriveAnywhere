@@ -98,7 +98,7 @@ def setup(args):
     # Backup codes
     backup_project(
         os.path.join(log_dir, 'backup'), "./", 
-        ["configs", "datasets", "models", "utils", "tools"], 
+        ["configs", "datasets", "models", "utils", "tools", "dashrecon"],  # dashrecon patch P5
         [".py", ".h", ".cpp", ".cuh", ".cu", ".sh", ".yaml"]
     )
     return cfg
