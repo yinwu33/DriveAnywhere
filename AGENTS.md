@@ -357,7 +357,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] 可执行性评估：结论见 `docs/DECISIONS.md`，待定问题见 `docs/OPEN_QUESTIONS.md`
 - [x] Phase 0：环境与数据（2026-09-24：3 个 uv venv；5 个 validation 开发场景）
 - [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
-- [ ] Phase 4：动态与天空掩码
+- [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
 - [ ] Phase 5：点云融合与清理
 - [ ] Phase 6：E3–E4（含横向偏移渲染）
 - [ ] Phase 7：NKSR 与 E5
@@ -500,3 +500,4 @@ done
   - §11：已确认项和畸变风险。
   - §12：checklist 顺序。
 - 2026-09-24：Phase 0、Phase 3 完成（§12）；§4 补上新增的文件；新增 §13（Phase 0 / Phase 3 / 网页可视化的复现命令、查看方式和产物位置）。网页源码在 `dashrecon/viewer/`，数据由 `scripts/vis_pose.py`、`scripts/diagnose_pose.py`、`scripts/build_viewer.py` 生成。
+- 2026-09-24：Phase 4 完成（§12）；§4 列出 masks 后端；§13 重排为 Phase 3 → Phase 4 → 可视化 → 查看网页 → 产物位置，网页输出目录改为 `data/dashrecon/viewer/review`。
