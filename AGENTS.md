@@ -359,6 +359,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
 - [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
 - [ ] Phase 5：点云融合与清理
+- [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
 - [ ] Phase 6：E3–E4（含横向偏移渲染）
 - [ ] Phase 7：NKSR 与 E5
 - [ ] （延后）Phase 1：评测工具

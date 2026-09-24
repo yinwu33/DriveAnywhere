@@ -173,14 +173,34 @@ def mask_to_depth_grid(mask: np.ndarray, depth_grid: dict) -> np.ndarray:
     return small[top : top + th, left : left + tw] == 255
 
 
-def write_ply(path: str, xyz: np.ndarray, rgb: np.ndarray, normals: np.ndarray | None = None) -> None:
-    """Write a binary little-endian PLY with float32 xyz, uint8 rgb and optional float32 normals.
+def image_to_depth_grid(path: str, depth_grid: dict) -> np.ndarray:
+    """Load an RGB image and resize + crop it exactly like MapAnything's ``crop_resize_if_necessary``.
+
+    Returns:
+        (h,w,3) uint8 image on the depth grid.
+    """
+    img = Image.open(path).convert("RGB")
+    assert [img.size[1], img.size[0]] == depth_grid["image_hw"], (img.size, depth_grid["image_hw"])
+    rh, rw = depth_grid["resized_hw"]
+    top, left = depth_grid["crop_top_left"]
+    th, tw = depth_grid["depth_hw"]
+    img = img.resize((rw, rh), resample=Image.LANCZOS)
+    return np.asarray(img)[top : top + th, left : left + tw]
+
+
+PLY_TYPES = {"<f4": "float", "u1": "uchar"}
+
+
+def write_ply(path: str, xyz: np.ndarray, rgb: np.ndarray, normals: np.ndarray | None = None,
+              labels: np.ndarray | None = None) -> None:
+    """Write a binary little-endian PLY: float32 xyz, optional float32 normals, uint8 rgb, optional uint8 label.
 
     Args:
         path: output file.
         xyz: (N,3) positions.
         rgb: (N,3) uint8 colours.
         normals: optional (N,3) normals.
+        labels: optional (N,) uint8 per-point class codes (meaning documented by the writer's meta.json).
     """
     assert xyz.ndim == 2 and xyz.shape[1] == 3, xyz.shape
     assert rgb.shape == xyz.shape and rgb.dtype == np.uint8, (rgb.shape, rgb.dtype)
@@ -189,12 +209,17 @@ def write_ply(path: str, xyz: np.ndarray, rgb: np.ndarray, normals: np.ndarray |
         assert normals.shape == xyz.shape, normals.shape
         fields += [("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4")]
     fields += [("red", "u1"), ("green", "u1"), ("blue", "u1")]
+    if labels is not None:
+        assert labels.shape == (len(xyz),) and labels.dtype == np.uint8, (labels.shape, labels.dtype)
+        fields += [("label", "u1")]
     data = np.empty(len(xyz), dtype=fields)
     data["x"], data["y"], data["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
     if normals is not None:
         data["nx"], data["ny"], data["nz"] = normals[:, 0], normals[:, 1], normals[:, 2]
     data["red"], data["green"], data["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
-    ply_types = {"<f4": "float", "u1": "uchar"}
+    if labels is not None:
+        data["label"] = labels
+    ply_types = PLY_TYPES
     header = ["ply", "format binary_little_endian 1.0", f"element vertex {len(xyz)}"]
     header += [f"property {ply_types[t]} {n}" for n, t in fields]
     header += ["end_header"]
@@ -202,3 +227,37 @@ def write_ply(path: str, xyz: np.ndarray, rgb: np.ndarray, normals: np.ndarray |
     with open(path, "wb") as f:
         f.write(("\n".join(header) + "\n").encode("ascii"))
         f.write(data.tobytes())
+
+
+def read_ply(path: str) -> dict[str, np.ndarray]:
+    """Read a PLY written by :func:`write_ply`.
+
+    Returns:
+        Dict with ``xyz`` (N,3) float32, ``rgb`` (N,3) uint8 and, when present, ``normals`` (N,3) float32
+        and ``labels`` (N,) uint8.
+    """
+    inv_types = {v: k for k, v in PLY_TYPES.items()}
+    with open(path, "rb") as f:
+        assert f.readline() == b"ply\n"
+        assert f.readline() == b"format binary_little_endian 1.0\n"
+        n, fields = None, []
+        while True:
+            line = f.readline().decode("ascii").strip()
+            if line == "end_header":
+                break
+            parts = line.split()
+            if parts[0] == "element":
+                assert parts[1] == "vertex", line
+                n = int(parts[2])
+            else:
+                assert parts[0] == "property", line
+                fields.append((parts[2], inv_types[parts[1]]))
+        data = np.frombuffer(f.read(), dtype=fields, count=n)
+    names = [name for name, _ in fields]
+    out = {"xyz": np.stack([data["x"], data["y"], data["z"]], axis=1),
+           "rgb": np.stack([data["red"], data["green"], data["blue"]], axis=1)}
+    if "nx" in names:
+        out["normals"] = np.stack([data["nx"], data["ny"], data["nz"]], axis=1)
+    if "label" in names:
+        out["labels"] = data["label"].copy()
+    return out

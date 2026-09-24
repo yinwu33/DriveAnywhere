@@ -27,17 +27,6 @@ from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import FRONT_CAM_ID, get_scene  # noqa: E402
 
 
-def image_on_depth_grid(path: str, grid: dict) -> np.ndarray:
-    """Resize + crop an image exactly like MapAnything's ``crop_resize_if_necessary``."""
-    img = Image.open(path).convert("RGB")
-    assert [img.size[1], img.size[0]] == grid["image_hw"], (img.size, grid["image_hw"])
-    rh, rw = grid["resized_hw"]
-    top, left = grid["crop_top_left"]
-    th, tw = grid["depth_hw"]
-    img = img.resize((rw, rh), resample=Image.LANCZOS)
-    return np.asarray(img)[top : top + th, left : left + tw]
-
-
 def backproject(depth: np.ndarray, k: np.ndarray, c2w: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """World points of the masked pixels of a z-depth map (pixel centres at integer coordinates)."""
     v, u = np.nonzero(mask)
@@ -138,7 +127,7 @@ def main() -> None:
         depth = io.read_depth(args.scene_dir, t)
         conf = io.read_depth_conf(args.scene_dir, t)
         mask = (depth > 0) & (depth < args.max_depth) & (conf >= conf_thr)
-        rgb = image_on_depth_grid(os.path.join(img_dir, f"{t:03d}_{FRONT_CAM_ID}.jpg"), grid)
+        rgb = io.image_to_depth_grid(os.path.join(img_dir, f"{t:03d}_{FRONT_CAM_ID}.jpg"), grid)
         all_xyz.append(backproject(depth, k_depth[i], poses[i], mask))
         all_rgb.append(rgb[mask])
         if args.mask_dir is not None:

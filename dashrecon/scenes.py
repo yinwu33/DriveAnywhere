@@ -62,3 +62,16 @@ def front_image_paths(scene_dir: str, start: int, end: int) -> tuple[np.ndarray,
     for p in paths:
         assert os.path.exists(p), p
     return frames, paths
+
+
+def train_frame_mask(frames: np.ndarray, start_timestep: int, test_stride: int) -> np.ndarray:
+    """True for training frames, False for held-out test frames (DECISIONS D7).
+
+    Mirrors drivestudio ``DrivingDataset.split_train_test`` (datasets/driving_dataset.py:584-596): with
+    stride s > 0 the test timesteps are s, 2s, ... counted from ``start_timestep``; s = 0 means no test frames.
+    """
+    assert test_stride >= 0, test_stride
+    if test_stride == 0:
+        return np.ones(len(frames), dtype=bool)
+    rel = frames - start_timestep
+    return ~((rel >= test_stride) & (rel % test_stride == 0))
