@@ -8,10 +8,11 @@ Differences from drivestudio's built-in viewer (tools/train.py --enable_viewer, 
     - loads finished runs (config.yaml + checkpoint_final.pth of each --log_dirs entry);
     - renders all Background Gaussians with their view-dependent (SH) colour over the Sky model (EnvLight);
       no exposure model (Affine), no dynamic objects (these runs have none);
-    - GUI: "run" switches between the given runs (the camera goes back to the chosen frame and offset, since runs of
-      different camera pipelines have different world frames); "frame" and "lateral offset" put the camera at that FRONT
-      camera (the pose the run was trained with, with its estimated vertical field of view) shifted along its right
-      axis in the run's scene units (see DECISIONS L for how they relate to metres); "go to frame" re-applies it.
+    - GUI: "run" switches between the given runs (the camera goes back to the chosen frame and move, since runs of
+      different camera pipelines have different world frames); "frame" puts the camera at that FRONT camera (the pose
+      the run was trained with, with its estimated vertical field of view), moved by "right" / "up" (scene units, see
+      DECISIONS L for how they relate to metres) and turned by "yaw" / "pitch" (degrees) as the Phase 9 views
+      (dashrecon.gen.views.ViewMove, e.g. E8 round 0 = right 1.5, yaw 15); "go to frame" re-applies it.
 Mouse: drag to orbit, right-drag to pan, scroll to move (viser controls); world z is up.
 
 Example (main venv):
@@ -29,6 +30,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import build_trainer  # noqa: E402
+from dashrecon.gen.views import ViewMove, moved_c2w  # noqa: E402
 
 
 def rotmat_to_wxyz(r: np.ndarray) -> np.ndarray:
@@ -117,16 +119,19 @@ def main() -> None:
 
     run_choice = server.gui.add_dropdown("run", options=[r.label for r in runs], initial_value=runs[0].label)
     frame = server.gui.add_slider("frame", min=0, max=len(runs[0].frames) - 1, step=1, initial_value=0)
-    offset = server.gui.add_slider("lateral offset", min=-3.0, max=3.0, step=0.25, initial_value=0.0)
+    move = {"right": server.gui.add_slider("right", min=-4.0, max=4.0, step=0.25, initial_value=0.0),
+            "up": server.gui.add_slider("up", min=-1.0, max=4.0, step=0.25, initial_value=0.0),
+            "yaw": server.gui.add_slider("yaw", min=-180.0, max=180.0, step=5.0, initial_value=0.0),
+            "pitch": server.gui.add_slider("pitch", min=-45.0, max=45.0, step=5.0, initial_value=0.0)}
     go = server.gui.add_button("go to frame")
 
     def place(client) -> None:
         run = state["run"]
-        c2w = run.c2w[int(frame.value)]
+        c2w = moved_c2w(torch.from_numpy(run.c2w[int(frame.value)]), ViewMove(**{k: float(v.value) for k, v in move.items()})).numpy()
         with client.atomic():
             client.camera.up_direction = (0.0, 0.0, 1.0)
             client.camera.wxyz = rotmat_to_wxyz(c2w[:3, :3])
-            client.camera.position = c2w[:3, 3] + float(offset.value) * c2w[:3, 0]
+            client.camera.position = c2w[:3, 3]
             client.camera.fov = run.vfov[int(frame.value)]
 
     def place_all(_=None) -> None:
@@ -141,7 +146,8 @@ def main() -> None:
         viewer.rerender(None)
 
     frame.on_update(place_all)
-    offset.on_update(place_all)
+    for v in move.values():
+        v.on_update(place_all)
     go.on_click(place_all)
     server.on_client_connect(place)
     print(f"[view_gs] serving {len(runs)} run(s) on port {args.port}: " + ", ".join(r.label for r in runs), flush=True)
