@@ -709,7 +709,7 @@ done
 ```bash
 bash envs/setup_wan.sh   # Wan2.1-VACE-1.3B（补全）与 Wan2.1-T2V-1.3B transformer（重绘），HF_HUB_OFFLINE=1 运行
 # E8：每个相机运动一轮（渲染 + 空洞 -> Wan 补全 -> 深度 -> 生成 Gaussian 并蒸馏），之前各轮作为 3D 记忆
-bash scripts/run_phase9.sh val056 results/E5c/val056 results/E8/val056 0 right=1.5,yaw=15
+bash scripts/run_phase9.sh val056 results/E5c/val056 results/E8/val056 0 1 right=1.5,yaw=15
 # 已完成前 N 轮时从第 N 轮接着跑：first_round 设为 N，前面各轮的 move 原样列出
 # 跨相机检查（评测代码，读 GT）：4 个侧相机 + E5c 定义的未观测区域 -> <run>/cross_camera_p9/
 export PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1

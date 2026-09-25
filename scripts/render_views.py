@@ -1,15 +1,16 @@
 """Phase 9 step 1 (DECISIONS D16-D18): render a free-viewpoint trajectory of a trained run and its hole masks.
 
-Every FRONT frame's camera (as trained, CamPose refined) is moved by --move (dashrecon.gen.views.ViewMove, e.g.
+Every --frame_stride-th FRONT frame's camera (as trained, CamPose refined) is moved by --move (dashrecon.gen.views.ViewMove, e.g.
 "right=1.5,yaw=15") and rendered: RGB with the sky model (rays recomputed for the moved camera), Gaussian opacity
 and z-depth. Holes are the pixels no training view saw at comparable resolution (dashrecon.gen.views, visibility
 test against every --obs_stride-th training frame), excluding sky. With --memory_dirs (the trajectories filled in
 earlier rounds, scripts/fill_views.py) every --obs_stride-th view of those, rendered by the current model, also
 counts as an observer: the 3D memory that keeps later rounds from generating the same region again.
 
-Output <out_dir>/: rgb/<k:03d>.png, mask/<k:03d>.png (255 = hole), depth/<k:03d>.npy (float16 z-depth),
-count/<k:03d>.npy (float16 number of training views that saw the pixel), cams.json (per view: frame, c2w,
-drivestudio intrinsics; parameters, hole fractions, commit).
+Output <out_dir>/ (k = view number 0.. in frame order; cams.json gives each view's frame): rgb/<k:03d>.png,
+mask/<k:03d>.png (255 = hole), depth/<k:03d>.npy (float16 z-depth), count/<k:03d>.npy (float16 number of training
+views that saw the pixel), cams.json (per view: frame, c2w, drivestudio intrinsics; parameters, hole fractions,
+commit).
 
 Example (main venv):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
@@ -37,6 +38,7 @@ def main() -> None:
     parser.add_argument("--log_dir", required=True)
     parser.add_argument("--move", required=True, help='e.g. "right=1.5,yaw=15" (keys: right, up, forward, yaw, pitch)')
     parser.add_argument("--out_dir", required=True)
+    parser.add_argument("--frame_stride", type=int, default=1, help="render every n-th frame (2 halves the Wan fill time)")
     parser.add_argument("--obs_stride", type=int, default=2)
     parser.add_argument("--memory_dirs", nargs="*", default=[], help="views dirs filled in earlier rounds")
     parser.add_argument("--depth_tol", type=float, default=0.10)
@@ -65,17 +67,17 @@ def main() -> None:
         os.makedirs(os.path.join(args.out_dir, sub), exist_ok=True)
     cams, hole_frac = [], []
     with torch.no_grad():
-        for k in range(len(dataset.full_image_set)):
+        for v, k in enumerate(range(0, len(dataset.full_image_set), args.frame_stride)):
             out, ii, ci, c2w = render_moved(trainer, dataset, k, move, device)
             h, w = int(ci["height"]), int(ci["width"])
             depth = out["depth"][..., 0]
             hole, count, _ = hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, args.depth_tol, args.res_ratio,
                                        args.sky_alpha, args.sky_elev_deg, args.open_px, args.min_area, args.dilate_px)
             rgb = (out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8)
-            Image.fromarray(rgb).save(os.path.join(args.out_dir, "rgb", f"{k:03d}.png"))
-            Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(args.out_dir, "mask", f"{k:03d}.png"))
-            np.save(os.path.join(args.out_dir, "depth", f"{k:03d}.npy"), depth.cpu().numpy().astype(np.float16))
-            np.save(os.path.join(args.out_dir, "count", f"{k:03d}.npy"), count.astype(np.float16))
+            Image.fromarray(rgb).save(os.path.join(args.out_dir, "rgb", f"{v:03d}.png"))
+            Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(args.out_dir, "mask", f"{v:03d}.png"))
+            np.save(os.path.join(args.out_dir, "depth", f"{v:03d}.npy"), depth.cpu().numpy().astype(np.float16))
+            np.save(os.path.join(args.out_dir, "count", f"{v:03d}.npy"), count.astype(np.float16))
             cams.append({"frame": int(dataset.start_timestep + k), "c2w": c2w.cpu().numpy().tolist(), "K": ci["intrinsics"].cpu().numpy().tolist(),
                          "hw": [h, w]})
             hole_frac.append(float(hole.mean()))
