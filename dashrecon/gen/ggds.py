@@ -32,9 +32,8 @@ def disparity_image(depth: torch.Tensor, valid: torch.Tensor, max_pct: float) ->
     mesh does not cover) stays at 0. This mimics the relative inverse depth (DPT) the depth ControlNet was
     trained on, where the sky is black and distant structure is dark grey rather than black.
     """
+    assert bool(valid.any()), "the mesh covers no pixel of this view: no ControlNet condition"
     disp = torch.zeros_like(depth)
-    if valid.sum() == 0:
-        return disp
     disp[valid] = 1.0 / depth[valid].clamp(min=1e-6)
     hi = torch.quantile(disp[valid], max_pct / 100.0)
     return (disp / hi.clamp(min=1e-6)).clamp(0.0, 1.0) * valid
