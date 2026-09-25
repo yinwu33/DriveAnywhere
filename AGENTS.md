@@ -561,7 +561,8 @@ for s in val056 val039 val041 val087 val094; do
   done
 done
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
+    --diagnostics data/dashrecon/diagnostics/phase3_pose.json --page_title "DashRecon Pose Review" \
+    --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
     --training_dir results/_vis --results_root results --splat_exps E5 E6 --out_dir data/dashrecon/viewer/review
 ```
 
@@ -657,7 +658,14 @@ done
 .venvs/mapanything/bin/python scripts/diagnose_pose.py --processed_root data/waymo/processed/validation \
     --tag pose-glomap_depth-mapanything --run glomap=data/dashrecon --primary glomap \
     --out data/dashrecon/diagnostics/phase3_pose_glomap.json
+# 第二个网页（自标定流水线；两套数据放不进一个 64 MB 的 Artifact）：13.9 的可视化命令换成新目录，
+# vis_pose / vis_masks 的 --processed_root 用 $U
+.venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-glomap_depth-mapanything \
+    --diagnostics data/dashrecon/diagnostics/phase3_pose_glomap.json --page_title "DashRecon Calibrated Review" \
+    --mask_tag mask-gsam2_sky-segformer_img-glomap --fusion --mesh --out_dir data/dashrecon/viewer/calib
 ```
+
+在线：https://claude.ai/artifact/（发布后填写）
 
 ---
 

@@ -429,15 +429,21 @@ const vis = CFG.vis;
 const p0 = prim(SCENES_META[0]);
 document.getElementById("eyebrow").textContent = "DriveAnywhere · AGENTS.md Phase 3 pose + pointmap" +
   (MASKS ? " · Phase 4 masks" : "") + (FUSION ? " · Phase 5 fusion" : "") + (MESH ? " · Phase 7 mesh" : "") + (TRAIN ? " · Phase 6 3DGS" : "");
+const CAMERA = CFG.camera;
+const SELF_CALIBRATED = CAMERA.source === "glomap";
 document.getElementById("lede").textContent =
-  `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: ` +
+  (SELF_CALIBRATED
+    ? `Self-calibrated reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. One shared camera (focal length and radial distortion) and the trajectory come from GLOMAP structure-from-motion on the FRONT video; the images are undistorted with that camera and MapAnything adds dense depth given it. The pipeline reads only the raw FRONT images: `
+    : `MapAnything reconstructions of ${SCENES_META.length} Waymo v1.4.3 validation segments. The pipeline reads only the raw FRONT images: `) +
   `no calibration, LiDAR, GT poses or boxes. The raw cloud is back-projected from ${ordinal(vis.frame_stride)}'s depth, keeping the top ` +
   `${100 - vis.conf_percentile}% of confidence and depths up to ${vis.max_depth} m (${vis.max_points.toLocaleString("en-US")} points per scene).` +
   (MASKS ? " Dynamic-object, sky and road masks come from text-prompted detection and semantic segmentation of the same frames." : "") +
   (FUSION ? " The fused cloud merges all training frames after masking, a multi-view consistency check, voxel averaging, outlier removal and road smoothing." : "") +
   (MESH ? " The mesh is an NKSR surface reconstructed from the fused cloud and its oriented normals." : "");
 document.getElementById("pipeline").innerHTML =
-  [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
+  (SELF_CALIBRATED
+    ? ["camera: GLOMAP self-calibration", "undistorted FRONT", `depth: ${p0.model_id}`, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: MapAnything depth", "z-up: mean camera up"]
+    : [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"]).map(t => `<span>${t}</span>`).join("");
 const FRUSTA_EVERY = 10;
 document.getElementById("legend-frusta").textContent = `frusta ${ordinal(FRUSTA_EVERY)}`;
 
@@ -463,7 +469,9 @@ document.getElementById("notes").innerHTML = [
   "GT columns come from Waymo ego poses and calibration (scripts/diagnose_pose.py). They are evaluation-side diagnostics and are never read by the pipeline.",
   `Chord is the straight-line distance from the first to the last camera. GT path/chord is ${fmtRange(SCENES_META.map(s => s.diag.gt.path_over_chord), 2)} on these scenes, so values above that are pose jitter.`,
   `The ${PRIMARY} run estimates fx ${fmtRange(SCENES_META.map(s => prim(s).fx_mean), 0)} px against ${fmtRange(gtFx, 0)} px calibrated, with scale ${fmtRange(SCENES_META.map(s => prim(s).chord_ratio), 2)}. A short focal length compresses the scene along the driving direction, which a uniform rescale cannot undo.`,
-  `The viewer shows the ${PRIMARY} run. Each run is one MapAnything call over all frames of a segment.`,
+  SELF_CALIBRATED
+    ? `The viewer shows the ${PRIMARY} run: one shared camera per segment from GLOMAP (so the per-frame focal spread is 0), poses from GLOMAP scaled to the MapAnything depth. Radial distortion k2 is ${fmtRange(SCENES_META.map(s => CAMERA.distortion_k1_k2[s.id][1]), 2)} (Waymo calibration about −0.34).`
+    : `The viewer shows the ${PRIMARY} run. Each run is one MapAnything call over all frames of a segment.`,
 ].map(t => `<li>${t}</li>`).join("");
 
 // ---------- mask section static parts ----------

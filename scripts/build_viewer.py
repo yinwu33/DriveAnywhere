@@ -20,7 +20,8 @@ The same directory can be published as a Claude Artifact (index.html + config.js
 
 Example:
     python3 scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
-        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh --training_dir results/_vis \
+        --diagnostics data/dashrecon/diagnostics/phase3_pose.json --page_title "DashRecon Pose Review" \
+        --mask_tag mask-gsam2_sky-segformer --fusion --mesh --training_dir results/_vis \
         --results_root results --splat_exps E5 E6 \
         --out_dir data/dashrecon/viewer/review
 """
@@ -44,6 +45,7 @@ def main() -> None:
     parser.add_argument("--scene_root", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--diagnostics", required=True)
+    parser.add_argument("--page_title", required=True, help="<title> of the built page, e.g. DashRecon Pose Review")
     parser.add_argument("--mask_tag", default=None, help="Phase 4 mask backend tag; adds the mask panel")
     parser.add_argument("--fusion", action="store_true", help="add Phase 5 fusion (<tag>__<mask_tag>); needs --mask_tag")
     parser.add_argument("--mesh", action="store_true", help="add the Phase 7 NKSR mesh; needs --fusion")
@@ -146,8 +148,16 @@ def main() -> None:
                 shutil.copyfile(src, os.path.join(args.out_dir, "scenes", f"{sc.scene_id}.{exp}.splat.js"))
                 splats["scenes"][sc.scene_id][exp] = {"kept": sp["kept"], "total": sp["total"], "dashrecon_commit": sp["dashrecon_commit"]}
 
+    # camera source of the pose products: runs with a self-calibration (DECISIONS D13) record camera_dir
+    pose_metas = [io.read_meta(io.scene_dir(args.scene_root, sc.scene_id, args.tag)) for sc in DEV_SCENES]
+    calibrated = {"camera_dir" in m for m in pose_metas}
+    assert len(calibrated) == 1, "all scenes must come from the same camera pipeline"
+    camera = ({"source": "glomap", "distortion_k1_k2": {sc.scene_id: m["distortion_k1_k2"] for sc, m in zip(DEV_SCENES, pose_metas)}}
+              if calibrated.pop() else {"source": "mapanything"})
+
     config = {
         "tag": args.tag,
+        "camera": camera,
         "built_from_commit": git_commit(),
         "vis": vis,
         "scenes": [{"id": s.scene_id, "category": s.category, "note": s.note} for s in DEV_SCENES],
@@ -160,7 +170,12 @@ def main() -> None:
     }
     with open(os.path.join(args.out_dir, "config.js"), "w") as f:
         f.write(f"window.VIEWER_CONFIG = {json.dumps(config, indent=1)};\n")
-    shutil.copyfile(TEMPLATE, os.path.join(args.out_dir, "index.html"))
+    with open(TEMPLATE) as f:
+        page = f.read()
+    default_title = "<title>DashRecon Pose Review</title>"
+    assert page.count(default_title) == 1, "template title changed"
+    with open(os.path.join(args.out_dir, "index.html"), "w") as f:
+        f.write(page.replace(default_title, f"<title>{args.page_title}</title>"))
     print(f"[build_viewer] wrote {args.out_dir} ({len(DEV_SCENES)} scenes)", flush=True)
 
 
