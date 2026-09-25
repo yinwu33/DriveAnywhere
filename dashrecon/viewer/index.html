@@ -211,7 +211,7 @@ tr.cur td:first-child { color: var(--accent); font-weight: 500; }
 .gen-list figure { margin: 0; display: grid; gap: 4px; }
 .gen-list img { aspect-ratio: auto; }
 .gen-list figcaption { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.gen-cols { display: grid; grid-template-columns: repeat(3, 1fr); }
+.gen-cols { display: grid; }
 .gen-cols span { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--muted); text-align: center; }
 .sheet-cols { display: grid; gap: 0; margin-bottom: 4px; }
 .sheet-cols span { font-family: var(--display); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; color: var(--muted); text-align: center; }
@@ -371,16 +371,22 @@ tr.mean td { border-top: 2px solid var(--rule); }
     </div>
     <div class="card" id="gen-card" hidden>
       <div class="toolbar-inline" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;">
-        <span class="eyebrow">SDXL targets used by E6</span>
+        <span class="eyebrow" id="gen-title"></span>
         <span class="section-sub" id="gen-sub"></span>
       </div>
-      <div class="gen-cols"><span>E6 render</span><span>mesh disparity (ControlNet input)</span><span>SDXL target</span></div>
+      <div class="gen-cols" id="gen-cols"></div>
       <div class="gen-list" id="gen-list"></div>
     </div>
     <div class="table-wrap">
       <table>
         <thead id="train-head"></thead>
         <tbody id="train-table"></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" id="xcam-wrap" hidden>
+      <table>
+        <thead id="xcam-head"></thead>
+        <tbody id="xcam-table"></tbody>
       </table>
     </div>
     <ul class="notes" id="train-notes"></ul>
@@ -548,7 +554,8 @@ function renderSurfaceTable(currentId) {
 
 // ---------- training section ----------
 let trainFrame = 0;
-const expName = e => e === "E5pp" ? "E5+pp" : e;
+const EXP_NAMES = { E5pp: "E5+pp", E5cfx: "E5c+fx" };
+const expName = e => e in EXP_NAMES ? EXP_NAMES[e] : e;
 const isGenExp = e => SCENES_META.some(s => TRAIN.scenes[s.id].runs[e] && TRAIN.scenes[s.id].runs[e].generative);
 const expLabel = e => expName(e) + (isGenExp(e) ? `<span class="gen-tag">gen</span>` : "");
 if (TRAIN) {
@@ -570,11 +577,15 @@ if (TRAIN) {
     `<tr><th>scene</th>${TRAIN.exps.map(() => m.map(x => `<th>${x}</th>`).join("")).join("")}${TRAIN.exps.map(e => `<th>${expName(e)}</th>`).join("")}</tr>`;
   document.getElementById("train-notes").innerHTML = [
     "Metrics are drivestudio's held-out-frame metrics over the full image (every 10th FRONT frame, 19–20 per scene). Bold marks the best experiment per scene; PSNR and SSIM higher is better, LPIPS lower.",
-    "Held-out frames use MapAnything poses without pose refinement (CamPose only refines training frames), so these numbers include pose error. They are not the Phase 1 evaluation protocol.",
-    "Rows below the first are lateral shifts along the camera's right axis with no ground truth. Metres are MapAnything's metric estimate, which the diagnostics above put at 0.4–0.7 of true scale.",
+    `Held-out frames use the ${SELF_CALIBRATED ? "GLOMAP" : "MapAnything"} poses without pose refinement (CamPose only refines training frames), so these numbers include pose error. They are not the Phase 1 evaluation protocol.`,
+    `Rows below the first are lateral shifts along the camera's right axis with no ground truth, in scene units that the diagnostics above put at ${fmtRange(SCENES_META.map(s => prim(s).chord_ratio), 2)} of true metres.`,
+    ...(SELF_CALIBRATED ? ["Everything here runs on the undistorted FRONT images of the self-calibrated camera (DECISIONS D13), including the ground-truth column, so the numbers are not directly comparable with the original pipeline's page."] : []),
     "Parked and moving vehicles are masked out of every loss, so they are not reconstructed and render as blur (OPEN_QUESTIONS 18).",
     ...(TRAIN.exps.includes("E6") ? ["E6 continues E5 for 6000 more steps. Each step adds a novel view shifted 0.5–2.5 m sideways and turned up to 3°, supervised by a frozen SDXL + depth-ControlNet image of that view's render. Only pixels the mesh or opaque Gaussians cover count, so the sky is left alone. Its run time is this second stage only."] : []),
     ...(TRAIN.exps.includes("E5pp") ? ["E5+pp passes every E5 frame through the same SDXL model (t = 0.6) on its own, without training, so neighbouring frames are not kept consistent. Its metrics cover the held-out frames only; its run time covers those, the stills and one video."] : []),
+    ...(TRAIN.exps.includes("E7") ? ["E7 continues E5c for 6000 more steps with NVIDIA Fixer (single-step restorer) targets on shifted views, rebuilt every 250 steps while the lateral range grows from 0.25–0.75 to 1.5–2.5 scene units (the Difix3D+ recipe). Sky and empty pixels are skipped. Its run time is this second stage only."] : []),
+    ...(TRAIN.exps.includes("E5cfx") ? ["E5c+fx passes every E5c frame through Fixer on its own, without training. It has no 3D model of its own, so it has no cross-camera check."] : []),
+    ...(TRAIN.exps.some(e => SCENES_META.some(s => TRAIN.scenes[s.id].runs[e] && TRAIN.scenes[s.id].runs[e].xcam)) ? ["The cross-camera table renders FRONT_LEFT and FRONT_RIGHT (never used for training) every 5th frame, attached to the run's own FRONT pose with the real inter-camera offset, and compares them with the real images where the render is opaque and no real moving object is, after a per-channel colour fit (scripts/eval_cross_camera.py; evaluation code, reads ground truth)."] : []),
     ...(TRAIN.exps.some(isGenExp) ? ["Columns marked gen contain generated content. Nothing here checks it against the real street yet (no cross-camera evaluation, OPEN_QUESTIONS 28), so a sharper shifted view may still be wrong."] : []),
   ].map(x => `<li>${x}</li>`).join("");
 }
@@ -624,14 +635,45 @@ function renderTraining(id) {
   const meanTime = e => complete(e) ? `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>` : `<td>—</td>`;
   const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(meanCells).join("")}${TRAIN.exps.map(meanTime).join("")}</tr>`;
   document.getElementById("train-table").innerHTML = rows.join("") + meanRow;
+  // cross-camera check: experiments that have one (3D models; not the per-frame post-processing runs)
+  const xExps = TRAIN.exps.filter(e => SCENES_META.some(s => TRAIN.scenes[s.id].runs[e] && TRAIN.scenes[s.id].runs[e].xcam));
+  document.getElementById("xcam-wrap").hidden = xExps.length === 0;
+  if (xExps.length) {
+    const xm = ["PSNR", "SSIM", "LPIPS", "cover"];
+    document.getElementById("xcam-head").innerHTML =
+      `<tr class="group"><th>cross-camera</th>${xExps.map(e => `<th colspan="4">${expLabel(e)}</th>`).join("")}</tr>` +
+      `<tr><th>scene</th>${xExps.map(() => xm.map(x => `<th>${x}</th>`).join("")).join("")}</tr>`;
+    const xrows = SCENES_META.map(s => {
+      const runs = TRAIN.scenes[s.id].runs;
+      const have = xExps.filter(e => runs[e] && runs[e].xcam);
+      const best = { psnr: Math.max(...have.map(e => runs[e].xcam.psnr)), ssim: Math.max(...have.map(e => runs[e].xcam.ssim)), lpips: Math.min(...have.map(e => runs[e].xcam.lpips)) };
+      return `<tr class="${s.id === id ? "cur" : ""}"><td>${s.id}</td>` + xExps.map(e => {
+        if (!(runs[e] && runs[e].xcam)) return `<td>—</td><td>—</td><td>—</td><td>—</td>`;
+        const x = runs[e].xcam;
+        return `<td class="${x.psnr === best.psnr ? "best" : ""}">${x.psnr.toFixed(2)}</td><td class="${x.ssim === best.ssim ? "best" : ""}">${x.ssim.toFixed(3)}</td>` +
+          `<td class="${x.lpips === best.lpips ? "best" : ""}">${x.lpips.toFixed(3)}</td><td>${x.coverage.toFixed(2)}</td>`;
+      }).join("") + "</tr>";
+    });
+    const xcomplete = e => SCENES_META.every(s => TRAIN.scenes[s.id].runs[e] && TRAIN.scenes[s.id].runs[e].xcam);
+    const xmean = (e, k) => SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].xcam[k], 0) / SCENES_META.length;
+    const xmeanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>` + xExps.map(e => xcomplete(e)
+      ? `<td>${xmean(e, "psnr").toFixed(2)}</td><td>${xmean(e, "ssim").toFixed(3)}</td><td>${xmean(e, "lpips").toFixed(3)}</td><td>${xmean(e, "coverage").toFixed(2)}</td>`
+      : `<td colspan="4">after all ${SCENES_META.length} scenes</td>`).join("") + "</tr>";
+    document.getElementById("xcam-table").innerHTML = xrows.join("") + xmeanRow;
+  }
   const gen = sc.gen_examples;
   document.getElementById("gen-card").hidden = gen.length === 0;
   if (gen.length) {
     const sign = x => (x < 0 ? "−" : "+") + Math.abs(x).toFixed(1);
-    document.getElementById("gen-sub").textContent = "first and last target round, the same two pool views";
+    const panels = TRAIN.gen_panels;
+    document.getElementById("gen-title").textContent = `${expName(TRAIN.gen_exp)} targets`;
+    document.getElementById("gen-sub").textContent = "first and last target round, first two pool views";
+    const cols = document.getElementById("gen-cols");
+    cols.style.gridTemplateColumns = `repeat(${panels.length}, 1fr)`;
+    cols.innerHTML = panels.map(p => `<span>${p}</span>`).join("");
     document.getElementById("gen-list").innerHTML = gen.map(g =>
-      `<figure><img src="training/${g.file}" alt="E6 render, mesh disparity and SDXL target, round ${g.round}" loading="lazy">` +
-      `<figcaption>round ${g.round} (step ${g.step}, t ≤ ${g.t_max.toFixed(2)}) · frame ${String(g.frame).padStart(3, "0")} · ${sign(g.offset)} m sideways, yaw ${sign(g.yaw)}°</figcaption></figure>`).join("");
+      `<figure><img src="training/${g.file}" alt="${panels.join(", ")}, round ${g.round}" loading="lazy">` +
+      `<figcaption>round ${g.round} (step ${g.step}, ${g.caption}) · frame ${String(g.frame).padStart(3, "0")} · ${sign(g.offset)} scene units sideways, yaw ${sign(g.yaw)}°</figcaption></figure>`).join("");
   }
 }
 

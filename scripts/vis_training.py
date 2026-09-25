@@ -8,7 +8,9 @@ check. Inputs: results/<exp>/<scene>/{metrics.json, meta.json, renders/frames/<t
 Output: <out_dir>/<scene>_<t>.jpg and <out_dir>/summary.json. Runs without a full-split evaluation (E5pp) get
 full_psnr null; runs whose meta.json says generative are flagged so the viewer can mark them.
 With --gen_exp, the first --gen_views target examples of the first and last round of that run
-(<run>/gen/round<r>_view<k>.jpg from scripts/train_ggds.py) are copied as <scene>_gen_r<r>_v<k>.jpg.
+(<run>/gen/round<r>_view<k>.jpg from scripts/train_ggds.py (E6: render | disparity | SDXL target) or
+scripts/train_fixer.py (E7: render | Fixer target)) are copied as <scene>_gen_r<r>_v<k>.jpg.
+Runs with a cross-camera check (scripts/eval_cross_camera.py) carry its summary as "xcam" (null otherwise).
 With --allow_missing, runs that are not finished and rendered yet are listed as missing (blank sheet cells) so
 the viewer can show partial results while the batch is still running; without it every run must exist.
 
@@ -31,6 +33,8 @@ from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import DEV_SCENES, FRONT_CAM_ID  # noqa: E402
 
 BLANK = (228, 233, 236)
+POSTPROCESS_EXPS = ("E5pp", "E5cfx")  # scripts/postprocess_frames.py outputs
+GEN_PANELS = {"sdxl": ["render", "mesh disparity (ControlNet input)", "SDXL target"], "fixer": ["render", "Fixer target"]}
 METRIC_KEYS = ("psnr", "ssim", "lpips", "occupied_psnr", "masked_psnr")
 
 
@@ -44,12 +48,12 @@ def main() -> None:
     parser.add_argument("--processed_root", required=True)
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--allow_missing", action="store_true", help="partial results while training is running")
-    parser.add_argument("--gen_exp", default=None, help="generative-distillation run whose SDXL targets are shown, e.g. E6")
+    parser.add_argument("--gen_exp", default=None, help="generative-distillation run whose targets are shown, e.g. E6 or E7")
     parser.add_argument("--gen_views", type=int, default=2, help="pool views per round to show for --gen_exp")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    summary = {"exps": args.exps, "frames": args.frames, "offsets": args.offsets, "scenes": {},
+    summary = {"exps": args.exps, "gen_exp": args.gen_exp, "frames": args.frames, "offsets": args.offsets, "scenes": {},
                "partial": args.allow_missing, "generated_at": time.strftime("%Y-%m-%d %H:%M"),
                "dashrecon_commit": git_commit()}
     for sc in DEV_SCENES:
@@ -66,7 +70,13 @@ def main() -> None:
             with open(os.path.join(run_dir, "meta.json")) as f:
                 meta = json.load(f)
             assert "generative" not in meta or meta["generative"] is True, run_dir
+            xcam = None  # per-frame post-processing runs have no 3D model to place side cameras in
+            if exp not in POSTPROCESS_EXPS:
+                with open(os.path.join(run_dir, "cross_camera", "metrics.json")) as f:
+                    summ = json.load(f)["summary"]["all"]
+                xcam = {k: summ[k] for k in ("psnr", "ssim", "lpips", "coverage")}
             runs[exp] = {
+                "xcam": xcam,
                 "test": {k: m["test"][f"image_metrics/test/{k}"] for k in METRIC_KEYS},
                 "full_psnr": m["full"]["image_metrics/full/psnr"] if "full" in m else None,
                 "generative": "generative" in meta,  # only the Phase 8 scripts write the flag, and always as true
@@ -96,11 +106,17 @@ def main() -> None:
             with open(os.path.join(run_dir, "meta.json")) as f:
                 meta = json.load(f)
             for rd in (meta["rounds"][0], meta["rounds"][-1]):
+                if "t_max" in rd:  # E6: SDXL targets from a fixed pool, noise level annealed per round
+                    panels, caption, pool = GEN_PANELS["sdxl"], f"t ≤ {rd['t_max']:.2f}", meta["pool"]
+                else:  # E7: Fixer targets from a pool rebuilt every round with a growing lateral range
+                    lo, hi = rd["offset_range"]
+                    panels, caption, pool = GEN_PANELS["fixer"], f"|offset| {lo:.2f}–{hi:.2f}", rd["pool"]
+                summary["gen_panels"] = panels
                 for k in range(args.gen_views):
                     name = f"{sc.scene_id}_gen_r{rd['round']}_v{k}.jpg"
                     shutil.copyfile(os.path.join(run_dir, "gen", f"round{rd['round']}_view{k}.jpg"), os.path.join(args.out_dir, name))
-                    view = meta["pool"][k]
-                    gen_examples.append({"file": name, "round": rd["round"], "step": rd["step"], "t_max": rd["t_max"],
+                    view = pool[k]
+                    gen_examples.append({"file": name, "round": rd["round"], "step": rd["step"], "caption": caption,
                                          "frame": view["frame"], "offset": view["offset"], "yaw": view["yaw"]})
         summary["scenes"][sc.scene_id] = {"runs": runs, "sheets": sheets, "missing": missing, "gen_examples": gen_examples}
         print(f"[vis_training] {sc.scene_id}: " + " | ".join(
