@@ -4,7 +4,12 @@ ReCamMaster (KwaiVGI, open version on Wan2.1-T2V-1.3B, envs/setup_recam.sh) re-r
 camera trajectory. This feeds it --num_frames (81) FRONT frames of a scene from --image_dir (<t:03d>_0.jpg; the
 self-calibrated undistorted images of the E5c pipeline) and renders each preset trajectory in --cam_types
 (1 pan right, 2 pan left, 3 tilt up, 4 tilt down, 5 zoom in, 6 zoom out, 7 / 8 translate up / down, 9 arc left,
-10 arc right; the pan presets turn by about 20 degrees over the clip). Model loading, the preset trajectories and
+10 arc right; the pan presets turn by about 20 degrees over the clip). The presets keep the camera at the first
+frame's position, so the re-rendered video stops driving (val056 test). --custom_moves adds trajectories that follow
+the drive: the FRONT poses of the clip from --pose_dir (Phase 3 estimates, poses_c2w.npy + frames.txt; scene units
+used as metres) moved by a dashrecon.gen.views.ViewMove spec ramped in linearly over --ramp_frames frames, passed
+to the model exactly as the repository passes its presets (every 4th frame's pose relative to the first target
+frame, OpenCV axes, 3 x 4 flattened). Model loading, the preset trajectories and
 the input preprocessing (cover-resize and centre crop to 832 x 480) are the repository's own
 (inference_recammaster.py @ fcf98bc: TextVideoCameraDataset and its __main__ steps 1-3), so the script runs with
 the repository as working directory.
@@ -30,6 +35,8 @@ from PIL import Image, ImageDraw
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
+from dashrecon import io  # noqa: E402
+from dashrecon.gen.views import ViewMove  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 
 RECAM = os.path.join(REPO, ".venvs", "src", "ReCamMaster")
@@ -54,7 +61,10 @@ def main() -> None:
     parser.add_argument("--image_dir", required=True)
     parser.add_argument("--start", type=int, required=True)
     parser.add_argument("--num_frames", type=int, default=81)
-    parser.add_argument("--cam_types", type=int, nargs="+", required=True)
+    parser.add_argument("--cam_types", type=int, nargs="*", default=[])
+    parser.add_argument("--custom_moves", nargs="*", default=[], help='e.g. "yaw=30" (needs --pose_dir)')
+    parser.add_argument("--pose_dir")
+    parser.add_argument("--ramp_frames", type=int, default=20)
     parser.add_argument("--still_frames", type=int, nargs="*", default=[])
     parser.add_argument("--cfg_scale", type=float, default=5.0)
     parser.add_argument("--steps", type=int, default=50)
@@ -92,10 +102,33 @@ def main() -> None:
     pipe.to("cuda")
     pipe.to(dtype=torch.bfloat16)
 
+    custom = {}
+    if args.custom_moves:
+        from dashrecon.gen.views import moved_c2w
+
+        pose_dir = os.path.join(REPO, args.pose_dir)
+        frames, poses = io.read_frames(pose_dir), io.read_poses(pose_dir)
+        row = {int(t): i for i, t in enumerate(frames)}
+        clip = [row[t] for t in range(args.start, args.start + args.num_frames)]
+        for spec in args.custom_moves:
+            move = ViewMove.parse(spec)
+            c2ws = []
+            for j in range(0, args.num_frames, 4):
+                f = min(1.0, j / args.ramp_frames)
+                c2ws.append(moved_c2w(torch.from_numpy(poses[clip[j]]).double(),
+                                      ViewMove(**{k: f * v for k, v in vars(move).items()})).numpy())
+            rel = np.stack([np.linalg.inv(c2ws[0]) @ c for c in c2ws])[:, :3, :]
+            custom[spec] = torch.from_numpy(rel.reshape(len(rel), 12).astype(np.float32)).to(torch.bfloat16)
+    names = {c: CAM_NAMES[c] for c in args.cam_types}
+    names.update({f"custom:{s}": f"drive + {s}" for s in args.custom_moves})
+
     outputs, runs, source = {}, [], None
-    for cam in args.cam_types:
+    for cam in list(args.cam_types) + [f"custom:{s}" for s in args.custom_moves]:
         item = TextVideoCameraDataset(os.path.join(out_dir, "input"), os.path.join(out_dir, "input", "metadata.csv"),
-                                      argparse.Namespace(cam_type=cam))[0]
+                                      argparse.Namespace(cam_type=cam if isinstance(cam, int) else 1))[0]
+        if not isinstance(cam, int):
+            assert custom[cam[7:]].shape == item["camera"].shape, (custom[cam[7:]].shape, item["camera"].shape)
+            item["camera"] = custom[cam[7:]]
         if source is None:
             source = ((item["video"].permute(1, 2, 3, 0).float().numpy() + 1) * 127.5).clip(0, 255).round().astype(np.uint8)
         torch.cuda.reset_peak_memory_stats()
@@ -103,15 +136,16 @@ def main() -> None:
         video = pipe(prompt=[item["text"]], negative_prompt=NEGATIVE, source_video=item["video"][None], target_camera=item["camera"][None],
                      cfg_scale=args.cfg_scale, num_inference_steps=args.steps, seed=args.seed, tiled=True)
         outputs[cam] = [np.asarray(f) for f in video]
-        imageio.mimwrite(os.path.join(out_dir, f"cam{cam}.mp4"), outputs[cam], fps=args.fps, quality=9)
-        runs.append({"cam_type": cam, "trajectory": CAM_NAMES[cam], "seconds": time.time() - t0, "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3})
-        print(f"[recam_views] cam_type {cam} ({CAM_NAMES[cam]}): {runs[-1]['seconds']:.0f} s, {runs[-1]['peak_vram_gb']:.1f} GB", flush=True)
+        tag = f"cam{cam}" if isinstance(cam, int) else "drive_" + cam[7:].replace("=", "").replace(",", "_")
+        imageio.mimwrite(os.path.join(out_dir, f"{tag}.mp4"), outputs[cam], fps=args.fps, quality=9)
+        runs.append({"trajectory": str(cam), "name": names[cam], "seconds": time.time() - t0, "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3})
+        print(f"[recam_views] {cam} ({names[cam]}): {runs[-1]['seconds']:.0f} s, {runs[-1]['peak_vram_gb']:.1f} GB", flush=True)
 
     imageio.mimwrite(os.path.join(out_dir, "source.mp4"), list(source), fps=args.fps, quality=9)
     writer = imageio.get_writer(os.path.join(out_dir, "compare.mp4"), mode="I", fps=args.fps)
     for i in range(args.num_frames):
         row = np.concatenate([labelled(source[i], f"FRONT t={args.start + i}")] +
-                             [labelled(outputs[c][i], f"ReCamMaster {CAM_NAMES[c]} (gen)") for c in args.cam_types], 1)
+                             [labelled(outputs[c][i], f"ReCamMaster {names[c]} (gen)") for c in outputs], 1)
         writer.append_data(row)
         if i in args.still_frames:
             Image.fromarray(row).save(os.path.join(out_dir, f"compare_{i:03d}.jpg"), quality=90)
