@@ -106,10 +106,16 @@ class MapAnythingBackend(PoseBackend):
         assert depth.shape[1:] == (th, tw), (depth.shape, th, tw)
         depth = np.where(mask & (depth > 0), depth, 0.0).astype(np.float32)
         scaling = np.stack([p["metric_scaling_factor"][0].float().cpu().numpy() for p in preds])
+        input_check = {}
         if intrinsics is not None:
-            # the given calibration must come back unchanged on the depth grid (same resize/crop as ours)
-            err = np.abs(k_depth - depth_intrinsics(intrinsics, depth_grid)[None]).max()
-            assert err < 0.5, f"MapAnything intrinsics differ from the given ones by {err:.2f} px on the depth grid"
+            # the returned intrinsics come from the predicted ray directions, which the given calibration only
+            # conditions (val041: focal +1.5 %, principal point 7-9 px off on the depth grid). Keep the given
+            # calibration, record the deviation and refuse gross disagreement.
+            k_given = depth_intrinsics(intrinsics, depth_grid)
+            focal_dev = float(np.abs(k_depth[:, 0, 0] / k_given[0, 0] - 1).max())
+            pp_dev = float(np.abs(k_depth[:, :2, 2] - k_given[:2, 2]).max() / max(th, tw))
+            assert focal_dev < 0.05 and pp_dev < 0.05, f"predicted rays disagree with the given intrinsics: focal {focal_dev:.3f}, pp {pp_dev:.3f}"
+            input_check = {"predicted_vs_given_focal_max_rel": focal_dev, "predicted_vs_given_pp_max_rel": pp_dev}
             k_image = np.broadcast_to(intrinsics, (len(image_paths), 3, 3)).copy()
         else:
             k_image = image_intrinsics_from_depth(k_depth.astype(np.float64), depth_grid)
@@ -132,6 +138,7 @@ class MapAnythingBackend(PoseBackend):
                 "runtime_s": runtime,
                 "peak_vram_gb": peak_gb,
                 "metric_scaling_factor": float(scaling.mean()),
+                **input_check,
                 "valid_depth_fraction": float((depth > 0).mean()),
             },
         )
