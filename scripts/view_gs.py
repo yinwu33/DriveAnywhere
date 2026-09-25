@@ -8,7 +8,8 @@ Differences from drivestudio's built-in viewer (tools/train.py --enable_viewer, 
     - loads finished runs (config.yaml + checkpoint_final.pth of each --log_dirs entry);
     - renders all Background Gaussians with their view-dependent (SH) colour over the Sky model (EnvLight);
       no exposure model (Affine), no dynamic objects (these runs have none);
-    - GUI: "run" switches between the given runs; "frame" and "lateral offset" put the camera at that FRONT
+    - GUI: "run" switches between the given runs (the camera goes back to the chosen frame and offset, since runs of
+      different camera pipelines have different world frames); "frame" and "lateral offset" put the camera at that FRONT
       camera (the pose the run was trained with, with its estimated vertical field of view) shifted along its right
       axis in the run's scene units (see DECISIONS L for how they relate to metres); "go to frame" re-applies it.
 Mouse: drag to orbit, right-drag to pan, scroll to move (viser controls); world z is up.
@@ -134,7 +135,9 @@ def main() -> None:
 
     @run_choice.on_update
     def _(_) -> None:
+        # runs from different camera pipelines live in different world frames: keep the frame, not the world pose
         state["run"] = next(r for r in runs if r.label == run_choice.value)
+        place_all()
         viewer.rerender(None)
 
     frame.on_update(place_all)
