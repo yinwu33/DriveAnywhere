@@ -583,6 +583,7 @@ done
 - 3D 视图的交互：
   - "Raw depth / Fused / Mesh / 3DGS"：在 Phase 3 的原始反投影点云、Phase 5 的融合点云、Phase 7 的 NKSR 网格和训练好的 Gaussian 之间切换。
   - 3DGS 模式下的 "E5 / E6 gen"：切换实验。视角保持不动，方便对比；E6 标 gen，因为含生成内容。每个实验第一次用到时才解码，同一场景内保留。
+  - 底部的帧进度条：拖到某一帧，视角跳到该帧（3DGS 模式下是从该帧 FRONT 相机看出去，视场角取估计内参；其他模式是该帧后上方的跟车视角），该帧的视锥用强调色标出。"Play" 按 10 Hz 沿轨迹播放。为此 `vis_pose.py` 的网页数据存下每一帧的位姿和帧号（点云抽样仍按 `--frame_stride`）。
   - "Photo / Classes / Normals / Shaded"：分别按图像颜色、类别、法向（x→R、y→G、z→B）着色；"Shaded" 只用于网格，显示灰色光照下的形状。
   - "Hide dynamic"（仅原始点云）：隐藏动态物体的点。
   - "Rejected"（仅融合点云）：用红色显示被一致性检查剔除的点。
@@ -627,3 +628,4 @@ done
 - 2026-09-24：Phase 8 代码完成（`dashrecon/gen/`、`scripts/train_ggds.py`、`scripts/postprocess_frames.py`，DECISIONS K）；§6 Phase 8 按实现改写（t 上界退火、横移 0.5–2.5、天空不参与生成 loss）；§13 新增 13.8（Phase 8 命令），原 13.8–13.10 顺延；13.9 的显示抽样规模改为实际值，并补上 `export_splats.py` 和 `--splat_exp`。
 - 2026-09-25：Phase 6、Phase 7（E5）完成（§12），结果记在 DECISIONS J。
 - 2026-09-25：网页 3DGS 模式加入 E5 / E6 切换（`build_viewer.py --splat_exps`），每个实验每个场景 8 万个 Gaussian（§13.9、§13.10）。
+- 2026-09-25：网页加入帧进度条（§13.10）；`vis_pose.py` 的网页数据改为存每一帧的位姿和帧号。

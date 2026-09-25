@@ -4,7 +4,8 @@ Reads only the section-5 products of one scene (via ``dashrecon.io``) plus the F
 colour. Outputs go to ``<scene_dir>/vis/`` and are not part of the data contract:
     points_vis.ply   subsampled coloured point cloud (world frame of poses_c2w.npy)
     bev.png          top-down orthographic view with the camera trajectory in red
-    viewer_data.js   compact point cloud + cameras (+ per-point class labels with --mask_dir) for the viewer
+    viewer_data.js   compact point cloud (+ per-point class labels with --mask_dir) and the camera pose and
+                     frame index of every frame (the viewer's frame bar) for the viewer
 
 Example:
     .venvs/mapanything/bin/python scripts/vis_pose.py --scene_id val056 \
@@ -69,7 +70,7 @@ def point_labels(mask_dir: str, t: int, grid: dict) -> np.ndarray:
 
 
 def viewer_payload(scene_id: str, xyz: np.ndarray, rgb: np.ndarray, labels: np.ndarray | None, poses: np.ndarray,
-                   k: np.ndarray, image_hw: list[int], meta: dict) -> str:
+                   frames: np.ndarray, k: np.ndarray, image_hw: list[int], meta: dict) -> str:
     """JS snippet registering the scene for the HTML viewer (uint16-quantised positions, base64)."""
     lo, hi = xyz.min(0), xyz.max(0)
     q = np.round((xyz - lo) / np.maximum(hi - lo, 1e-6) * 65535).astype("<u2")
@@ -83,6 +84,7 @@ def viewer_payload(scene_id: str, xyz: np.ndarray, rgb: np.ndarray, labels: np.n
         "lab": None if labels is None else base64.b64encode(labels.astype(np.uint8).tobytes()).decode("ascii"),
         "label_names": list(LABEL_NAMES),
         "cams": [np.round(p, 5).tolist() for p in poses],
+        "frames": [int(t) for t in frames],
         "fx": float(k[0, 0]), "fy": float(k[1, 1]), "w": image_hw[1], "h": image_hw[0],
         "stats": {
             "frames": meta["num_views"],
@@ -144,7 +146,7 @@ def main() -> None:
     render_bev(xyz, rgb, poses[:, :3, 3], size=1400).save(os.path.join(out_dir, "bev.png"))
     k_mean = k_img.mean(axis=0) if k_img.ndim == 3 else k_img
     with open(os.path.join(out_dir, "viewer_data.js"), "w") as f:
-        f.write(viewer_payload(args.scene_id, xyz, rgb, labels, poses[:: args.frame_stride], k_mean, grid["image_hw"], meta))
+        f.write(viewer_payload(args.scene_id, xyz, rgb, labels, poses, frames, k_mean, grid["image_hw"], meta))
     with open(os.path.join(out_dir, "vis_params.json"), "w") as f:
         json.dump({**vars(args), "conf_threshold": conf_thr, "num_points": int(len(xyz)), "dashrecon_commit": git_commit()}, f, indent=2)
     print(f"[vis_pose] {args.scene_id}: {len(xyz)} points (conf >= {conf_thr:.3f}) -> {out_dir}", flush=True)

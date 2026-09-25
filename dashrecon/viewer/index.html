@@ -146,7 +146,7 @@ header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
 .tool[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .slider { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--surface); font-size: 13px; color: var(--muted); }
 .slider input { width: 90px; accent-color: var(--accent); }
-.legend { position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 5px 10px; border-radius: 5px; max-width: calc(100% - 20px); }
+.legend { position: absolute; left: 10px; bottom: 54px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 5px 10px; border-radius: 5px; max-width: calc(100% - 20px); }
 .legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; background: var(--accent); }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .seg { display: flex; }
@@ -154,6 +154,10 @@ header .lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
 .seg .tool:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
 .seg .tool:last-child { border-radius: 0 5px 5px 0; }
 .tool:disabled { opacity: 0.45; cursor: not-allowed; }
+.framebar { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 4px; border-radius: 5px; border: 1px solid var(--rule); background: color-mix(in srgb, var(--surface) 90%, transparent); }
+.framebar input { flex: 1; min-width: 0; accent-color: var(--accent); }
+.framebar .mono { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.framebar .tool { padding: 3px 10px; min-width: 64px; }
 .status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-family: var(--display); font-size: 15px; letter-spacing: 0.04em; pointer-events: none; }
 
 .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
@@ -257,6 +261,11 @@ tr.mean td { border-top: 2px solid var(--rule); }
         <span id="legend-frusta"></span>
         <span id="legend-extra" hidden></span>
         <span class="mono">x forward · y left · z up</span>
+      </div>
+      <div class="framebar" id="framebar" hidden>
+        <button class="tool" id="frame-play" type="button" aria-pressed="false">Play</button>
+        <input id="frame-range" type="range" min="0" max="0" step="1" value="0" aria-label="Frame along the FRONT trajectory">
+        <span class="mono" id="frame-label"></span>
       </div>
       <div class="status" id="status">Loading scene…</div>
     </div>
@@ -429,7 +438,8 @@ document.getElementById("lede").textContent =
   (MESH ? " The mesh is an NKSR surface reconstructed from the fused cloud and its oriented normals." : "");
 document.getElementById("pipeline").innerHTML =
   [p0.model_id, `${p0.depth_hw[1]}×${p0.depth_hw[0]} grid`, "scale: model", "z-up: mean camera up"].map(t => `<span>${t}</span>`).join("");
-document.getElementById("legend-frusta").textContent = `frusta ${ordinal(5 * vis.frame_stride)}`;
+const FRUSTA_EVERY = 10;
+document.getElementById("legend-frusta").textContent = `frusta ${ordinal(FRUSTA_EVERY)}`;
 
 // ---------- comparison table ----------
 const grade = {
@@ -728,12 +738,12 @@ function buildScene(d) {
   const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(centers), new THREE.LineBasicMaterial({ color: cssVar("--accent") }));
   group.add(path);
 
-  // frusta every 5th stored camera
+  // frusta every FRUSTA_EVERY-th frame; cams and frames hold every frame
   const seg = [];
   const depth = 1.6, hw = (d.w / 2) / d.fx * depth, hh = (d.h / 2) / d.fy * depth;
   const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
   d.cams.forEach((m, i) => {
-    if (i % 5 !== 0) return;
+    if (i % FRUSTA_EVERY !== 0) return;
     const c = centers[i];
     const w = corners.map(([x, y]) => new THREE.Vector3(
       m[0][0] * x + m[0][1] * y + m[0][2] * depth + m[0][3],
@@ -743,7 +753,14 @@ function buildScene(d) {
   });
   const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
   group.add(frusta);
-  return { group, raw, fused: null, rejected: null, mesh: null, splat: null, splats: {}, path, frusta, centers, cams: d.cams };
+  // accent frustum at the frame chosen in the frame bar
+  const marker = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(new Array(16).fill(0).map(() => new THREE.Vector3())),
+                                        new THREE.LineBasicMaterial({ color: cssVar("--accent") }));
+  marker.frustumCulled = false;
+  group.add(marker);
+  const vfov = THREE.MathUtils.radToDeg(2 * Math.atan((d.h / 2) / d.fy));
+  return { group, raw, fused: null, rejected: null, mesh: null, splat: null, splats: {}, path, frusta, marker, corners, depth,
+           centers, cams: d.cams, frames: d.frames, vfov };
 }
 
 function addFusion(s, f) {
@@ -1038,24 +1055,88 @@ function render() {
   renderer.render(scene3, camera);
 }
 
+function setFov(fov) {
+  if (camera.fov === fov) return;
+  camera.fov = fov;
+  camera.updateProjectionMatrix();
+}
+
+// accent frustum of the frame-bar frame; hidden when the view sits inside it
+function updateMarker(firstPerson) {
+  const s = current, m = s.cams[frameIdx], c = s.centers[frameIdx];
+  const w = s.corners.map(([x, y]) => new THREE.Vector3(
+    m[0][0] * x + m[0][1] * y + m[0][2] * s.depth + m[0][3],
+    m[1][0] * x + m[1][1] * y + m[1][2] * s.depth + m[1][3],
+    m[2][0] * x + m[2][1] * y + m[2][2] * s.depth + m[2][3]));
+  const pos = s.marker.geometry.getAttribute("position");
+  for (let k = 0; k < 4; k++) {
+    for (const [j, v] of [c, w[k], w[k], w[(k + 1) % 4]].entries()) pos.setXYZ(4 * k + j, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  s.marker.visible = !firstPerson;
+  s.marker.material.color.set(cssVar("--accent"));
+}
+
 function driverView() {
   if (!current) return;
-  const m = current.cams[0];
-  const c = current.centers[0];
+  const m = current.cams[frameIdx];
+  const c = current.centers[frameIdx];
   const fwd = new THREE.Vector3(m[0][2], m[1][2], m[2][2]).normalize();
   const up = new THREE.Vector3(0, 0, 1);
-  if (cloudMode === "splat" && current.splat) {
-    // Gaussians are only reliable near the training views: start from the first FRONT camera itself
+  const firstPerson = cloudMode === "splat" && Boolean(current.splat);
+  if (firstPerson) {
+    // Gaussians are only reliable near the training views: look through the FRONT camera itself, with its
+    // estimated vertical field of view
+    setFov(current.vfov);
     camera.position.copy(c).addScaledVector(fwd, 0.01);
     controls.target.copy(c).addScaledVector(fwd, 20);
   } else {
+    setFov(55);
     camera.position.copy(c).addScaledVector(fwd, -10).addScaledVector(up, 4);
     controls.target.copy(c).addScaledVector(fwd, 25);
   }
+  updateMarker(firstPerson);
+  document.getElementById("frame-range").value = String(frameIdx);
+  document.getElementById("frame-label").textContent =
+    `frame ${String(current.frames[frameIdx]).padStart(3, "0")} · ${frameIdx + 1} / ${current.frames.length}`;
   controls.update(); render();
 }
+
+// ---------- frame bar ----------
+let frameIdx = 0, playTimer = null;
+function stopPlay() {
+  if (playTimer === null) return;
+  clearInterval(playTimer);
+  playTimer = null;
+  document.getElementById("frame-play").setAttribute("aria-pressed", "false");
+  document.getElementById("frame-play").textContent = "Play";
+}
+function resetFrameBar() {
+  stopPlay();
+  frameIdx = 0;
+  const range = document.getElementById("frame-range");
+  range.max = String(current.cams.length - 1);
+  document.getElementById("framebar").hidden = false;
+}
+document.getElementById("frame-range").addEventListener("input", e => { frameIdx = Number(e.target.value); driverView(); });
+document.getElementById("frame-play").addEventListener("click", e => {
+  if (playTimer !== null) { stopPlay(); return; }
+  if (frameIdx >= current.cams.length - 1) frameIdx = 0;
+  e.currentTarget.setAttribute("aria-pressed", "true");
+  e.currentTarget.textContent = "Pause";
+  // Waymo FRONT frames are 10 Hz
+  playTimer = setInterval(() => {
+    if (frameIdx >= current.cams.length - 1) { stopPlay(); return; }
+    frameIdx += 1;
+    driverView();
+  }, 100);
+  driverView();
+});
 function topView() {
   if (!current) return;
+  stopPlay();
+  setFov(55);
+  updateMarker(false);
   const box = activeCloud(current).box;
   const center = new THREE.Vector3(); box.getCenter(center);
   const size = new THREE.Vector3(); box.getSize(size);
@@ -1150,6 +1231,7 @@ async function selectScene(id) {
     scene3.add(current.group);
     statusEl.hidden = true;
     refreshScene();
+    resetFrameBar();
     driverView();
     if (FUSION) drawFunnel(id);
     renderSurfaceTable(id);
