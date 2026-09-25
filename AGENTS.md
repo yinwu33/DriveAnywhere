@@ -665,7 +665,7 @@ done
     --mask_tag mask-gsam2_sky-segformer_img-glomap --fusion --mesh --out_dir data/dashrecon/viewer/calib
 ```
 
-在线：https://claude.ai/artifact/（发布后填写）
+在线（Claude Artifact，私有）：https://claude.ai/artifact/SzEh7vBbofCdSWA2nQr3sC （"DashRecon Calibrated Review"；原流水线仍是 13.10 的链接）。发布方式同 13.10。
 
 ---
 
