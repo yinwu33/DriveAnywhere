@@ -25,7 +25,13 @@ Affine and Sky are frozen. Opacity reset is off; every learning rate warms up ov
 
 Outputs in <output_root>/E9/<scene_id>/: config.yaml, checkpoint_final.pth, metrics/, videos/, metrics.json,
 meta.json (generative: true), lsd_params.json and gen/round<r>_view<k>.jpg (render | control | target) for the
-first --save_views views of rounds 0, the middle one and the last one.
+first --save_views views of every --example_every-th round and the last one (to catch divergence early).
+
+First run (val056, 2026-09-25, defaults real_w 0, densification on): diverged. By round 15 (step 33000) the
+renders were saturated colour streaks, a green road and magenta / white strokes across the sky, with 2.8 M
+Gaussians and 97 % of the pixels kept: without real frames nothing anchors the appearance, so each round of the base
+SDXL (not fine-tuned on Waymo, unlike LSD-3D) amplified the previous round's artefacts, and densification on the
+novel views grew floaters that then counted as kept pixels. DECISIONS O.
 
 Example (main venv):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1 \
@@ -97,6 +103,7 @@ def main() -> None:
     parser.add_argument("--gen_hw", type=int, nargs=2, default=[832, 1248])
     parser.add_argument("--disp_pct", type=float, default=90.0)
     parser.add_argument("--save_views", type=int, default=4)
+    parser.add_argument("--example_every", type=int, default=5)
     parser.add_argument("--print_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -146,7 +153,7 @@ def main() -> None:
         frames.append({"ii": ii, "ci": ci, "frame": int(ii["img_idx"].flatten()[0]), "c2w": refined_c2w(trainer, ii, ci),
                        "hw": (int(ci["height"]), int(ci["width"]))})
     n_rounds = -(-args.steps // args.refresh_every)
-    example_rounds = sorted({0, n_rounds // 2, n_rounds - 1})
+    example_rounds = sorted(set(range(0, n_rounds, args.example_every)) | {n_rounds - 1})
     print(f"[train_lsd] {args.scene_id}: pool {len(frames)} views, {n_rounds} rounds, steps {start + 1}..{start + args.steps}, "
           f"real_w {args.real_w}", flush=True)
 
