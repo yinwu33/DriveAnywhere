@@ -1,6 +1,8 @@
 """Readers/writers for the per-scene intermediate products (AGENTS.md section 5).
 
-This module is the only entry point for reading and writing ``data/dashrecon/<scene_id>/<backend_tag>/``.
+This module is the only entry point for reading and writing ``data/dashrecon/<scene_id>/<backend_tag>/``
+(including the self-calibration directories ``calib-<method>/``: camera.json, frames.txt, poses_c2w.npy,
+sparse_obs.npz, meta.json).
 It must stay importable from every venv, so it only depends on numpy, PIL and the standard library.
 
 Conventions:
@@ -115,6 +117,50 @@ def read_meta(out_dir: str) -> dict:
     """Read ``meta.json``."""
     with open(os.path.join(out_dir, "meta.json")) as f:
         return json.load(f)
+
+
+def write_camera(calib_dir: str, camera: dict) -> None:
+    """Write ``camera.json`` of a self-calibration run (DECISIONS D13).
+
+    Required keys: ``image_hw`` [h, w]; ``K`` (3x3 list) of the undistorted pinhole images, pixel centres at
+    integer coordinates; ``dist`` [k1, k2] OpenCV radial coefficients of the original images (K is also their
+    pinhole part); ``model`` (the COLMAP camera model the parameters came from).
+    """
+    assert set(camera) >= {"image_hw", "K", "dist", "model"}, sorted(camera)
+    assert np.asarray(camera["K"]).shape == (3, 3) and len(camera["dist"]) == 2, (camera["K"], camera["dist"])
+    os.makedirs(calib_dir, exist_ok=True)
+    with open(os.path.join(calib_dir, "camera.json"), "w") as f:
+        json.dump(camera, f, indent=2)
+
+
+def read_camera(calib_dir: str) -> dict:
+    """Read ``camera.json`` written by :func:`write_camera`; ``K`` and ``dist`` come back as float64 arrays."""
+    with open(os.path.join(calib_dir, "camera.json")) as f:
+        camera = json.load(f)
+    camera["K"] = np.asarray(camera["K"], dtype=np.float64)
+    camera["dist"] = np.asarray(camera["dist"], dtype=np.float64)
+    return camera
+
+
+def write_sparse_obs(calib_dir: str, frame: np.ndarray, u: np.ndarray, v: np.ndarray, z: np.ndarray) -> None:
+    """Write the SfM point observations used for scale alignment: frame index, undistorted pixel (u, v) with
+    integer pixel centres, and camera-frame z in SfM units (``sparse_obs.npz``)."""
+    assert frame.shape == u.shape == v.shape == z.shape and frame.ndim == 1, (frame.shape, u.shape, v.shape, z.shape)
+    np.savez(os.path.join(calib_dir, "sparse_obs.npz"), frame=frame.astype(np.int64), u=u.astype(np.float32),
+             v=v.astype(np.float32), z=z.astype(np.float32))
+
+
+def read_sparse_obs(calib_dir: str) -> dict[str, np.ndarray]:
+    """Read ``sparse_obs.npz`` written by :func:`write_sparse_obs`."""
+    with np.load(os.path.join(calib_dir, "sparse_obs.npz")) as data:
+        return {k: data[k] for k in ("frame", "u", "v", "z")}
+
+
+def image_to_depth_grid_coords(u: np.ndarray, v: np.ndarray, depth_grid: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Original-image pixel coordinates (integer centres) to depth-grid coordinates, as in :func:`depth_intrinsics`."""
+    (h_img, w_img), (h_res, w_res) = depth_grid["image_hw"], depth_grid["resized_hw"]
+    top, left = depth_grid["crop_top_left"]
+    return (u + 0.5) * (w_res / w_img) - 0.5 - left, (v + 0.5) * (h_res / h_img) - 0.5 - top
 
 
 def depth_intrinsics(intrinsics: np.ndarray, depth_grid: dict) -> np.ndarray:
