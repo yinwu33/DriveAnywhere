@@ -5,7 +5,8 @@
 # 76 GB into the repository's checkpoints/ directory. uv instead of the official conda env (python 3.10, torch 2.6
 # cu124); CUDA extensions (transformer_engine 1.12) compiled against the system CUDA 12.x toolkit, as for
 # envs/setup_fixer.sh. megatron-core without dependencies (its tensorstore dependency does not build here, same as
-# the Fixer env); apex is only used for training and is not installed. Guardrail and prompt-upsampler models are not
+# the Fixer env). apex with its C++ / CUDA extensions (NVIDIA/apex @ 8a6508a): the inference pipeline imports the
+# training model module, which imports apex's amp_C at module level. Guardrail and prompt-upsampler models are not
 # downloaded: run with --disable_guardrail --disable_prompt_encoder.
 set -euo pipefail
 : "${CUDA_HOME:?set CUDA_HOME to a CUDA 12.x toolkit, e.g. /usr/local/cuda-12.1}"
@@ -27,6 +28,9 @@ uv pip install ninja pybind11 wheel
 CUDNN_PATH="$VIRTUAL_ENV/lib/python3.10/site-packages/nvidia/cudnn" NVTE_FRAMEWORK=pytorch MAX_JOBS=12 \
     uv pip install --no-build-isolation "transformer_engine[pytorch]==1.12.0"
 uv pip install "git+https://github.com/microsoft/MoGe.git@74fbce054ebed49800de42d0ad0e83495065719a"
+[ -d "/.venvs/src/apex" ] || git clone https://github.com/NVIDIA/apex.git "/.venvs/src/apex"
+git -C "/.venvs/src/apex" checkout -q 8a6508aaad6e75a2b939e33f308cd63d745d97f1
+APEX_CPP_EXT=1 APEX_CUDA_EXT=1 MAX_JOBS=12 uv pip install --no-build-isolation "/.venvs/src/apex"
 "$VIRTUAL_ENV/bin/python" - <<EOF
 from huggingface_hub import snapshot_download
 ckpt = "$SRC/checkpoints"
