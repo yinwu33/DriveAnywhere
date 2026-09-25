@@ -9,10 +9,11 @@ Inputs:
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/fusion_view.js from scripts/vis_fusion.py (optional, Phase 5)
     <scene_root>/<scene_id>/<tag>__<mask_tag>/vis/mesh_view.js   from scripts/vis_mesh.py (optional, Phase 7 mesh)
     <training_dir>/{summary.json, <scene>_<t>.jpg, <scene>_gen_*.jpg}   from scripts/vis_training.py (optional, Phase 6 / 8)
-    <results_root>/<splat_exp>/<scene>/renders/splat_view.js      from scripts/export_splats.py (optional, Phase 6 3DGS)
+    <results_root>/<exp>/<scene>/renders/splat_view.js            from scripts/export_splats.py, for each of --splat_exps
+                                                                  (optional, Phase 6 / 8 3DGS)
 Output directory:
     index.html, config.js (window.VIEWER_CONFIG), scenes/<scene_id>.js, scenes/<scene_id>.masks.js,
-    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js, scenes/<scene_id>.splat.js, training/<scene>_<t>.jpg, training/<scene>_gen_*.jpg
+    scenes/<scene_id>.fusion.js, scenes/<scene_id>.mesh.js, scenes/<scene_id>.<exp>.splat.js, training/<scene>_<t>.jpg, training/<scene>_gen_*.jpg
 
 Open <out_dir>/index.html in a browser (or `python -m http.server` inside it). three.js loads from CDN.
 The same directory can be published as a Claude Artifact (index.html + config.js + scenes/*.js).
@@ -20,7 +21,7 @@ The same directory can be published as a Claude Artifact (index.html + config.js
 Example:
     python3 scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
         --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh --training_dir results/_vis \
-        --results_root results --splat_exp E5 \
+        --results_root results --splat_exps E5 E6 \
         --out_dir data/dashrecon/viewer/review
 """
 import argparse
@@ -47,12 +48,12 @@ def main() -> None:
     parser.add_argument("--fusion", action="store_true", help="add Phase 5 fusion (<tag>__<mask_tag>); needs --mask_tag")
     parser.add_argument("--mesh", action="store_true", help="add the Phase 7 NKSR mesh; needs --fusion")
     parser.add_argument("--training_dir", default=None, help="Phase 6 comparison sheets + summary.json (vis_training.py)")
-    parser.add_argument("--results_root", default=None, help="Phase 6 results (for --splat_exp)")
-    parser.add_argument("--splat_exp", default=None, help="experiment whose Gaussians the 3DGS mode shows, e.g. E5")
+    parser.add_argument("--results_root", default=None, help="Phase 6 / 8 results (for --splat_exps)")
+    parser.add_argument("--splat_exps", nargs="+", default=None, help="experiments whose Gaussians the 3DGS mode can show, e.g. E5 E6")
     parser.add_argument("--partial", action="store_true", help="allow scenes without splats while training runs")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
-    assert args.splat_exp is None or args.results_root is not None, "--splat_exp needs --results_root"
+    assert args.splat_exps is None or args.results_root is not None, "--splat_exps needs --results_root"
     assert not args.fusion or args.mask_tag is not None, "--fusion needs --mask_tag"
     assert not args.mesh or args.fusion, "--mesh needs --fusion"
 
@@ -125,17 +126,25 @@ def main() -> None:
                 shutil.copyfile(os.path.join(args.training_dir, name), os.path.join(args.out_dir, "training", name))
 
     splats = None
-    if args.splat_exp is not None:
-        splats = {"exp": args.splat_exp, "scenes": {}}
-        for sc in DEV_SCENES:
-            src = os.path.join(args.results_root, args.splat_exp, sc.scene_id, "renders", "splat_view.js")
-            if not os.path.exists(src):
-                assert args.partial, f"missing {src} (use --partial while training runs)"
-                continue
-            shutil.copyfile(src, os.path.join(args.out_dir, "scenes", f"{sc.scene_id}.splat.js"))
-            with open(os.path.join(os.path.dirname(src), "splat_params.json")) as f:
-                sp = json.load(f)
-            splats["scenes"][sc.scene_id] = {"kept": sp["kept"], "total": sp["total"], "dashrecon_commit": sp["dashrecon_commit"]}
+    if args.splat_exps is not None:
+        splats = {"exps": args.splat_exps, "generative": {}, "scenes": {sc.scene_id: {} for sc in DEV_SCENES}}
+        for exp in args.splat_exps:
+            for sc in DEV_SCENES:
+                run_dir = os.path.join(args.results_root, exp, sc.scene_id)
+                src = os.path.join(run_dir, "renders", "splat_view.js")
+                if not os.path.exists(src):
+                    assert args.partial, f"missing {src} (use --partial while training runs)"
+                    continue
+                with open(os.path.join(run_dir, "meta.json")) as f:
+                    meta = json.load(f)
+                generative = "generative" in meta  # only the Phase 8 scripts write the flag, and always as true
+                assert not generative or meta["generative"] is True, run_dir
+                assert splats["generative"].setdefault(exp, generative) == generative, f"{exp}: mixed generative flags"
+                with open(os.path.join(os.path.dirname(src), "splat_params.json")) as f:
+                    sp = json.load(f)
+                assert sp["exp"] == exp, (src, sp["exp"])
+                shutil.copyfile(src, os.path.join(args.out_dir, "scenes", f"{sc.scene_id}.{exp}.splat.js"))
+                splats["scenes"][sc.scene_id][exp] = {"kept": sp["kept"], "total": sp["total"], "dashrecon_commit": sp["dashrecon_commit"]}
 
     config = {
         "tag": args.tag,

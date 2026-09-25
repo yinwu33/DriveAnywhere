@@ -547,21 +547,23 @@ for s in val056 val039 val041 val087 val094; do
   # 网格简化到 10 万个面用于显示（完整网格保留在磁盘上）
   .venvs/main/bin/python scripts/vis_mesh.py --scene_id $s \
       --fusion_dir data/dashrecon/$s/pose-mapanything_depth-mapanything__mask-gsam2_sky-segformer --target_faces 100000
-  # 网页 3DGS 模式用的 E5 Gaussian（15 万个，去掉最大轴超过第 99.5 百分位的）
-  .venvs/main/bin/python scripts/export_splats.py --log_dir results/E5/$s --scene_id $s \
-      --max_splats 150000 --min_opacity 0.05 --max_scale_pct 99.5
+  # 网页 3DGS 模式用的 E5、E6 Gaussian（各 8 万个，去掉最大轴超过第 99.5 百分位的）
+  for e in E5 E6; do
+    .venvs/main/bin/python scripts/export_splats.py --log_dir results/$e/$s --scene_id $s \
+        --max_splats 80000 --min_opacity 0.05 --max_scale_pct 99.5
+  done
 done
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-mapanything_depth-mapanything \
     --diagnostics data/dashrecon/diagnostics/phase3_pose.json --mask_tag mask-gsam2_sky-segformer --fusion --mesh \
-    --training_dir results/_vis --results_root results --splat_exp E5 --out_dir data/dashrecon/viewer/review
+    --training_dir results/_vis --results_root results --splat_exps E5 E6 --out_dir data/dashrecon/viewer/review
 ```
 
 - 不加 `--training_dir`：网页里没有 Phase 6 的内容。
 - 不加 `--mesh`：网页里没有网格。
 - 再去掉 `--fusion`：没有 Phase 5 的内容。
 - 再去掉 `--mask_dir` 和 `--mask_tag`：只剩 Phase 3。
-- 不加 `--splat_exp`：网页里没有 3DGS 模式。
-- 显示用的抽样规模（原始 12 万点、融合 12 万点、剔除点 3 万点、网格 10 万个面、每个场景 15 万个 Gaussian）是为了让整个网页小于 Claude Artifact 单个版本 64 MB 的上限。E6 的 Gaussian 不放进网页，否则会超出上限。
+- 不加 `--splat_exps`：网页里没有 3DGS 模式；只给 `E5`：没有 E5 / E6 切换。
+- 显示用的抽样规模（原始 12 万点、融合 12 万点、剔除点 3 万点、网格 10 万个面、每个场景 E5 和 E6 各 8 万个 Gaussian）是为了让整个网页小于 Claude Artifact 单个版本 64 MB 的上限（实测约 61 MB）。
 
 ### 13.10 查看网页
 
@@ -579,7 +581,8 @@ done
   - `scenes/<id>.js`：点云。30 万个点，坐标量化为 uint16，颜色和类别为 uint8，都做了 base64 编码。
   - `scenes/<id>.masks.js`：掩码叠加缩略图和逐帧比例。
 - 3D 视图的交互：
-  - "Raw depth / Fused / Mesh"：在 Phase 3 的原始反投影点云、Phase 5 的融合点云和 Phase 7 的 NKSR 网格之间切换。
+  - "Raw depth / Fused / Mesh / 3DGS"：在 Phase 3 的原始反投影点云、Phase 5 的融合点云、Phase 7 的 NKSR 网格和训练好的 Gaussian 之间切换。
+  - 3DGS 模式下的 "E5 / E6 gen"：切换实验。视角保持不动，方便对比；E6 标 gen，因为含生成内容。每个实验第一次用到时才解码，同一场景内保留。
   - "Photo / Classes / Normals / Shaded"：分别按图像颜色、类别、法向（x→R、y→G、z→B）着色；"Shaded" 只用于网格，显示灰色光照下的形状。
   - "Hide dynamic"（仅原始点云）：隐藏动态物体的点。
   - "Rejected"（仅融合点云）：用红色显示被一致性检查剔除的点。
@@ -623,3 +626,4 @@ done
 - 2026-09-24：D8、D9（先网格后 3DGS；E5 在网格上初始化并正则）；Phase 7 网格重建完成；§13 新增 13.6（网格命令），显示抽样规模下调到 64 MB 以内，`build_viewer.py --mesh`；§6、§7 更新 E5 定义与执行顺序。
 - 2026-09-24：Phase 8 代码完成（`dashrecon/gen/`、`scripts/train_ggds.py`、`scripts/postprocess_frames.py`，DECISIONS K）；§6 Phase 8 按实现改写（t 上界退火、横移 0.5–2.5、天空不参与生成 loss）；§13 新增 13.8（Phase 8 命令），原 13.8–13.10 顺延；13.9 的显示抽样规模改为实际值，并补上 `export_splats.py` 和 `--splat_exp`。
 - 2026-09-25：Phase 6、Phase 7（E5）完成（§12），结果记在 DECISIONS J。
+- 2026-09-25：网页 3DGS 模式加入 E5 / E6 切换（`build_viewer.py --splat_exps`），每个实验每个场景 8 万个 Gaussian（§13.9、§13.10）。

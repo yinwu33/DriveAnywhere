@@ -8,9 +8,11 @@
     scenes/<id>.fusion.js  window.FUSION[<id>] (scripts/vis_fusion.py fusion_view.js; only with --fusion)
     scenes/<id>.mesh.js    window.MESH[<id>]   (scripts/vis_mesh.py mesh_view.js; only with --mesh)
     training/<scene>_<t>.jpg  Phase 6 comparison sheets (scripts/vis_training.py; only with --training_dir)
-    scenes/<id>.splat.js   window.SPLAT[<id>]  (scripts/export_splats.py; only with --splat_exp)
+    scenes/<id>.<exp>.splat.js  window.SPLAT["<id>.<exp>"]  (scripts/export_splats.py; only with --splat_exps)
   The 3DGS mode is a small WebGL splat renderer (EWA projection in the vertex shader, CPU counting sort
-  back to front, premultiplied "over" blending); no workers or WASM. Only the current scene stays decoded.
+  back to front, premultiplied "over" blending); no workers or WASM. Only the current scene stays decoded;
+  its experiments (e.g. E5 / E6) are decoded on first use and kept while the scene is shown, so they can be
+  compared from the same viewpoint.
   Open the built index.html directly or serve the directory (python -m http.server).
   three.js r128 and OrbitControls load from public CDNs.
   Class colours are the dataviz reference categorical slots 1-3, validated all-pairs in both themes.
@@ -239,6 +241,7 @@ tr.mean td { border-top: 2px solid var(--rule); }
           <button class="tool" id="cloud-mesh" type="button" aria-pressed="false" hidden>Mesh</button>
           <button class="tool" id="cloud-splat" type="button" aria-pressed="false" hidden>3DGS</button>
         </div>
+        <div class="seg" id="seg-splat" role="group" aria-label="3DGS experiment" hidden></div>
         <div class="seg" id="seg-color" role="group" aria-label="Point colour" hidden>
           <button class="tool" id="color-photo" type="button" aria-pressed="true">Photo</button>
           <button class="tool" id="color-classes" type="button" aria-pressed="false">Classes</button>
@@ -603,7 +606,7 @@ function renderTraining(id) {
   const meanTime = e => complete(e) ? `<td>${(SCENES_META.reduce((a, s) => a + TRAIN.scenes[s.id].runs[e].runtime_min, 0) / SCENES_META.length).toFixed(0)} min</td>` : `<td>—</td>`;
   const meanRow = `<tr class="mean"><td>mean of ${SCENES_META.length}</td>${TRAIN.exps.map(meanCells).join("")}${TRAIN.exps.map(meanTime).join("")}</tr>`;
   document.getElementById("train-table").innerHTML = rows.join("") + meanRow;
-  const gen = sc.gen_examples || [];
+  const gen = sc.gen_examples;
   document.getElementById("gen-card").hidden = gen.length === 0;
   if (gen.length) {
     const sign = x => (x < 0 ? "−" : "+") + Math.abs(x).toFixed(1);
@@ -673,6 +676,7 @@ let current = null;
 let currentId = null;
 let showCams = true, hideDynamic = false, showRejected = false;
 let cloudMode = SPLATS ? "splat" : (MESH ? "mesh" : (FUSION ? "fused" : "raw"));
+let splatExp = SPLATS ? SPLATS.exps[0] : null;
 let colorMode = "photo";
 const loaded = {};
 
@@ -739,7 +743,7 @@ function buildScene(d) {
   });
   const frusta = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg), new THREE.LineBasicMaterial({ color: cssVar("--muted") }));
   group.add(frusta);
-  return { group, raw, fused: null, rejected: null, mesh: null, splat: null, path, frusta, centers, cams: d.cams };
+  return { group, raw, fused: null, rejected: null, mesh: null, splat: null, splats: {}, path, frusta, centers, cams: d.cams };
 }
 
 function addFusion(s, f) {
@@ -940,7 +944,7 @@ function refreshScene() {
   const meshOn = cloudMode === "mesh" && Boolean(s.mesh);
   const fusedOn = cloudMode === "fused" && Boolean(s.fused);
   s.raw.points.visible = !fusedOn && !meshOn && !splatOn;
-  if (s.splat) s.splat.mesh.visible = splatOn;
+  for (const [e, sp] of Object.entries(s.splats)) sp.mesh.visible = splatOn && e === splatExp;
   if (s.fused) s.fused.points.visible = fusedOn;
   if (s.mesh) s.mesh.mesh.visible = meshOn;
   if (s.rejected) { s.rejected.visible = fusedOn && showRejected; s.rejected.material.color.set(cssVar("--bad")); }
@@ -969,7 +973,13 @@ function refreshScene() {
   document.getElementById("cloud-raw").setAttribute("aria-pressed", String(!fusedOn && !meshOn && !splatOn));
   document.getElementById("cloud-splat").hidden = !s.splat;
   document.getElementById("cloud-splat").setAttribute("aria-pressed", String(splatOn));
-  if (s.splat) document.getElementById("cloud-splat").textContent = `3DGS (${s.splat.exp})`;
+  const segSplat = document.getElementById("seg-splat");
+  segSplat.hidden = !splatOn || SPLATS.exps.length < 2;
+  if (SPLATS) for (const e of SPLATS.exps) {
+    const b = document.getElementById(`splat-exp-${e}`);
+    b.setAttribute("aria-pressed", String(e === splatExp));
+    b.disabled = !SPLATS.scenes[currentId][e];
+  }
   document.getElementById("cloud-fused").setAttribute("aria-pressed", String(fusedOn));
   document.getElementById("cloud-mesh").hidden = !s.mesh;
   document.getElementById("cloud-mesh").setAttribute("aria-pressed", String(meshOn));
@@ -991,7 +1001,8 @@ function refreshScene() {
   } else {
     extra.innerHTML = "";
   }
-  if (splatOn) extra.innerHTML = `<span>${s.splat.exp} Gaussians: ${s.splat.n.toLocaleString("en-US")} of ${s.splat.n_total.toLocaleString("en-US")} (most opaque × largest) · base colour only, no sky model</span>`;
+  if (splatOn) extra.innerHTML = `<span>${expName(s.splat.exp)} Gaussians: ${s.splat.n.toLocaleString("en-US")} of ${s.splat.n_total.toLocaleString("en-US")} (most opaque × largest) · base colour only, no sky model` +
+    (SPLATS.generative[s.splat.exp] ? " · trained with SDXL targets on shifted views, so it contains generated content" : "") + "</span>";
   if (meshOn) extra.innerHTML += ` <span>showing ${window.MESH[currentId].nf.toLocaleString("en-US")} of ${MESH.scenes[currentId].stats.faces.toLocaleString("en-US")} faces</span>`;
   if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
   extra.hidden = extra.innerHTML === "";
@@ -1063,7 +1074,37 @@ function disposeScene(id) {
   });
   if (s.mesh) { s.mesh.basic.dispose(); s.mesh.shaded.dispose(); }
   delete loaded[id];
-  for (const reg of [window.SCENES, window.FUSION, window.MESH, window.SPLAT]) if (reg) delete reg[id];
+  for (const reg of [window.SCENES, window.FUSION, window.MESH]) if (reg) delete reg[id];
+  if (window.SPLAT) for (const e of SPLATS.exps) delete window.SPLAT[`${id}.${e}`];
+}
+
+// decode one experiment's Gaussians for a loaded scene; the decoded payload is dropped once the buffers exist
+async function ensureSplat(s, id, exp) {
+  const key = `${id}.${exp}`;
+  if (!(window.SPLAT && window.SPLAT[key])) await loadScript(`scenes/${key}.splat.js`);
+  if (loaded[id] !== s || s.splats[exp]) return;
+  s.splats[exp] = buildSplats(window.SPLAT[key]);
+  delete window.SPLAT[key];
+  s.group.add(s.splats[exp].mesh);
+}
+
+async function setSplatExp(exp) {
+  splatExp = exp;
+  const id = currentId, s = loaded[id];
+  if (!s.splats[exp]) {
+    statusEl.hidden = false;
+    statusEl.textContent = `Loading ${expName(exp)} Gaussians…`;
+    try {
+      await ensureSplat(s, id, exp);
+    } catch (err) {
+      statusEl.textContent = err.message;
+      return;
+    }
+    statusEl.hidden = true;
+    if (loaded[id] !== s || splatExp !== exp) return;
+  }
+  s.splat = s.splats[exp];
+  refreshScene();  // the camera stays where it is, so experiments compare from the same viewpoint
 }
 
 function loadScript(src) {
@@ -1086,7 +1127,13 @@ async function selectScene(id) {
     if (!(window.SCENES && window.SCENES[id])) await loadScript(`scenes/${id}.js`);
     if (FUSION && !(window.FUSION && window.FUSION[id])) await loadScript(`scenes/${id}.fusion.js`);
     if (MESH && !(window.MESH && window.MESH[id])) await loadScript(`scenes/${id}.mesh.js`);
-    if (SPLATS && SPLATS.scenes[id] && !(window.SPLAT && window.SPLAT[id])) await loadScript(`scenes/${id}.splat.js`);
+    if (SPLATS && !SPLATS.scenes[id][splatExp]) {
+      // this scene lacks the chosen experiment (still running): fall back to the first one it has
+      const have = SPLATS.exps.filter(e => SPLATS.scenes[id][e]);
+      if (have.length) splatExp = have[0];
+    }
+    const wantSplat = Boolean(SPLATS && SPLATS.scenes[id][splatExp]);
+    if (wantSplat && !(window.SPLAT && window.SPLAT[`${id}.${splatExp}`])) await loadScript(`scenes/${id}.${splatExp}.splat.js`);
     if (currentId !== id) return;
     if (current) scene3.remove(current.group);
     // browser memory: keep only the scene being shown; others are freed and reloaded from cache on revisit
@@ -1095,11 +1142,10 @@ async function selectScene(id) {
       loaded[id] = buildScene(window.SCENES[id]);
       if (FUSION) addFusion(loaded[id], window.FUSION[id]);
       if (MESH) addMesh(loaded[id], window.MESH[id]);
-      if (SPLATS && SPLATS.scenes[id]) {
-        loaded[id].splat = buildSplats(window.SPLAT[id]);
-        loaded[id].group.add(loaded[id].splat.mesh);
-      }
     }
+    if (wantSplat) await ensureSplat(loaded[id], id, splatExp);
+    if (currentId !== id) return;
+    loaded[id].splat = wantSplat ? loaded[id].splats[splatExp] : null;
     current = loaded[id];
     scene3.add(current.group);
     statusEl.hidden = true;
@@ -1130,6 +1176,11 @@ document.getElementById("cloud-raw").addEventListener("click", () => { cloudMode
 document.getElementById("cloud-fused").addEventListener("click", () => { cloudMode = "fused"; refreshScene(); });
 document.getElementById("cloud-mesh").addEventListener("click", () => { cloudMode = "mesh"; refreshScene(); });
 document.getElementById("cloud-splat").addEventListener("click", () => { cloudMode = "splat"; refreshScene(); driverView(); });
+if (SPLATS) {
+  document.getElementById("seg-splat").innerHTML = SPLATS.exps.map(e =>
+    `<button class="tool" type="button" id="splat-exp-${e}" aria-pressed="false">${expName(e)}${SPLATS.generative[e] ? '<span class="gen-tag">gen</span>' : ""}</button>`).join("");
+  SPLATS.exps.forEach(e => document.getElementById(`splat-exp-${e}`).addEventListener("click", () => setSplatExp(e)));
+}
 for (const m of ["photo", "classes", "normals", "shaded"]) {
   document.getElementById(`color-${m}`).addEventListener("click", () => { colorMode = m; refreshScene(); });
 }

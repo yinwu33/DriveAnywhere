@@ -10,11 +10,12 @@ novel views). Per Gaussian 20 bytes:
     log-scale  float16 x3
     rotation   int8 x4, unit quaternion (w, x, y, z) * 127, gsplat convention
 Higher SH bands (view-dependent colour), the Sky environment map and the per-image exposure (Affine) are not
-exported. Output: <log_dir>/renders/splat_view.js (registers ``window.SPLAT[<scene_id>]``) + splat_params.json.
+exported. The experiment id is the name of <log_dir>'s parent directory (results/<exp>/<scene_id>).
+Output: <log_dir>/renders/splat_view.js (registers ``window.SPLAT["<scene_id>.<exp>"]``) + splat_params.json.
 
 Example (main venv):
     .venvs/main/bin/python scripts/export_splats.py --log_dir results/E5/val056 --scene_id val056 \
-        --max_splats 150000 --min_opacity 0.05 --max_scale_pct 99.5
+        --max_splats 80000 --min_opacity 0.05 --max_scale_pct 99.5
 """
 import argparse
 import base64
@@ -71,13 +72,14 @@ def main() -> None:
     q = np.where(q[:, :1] < 0, -q, q)
     rot = np.clip(np.rint(q * 127), -127, 127).astype(np.int8)
 
+    exp = os.path.basename(os.path.dirname(os.path.normpath(args.log_dir)))
     payload = {"id": args.scene_id, "n": int(len(keep)), "n_total": int(len(means)), "lo": lo.tolist(), "hi": hi.tolist(),
-               "pos": b64(pos), "col": b64(col), "scl": b64(scl), "rot": b64(rot), "exp": os.path.basename(os.path.dirname(os.path.normpath(args.log_dir)))}
+               "pos": b64(pos), "col": b64(col), "scl": b64(scl), "rot": b64(rot), "exp": exp}
     out_dir = os.path.join(args.log_dir, "renders")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "splat_view.js"), "w") as f:
-        f.write(f"window.SPLAT = window.SPLAT || {{}};\nwindow.SPLAT[{json.dumps(args.scene_id)}] = {json.dumps(payload)};\n")
-    io.write_json(os.path.join(out_dir, "splat_params.json"), {**vars(args), "kept": int(len(keep)), "total": int(len(means)),
+        f.write(f"window.SPLAT = window.SPLAT || {{}};\nwindow.SPLAT[{json.dumps(args.scene_id + '.' + exp)}] = {json.dumps(payload)};\n")
+    io.write_json(os.path.join(out_dir, "splat_params.json"), {**vars(args), "exp": exp, "kept": int(len(keep)), "total": int(len(means)),
                                                                   "dashrecon_commit": git_commit()})
     print(f"[export_splats] {args.log_dir}: {len(keep):,} of {len(means):,} Gaussians "
           f"(opacity >= {args.min_opacity}: {len(candidates):,})", flush=True)

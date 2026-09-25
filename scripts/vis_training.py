@@ -65,10 +65,11 @@ def main() -> None:
                 m = json.load(f)
             with open(os.path.join(run_dir, "meta.json")) as f:
                 meta = json.load(f)
+            assert "generative" not in meta or meta["generative"] is True, run_dir
             runs[exp] = {
                 "test": {k: m["test"][f"image_metrics/test/{k}"] for k in METRIC_KEYS},
                 "full_psnr": m["full"]["image_metrics/full/psnr"] if "full" in m else None,
-                "generative": bool(meta.get("generative", False)),
+                "generative": "generative" in meta,  # only the Phase 8 scripts write the flag, and always as true
                 "runtime_min": meta["runtime_s"] / 60.0,
                 "peak_vram_gb": meta["peak_vram_gb"],
                 "dashrecon_commit": meta["dashrecon_commit"],
