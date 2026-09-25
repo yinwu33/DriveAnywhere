@@ -5,8 +5,9 @@ A target view is a FRONT camera (the pose the run was trained with) moved in its
 y axis (positive = to the right) and ``pitch`` about its x axis (positive = up), in degrees.
 
 Hole mask of a rendered view: a pixel is "seen" when its rendered surface point (back-projected with the rendered
-z-depth) projects into a training view, lands on a pixel that view did not mask as dynamic (masked pixels give the
-Gaussians there no photometric signal: the ghosts of masked parked cars), agrees with that view's rendered depth
+z-depth) projects into a training view, lands on a pixel that view did not mask as dynamic or sky (masked pixels
+give the Gaussians there no photometric signal: the ghosts of masked parked cars, the grey blocks floating in the
+sky of val056), agrees with that view's rendered depth
 within ``depth_tol`` (relative, so it was not occluded there) and that view was at most ``res_ratio`` times farther
 away (comparable resolution).
 Unseen pixels that are not sky are holes; this covers both empty space and the unconstrained Gaussians a 3DGS model
@@ -94,7 +95,7 @@ def clean_mask(raw: np.ndarray, open_px: int, min_area: int, dilate_px: int) -> 
 @torch.no_grad()
 def training_observers(trainer, dataset, stride: int, device: torch.device) -> list:
     """Every stride-th training view of a run, rendered as trained (CamPose refined): w2c, K, z-depth and the pixels
-    outside its dynamic mask (the only ones the photometric loss constrained)."""
+    outside its dynamic and sky masks (the only ones where the photometric loss constrained a surface)."""
     from dashrecon.gen.novel import to_device
 
     trainer.set_eval()
@@ -104,7 +105,7 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
         ii, ci = to_device(ii, device), to_device(ci, device)
         out = trainer(ii, ci)
         observers.append({"w2c": torch.linalg.inv(trainer._last_cam.camtoworlds), "K": ci["intrinsics"], "depth": out["depth"][..., 0].half(),
-                          "valid": ii["dynamic_masks"] < 0.5})
+                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)})
     return observers
 
 
