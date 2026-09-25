@@ -1,12 +1,14 @@
-"""Phase 8 E5+pp: per-frame generative post-processing of a trained model (the control for E6; AGENTS Phase 8).
+"""Phase 8 per-frame generative post-processing of a trained model: the controls E5+pp (for E6) and E5c+fx (for E7).
 
 Renders <output_root>/<init_exp>/<scene_id> the way scripts/render_lateral.py does (normal trainer path, camera
-shifted along its own x axis before the pose refinement), then refines every image on its own with
-dashrecon.gen.ggds.SDXLRefiner at a fixed --t, conditioned on the NKSR-mesh disparity of that view. Nothing is
-trained and frames are refined independently, so consecutive frames and neighbouring viewpoints are not kept
-consistent with each other; E6 distils the same refiner into the 3D model instead.
+shifted along its own x axis before the pose refinement), then refines every image on its own:
+    --generator sdxl   dashrecon.gen.ggds.SDXLRefiner at a fixed --t, conditioned on the NKSR-mesh disparity of
+                       that view (E5+pp, init E5);
+    --generator fixer  NVIDIA Fixer through dashrecon.gen.fixer_client at --timestep (E5c+fx, init E5c).
+Nothing is trained and frames are refined independently, so consecutive frames and neighbouring viewpoints are not
+kept consistent with each other; E6 / E7 distil the same models into the 3D model instead.
 
-Outputs in <output_root>/E5pp/<scene_id>/:
+Outputs in <output_root>/<E5pp | E5cfx>/<scene_id>/:
     renders/frames/<t:03d>_<offset>.jpg     --still_frames x --offsets (same names as render_lateral.py)
     renders/lateral_<offset>.mp4           every frame, for each of --video_offsets
     metrics.json                           held-out test frames at offset 0 with drivestudio's render_images
@@ -16,8 +18,8 @@ Outputs in <output_root>/E5pp/<scene_id>/:
 
 Example (main venv, from the repo root):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1 \
-        .venvs/main/bin/python scripts/postprocess_frames.py --scene_id val056 --output_root results \
-        --offsets 0 0.5 1 2 --still_frames 50 100 150 --video_offsets 1
+        .venvs/main/bin/python scripts/postprocess_frames.py --scene_id val056 --output_root results --generator sdxl \
+        --init_exp E5 --offsets 0 0.5 1 2 --still_frames 50 100 150 --video_offsets 1
 """
 import argparse
 import json
@@ -33,12 +35,13 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
-from dashrecon.gen.ggds import SDXLRefiner, disparity_image  # noqa: E402
+from dashrecon.gen.ggds import disparity_image  # noqa: E402
 from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 
-EXP = "E5pp"
+# (generator, init experiment) -> experiment id
+EXPERIMENTS = {("sdxl", "E5"): "E5pp", ("fixer", "E5c"): "E5cfx"}
 PROMPT = "a dashcam photo of a street, realistic, sharp, highly detailed"
 NEGATIVE = "blurry, smeared, low quality, distorted, artifacts, painting, cartoon"
 METRIC_KEYS = ("psnr", "ssim", "lpips", "occupied_psnr", "occupied_ssim", "masked_psnr", "masked_ssim")
@@ -48,14 +51,12 @@ class RefinedTrainer:
     """Trainer proxy whose forward returns the refined image as "rgb", so drivestudio's render_images computes
     the metrics of the post-processed frames with its own code."""
 
-    def __init__(self, trainer, refiner: SDXLRefiner, t: float, disp_pct: float) -> None:
-        self.trainer, self.refiner, self.t, self.disp_pct = trainer, refiner, t, disp_pct
+    def __init__(self, trainer, refine) -> None:
+        self.trainer, self.refine = trainer, refine
 
     def __call__(self, image_infos, cam_infos, novel_view: bool = False):
         out = self.trainer(image_infos, cam_infos, novel_view)
-        maps = self.trainer._mesh_maps(self.trainer._last_cam)
-        control = disparity_image(maps["mesh_depth"], maps["mesh_valid"], self.disp_pct)
-        out["rgb"] = self.refiner.refine(out["rgb"].clamp(0, 1), control, self.t)
+        out["rgb"] = self.refine(out["rgb"].clamp(0, 1))
         return out
 
     def __getattr__(self, name):
@@ -66,12 +67,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scene_id", required=True)
     parser.add_argument("--output_root", required=True)
-    parser.add_argument("--init_exp", default="E5")
+    parser.add_argument("--generator", required=True, choices=["sdxl", "fixer"])
+    parser.add_argument("--init_exp", required=True)
     parser.add_argument("--offsets", type=float, nargs="+", required=True)
     parser.add_argument("--still_frames", type=int, nargs="+", required=True)
     parser.add_argument("--video_offsets", type=float, nargs="*", required=True)
     parser.add_argument("--fps", type=int, default=10)
-    parser.add_argument("--t", type=float, default=0.6)
+    parser.add_argument("--t", type=float, default=0.6, help="sdxl: noise level")
+    parser.add_argument("--timestep", type=int, default=250, help="fixer: timestep")
     parser.add_argument("--guidance_scale", type=float, default=3.0)
     parser.add_argument("--controlnet_scale", type=float, default=0.8)
     parser.add_argument("--num_steps", type=int, default=5)
@@ -82,6 +85,7 @@ def main() -> None:
     device = torch.device("cuda")
 
     src_dir = os.path.join(args.output_root, args.init_exp, args.scene_id)
+    EXP = EXPERIMENTS[(args.generator, args.init_exp)]
     out_dir = os.path.join(args.output_root, EXP, args.scene_id)
     os.makedirs(os.path.join(out_dir, "renders", "frames"), exist_ok=True)
     cfg = OmegaConf.load(os.path.join(src_dir, "config.yaml"))
@@ -97,8 +101,24 @@ def main() -> None:
     trainer = build_trainer(cfg, dataset, device)
     trainer.resume_from_checkpoint(ckpt_path=os.path.join(src_dir, "checkpoint_final.pth"), load_only_model=True)
     trainer.set_eval()
-    refiner = SDXLRefiner(device, PROMPT, NEGATIVE, args.guidance_scale, args.controlnet_scale, args.num_steps, tuple(args.gen_hw))
-    model = RefinedTrainer(trainer, refiner, args.t, args.disp_pct)
+    if args.generator == "sdxl":
+        from dashrecon.gen.ggds import SDXLRefiner
+
+        refiner = SDXLRefiner(device, PROMPT, NEGATIVE, args.guidance_scale, args.controlnet_scale, args.num_steps, tuple(args.gen_hw))
+
+        def refine(rgb):
+            maps = trainer._mesh_maps(trainer._last_cam)
+            return refiner.refine(rgb, disparity_image(maps["mesh_depth"], maps["mesh_valid"], args.disp_pct), args.t)
+        generator_info = {"model": "SDXL + depth ControlNet", "prompt": PROMPT, "negative_prompt": NEGATIVE}
+    else:
+        from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient
+
+        fixer = FixerClient(args.timestep, os.path.join(out_dir, "fixer_io"), os.environ["CUDA_HOME"])
+
+        def refine(rgb):
+            return torch.from_numpy(fixer.refine(rgb.float().cpu().numpy()[None])[0]).to(rgb.device)
+        generator_info = {"model": FIXER_REPO_ID, "revision": FIXER_REVISION, **fixer.info}
+    model = RefinedTrainer(trainer, refine)
 
     with torch.no_grad():
         res = render_images(trainer=model, dataset=dataset.test_image_set, compute_metrics=True)
@@ -136,12 +156,14 @@ def main() -> None:
     io.write_json(os.path.join(out_dir, "renders", "render_params.json"), {**vars(args), "dashrecon_commit": commit})
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump({
-            "exp": EXP, "scene_id": args.scene_id, "init": src_dir, "params": vars(args), "prompt": PROMPT,
-            "negative_prompt": NEGATIVE, "dashrecon_commit": commit, "torch": torch.__version__,
+            "exp": EXP, "scene_id": args.scene_id, "init": src_dir, "params": vars(args), "generator": generator_info,
+            "dashrecon_commit": commit, "torch": torch.__version__,
             "runtime_s": time.time() - t_begin, "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3,
             "generative": True, "uses_oracle": False,
-            "oracle_note": "FRONT images + dashrecon products + frozen SDXL/ControlNet; checked by dashrecon.train.guard",
+            "oracle_note": "FRONT images + dashrecon products + a frozen image model; checked by dashrecon.train.guard",
         }, f, indent=2)
+    if args.generator == "fixer":
+        fixer.close()
     print(f"[postprocess_frames] {args.scene_id}: {(time.time() - t_begin) / 60:.1f} min -> {out_dir}", flush=True)
 
 
