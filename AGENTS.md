@@ -332,6 +332,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 | E7 | 同 E5c | 同 E5c | 同 E5c | 从 E5c 继续训练，用 NVIDIA Fixer 修复的新视角渐进蒸馏（D14，Difix3D+ 做法） | 完全非 oracle，**含生成内容** |
 | E5c+fx | 同 E5c | 同 E5c | 同 E5c | 不训练，对 E5c 的渲染逐帧用 Fixer 修复（对照组） | 完全非 oracle，**含生成内容** |
 | E8 | 同 E5c | 同 E5c | 同 E5c | 从 E5c（或 E7）继续：自由视角轨迹上用视频模型补全未观测区域，以 3D 记忆逐步外扩并蒸馏（Phase 9，D16–D18） | 完全非 oracle，**含生成内容** |
+| E9 | 同 E5c | 同 E5c | 同 E5c | 从 E5c 继续，复现 LSD-3D 的外观生成：自由视角上的 GGDS（冻结 SDXL + 深度 ControlNet，不微调），默认不用真实帧 loss，输出时可加延迟渲染（DECISIONS O） | 完全非 oracle，**含生成内容，以保真换真实感** |
 
 注意：E1 使用估计位姿但 LiDAR 在 GT 世界坐标下，需要先把估计轨迹 Sim(3) 对齐到 GT，才能使用 LiDAR；该实验必须标注为半 oracle。
 
@@ -412,7 +413,8 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
 
-- [ ] Phase 9：未观测区域的生成式补全，面向自由视角（D16–D18，E8）
+- [ ] Phase 9：未观测区域的生成式补全，面向自由视角（D16–D18，E8）（2026-09-25：流程在 val039 打通；val056 第一轮完成，结果见 DECISIONS N。按用户要求先只在 val056 上迭代，满意后再扩展到 5 个场景）
+- [ ] E9：在重建网格上复现 LSD-3D 的外观生成（DECISIONS O；只在 val056 上）
 
 后续阶段（当前不做）：迁移到 Mapillary 的真实 dashcam 视频和多次通行融合（D19，计划见第 14 节）；闭环仿真集成。
 
@@ -700,6 +702,34 @@ done
 
 在线（Claude Artifact，私有）：https://claude.ai/artifact/SzEh7vBbofCdSWA2nQr3sC （"DashRecon Calibrated Review"；原流水线仍是 13.10 的链接）。发布方式同 13.10。
 
+### 13.13 Phase 9（E8）与 E9
+
+先只在 val056 上跑（用户要求，2026-09-25）。
+
+```bash
+bash envs/setup_wan.sh   # Wan2.1-VACE-1.3B（补全）与 Wan2.1-T2V-1.3B transformer（重绘），HF_HUB_OFFLINE=1 运行
+# E8：每个相机运动一轮（渲染 + 空洞 -> Wan 补全 -> 深度 -> 生成 Gaussian 并蒸馏），之前各轮作为 3D 记忆
+bash scripts/run_phase9.sh val056 results/E5c/val056 results/E8/val056 0 right=1.5,yaw=15
+# 已完成前 N 轮时从第 N 轮接着跑：first_round 设为 N，前面各轮的 move 原样列出
+# 跨相机检查（评测代码，读 GT）：4 个侧相机 + E5c 定义的未观测区域 -> <run>/cross_camera_p9/
+export PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1
+for e in E5c E8 E9; do
+  python scripts/eval_cross_camera.py --log_dir results/$e/val056 --gt_root data/waymo/processed/validation --frame_stride 5 \
+      --alpha 0.5 --example_frames 50 100 150 --cams 1 2 3 4 --region_ref results/E5c/val056 --out_subdir cross_camera_p9
+done
+# Wan 重绘测试（strength 对比，wan venv）
+.venvs/wan/bin/python scripts/repaint_views.py --views_dir results/E8/val056/views/r0_right1.5_yaw15 --source filled \
+    --start 40 --strengths 0.3 0.5 0.7 --still_frames 50 70 100
+# E9：LSD-3D 式 GGDS
+python scripts/train_lsd.py --scene_id val056 --output_root results
+# 自由视角对比视频；--deferred_t 给最后一个 run 加 SDXL 延迟渲染列
+python scripts/vis_freeview.py --log_dirs results/E5c/val056 results/E8/val056 --labels E5c E8 \
+    --moves right=1.5,yaw=15 right=-1.5,yaw=-15 up=1.5,pitch=-10 yaw=45 --still_frames 50 100 150 --cell_width 480 \
+    --fps 10 --out_dir results/_vis_p9
+# 交互式查看（right / up / yaw / pitch 滑块）
+python scripts/view_gs.py --log_dirs results/E5c/val056 results/E8/val056 results/E9/val056 --port 8080
+```
+
 ---
 
 ## 14. Mapillary 部署计划（D19，记录，暂不做）
@@ -740,3 +770,4 @@ done
 - 2026-09-25：§13.10 新增交互式高斯查看器（`scripts/view_gs.py`）。
 - 2026-09-25：Phase 8 的 Fixer 实验（E7、E5c+fx）完成；自标定页面加入 3DGS、对比拼图和跨相机表（§13.12）。
 - 2026-09-25：D16–D19（用户决定）：§1 目标扩展到自由视角和未观测区域补全，非目标删去"不重建未被观测的区域"；§6 新增 Phase 9；§7 新增 E8；§10 第 2 条放宽到 Phase 9；§12 新增 Phase 9；新增 §14 Mapillary 部署计划（暂不做）。
+- 2026-09-25：Phase 9 流程打通（val039），val056 第一轮完成（DECISIONS N）；用户要求先只在 val056 上迭代。新增 E9（用户决定：复现 LSD-3D 的外观生成，以保真换真实感，基础 SDXL 不微调，DECISIONS O）；§7 新增 E9；§12 更新；新增 §13.13。
