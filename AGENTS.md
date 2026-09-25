@@ -381,7 +381,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
 - [x] Phase 6：E3–E4（含横向偏移渲染）（2026-09-25：按临时标准验收；E3 / E4 / E5 在 5 个场景完成训练和 0 / 0.5 / 1 / 2 横移渲染，结果见 DECISIONS J）
 - [x] Phase 7：NKSR 与 E5（2026-09-24：网格重建按临时标准验收，见 DECISIONS I；2026-09-25：E5 完成，与 E4 的对比记在 DECISIONS J。留出帧均值 E5 高 0.26 dB，主要来自 val094；几何评测延后）
-- [ ] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-24：生成器、E6、E5+pp 代码完成，在 val056 上冒烟测试通过，见 DECISIONS K；5 个场景的正式运行进行中）
+- [x] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-25：按临时标准验收；E6 和 E5+pp 在 5 个场景完成，横移对比渲染和网页 E5 / E6 切换已产出。留出帧 E6 比 E5 低 0.19 dB，E5+pp 低 1.1 dB；横移视角的改善只有目测，跨相机评测延后。见 DECISIONS K）
 - [ ] （延后）Phase 1：评测工具
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
@@ -527,7 +527,7 @@ python scripts/vis_training.py --results_root results --exps E3 E4 E5 E5pp E6 --
     --processed_root data/waymo/processed/validation --out_dir results/_vis
 ```
 
-E6 峰值显存约 17 GB，E5+pp 约 13 GB，都包含 drivestudio 训练器。
+E6 峰值显存约 19 GB，E5+pp 约 13 GB，都包含 drivestudio 训练器。
 
 ### 13.9 可视化数据与网页组装
 
@@ -629,3 +629,4 @@ done
 - 2026-09-25：Phase 6、Phase 7（E5）完成（§12），结果记在 DECISIONS J。
 - 2026-09-25：网页 3DGS 模式加入 E5 / E6 切换（`build_viewer.py --splat_exps`），每个实验每个场景 8 万个 Gaussian（§13.9、§13.10）。
 - 2026-09-25：网页加入帧进度条（§13.10）；`vis_pose.py` 的网页数据改为存每一帧的位姿和帧号。
+- 2026-09-25：Phase 8 完成（§12），结果记在 DECISIONS K。
