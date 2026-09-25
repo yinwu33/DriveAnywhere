@@ -111,12 +111,16 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
 
 def render_at(trainer, image_infos: dict, cam_infos: dict, c2w: torch.Tensor, k: torch.Tensor, hw) -> dict:
     """Render a frame's image/camera infos from camera c2w (OpenCV, no CamPose) with drivestudio intrinsics k on an
-    (h, w) grid; rays (and so the sky model) are recomputed. The infos dicts are updated in place. Gradients flow
-    when enabled (scripts/train_fill.py)."""
+    (h, w) grid, which may differ from the training size; rays (and so the sky model), the image-size fields and the
+    per-pixel image-index map of the Affine model (models/modules.py AffineTransform) are set for it. The infos dicts
+    are updated in place. Gradients flow when enabled (scripts/train_fill.py)."""
     from datasets.base.pixel_source import get_rays
 
     h, w = hw
     device = c2w.device
+    image_infos["img_idx"] = torch.full((h, w), int(image_infos["img_idx"].flatten()[0]), dtype=image_infos["img_idx"].dtype, device=device)
+    cam_infos["height"] = torch.tensor(h, dtype=torch.long, device=device)
+    cam_infos["width"] = torch.tensor(w, dtype=torch.long, device=device)
     x, y = torch.meshgrid(torch.arange(w, device=device), torch.arange(h, device=device), indexing="xy")
     origins, viewdirs, dnorm = get_rays(x.flatten(), y.flatten(), c2w, k)
     image_infos["origins"], image_infos["viewdirs"] = origins.reshape(h, w, 3), viewdirs.reshape(h, w, 3)

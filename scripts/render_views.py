@@ -3,7 +3,10 @@
 Every --frame_stride-th FRONT frame's camera (as trained, CamPose refined) is moved by --move (dashrecon.gen.views.ViewMove, e.g.
 "right=1.5,yaw=15") and rendered: RGB with the sky model (rays recomputed for the moved camera), Gaussian opacity
 and z-depth. Holes are the pixels no training view saw at comparable resolution (dashrecon.gen.views, visibility
-test against every --obs_stride-th training frame), excluding sky. With --memory_dirs (the trajectories filled in
+test against every --obs_stride-th training frame), excluding sky. --ramp_frames n scales the move linearly from
+zero at the first view to full at view n (a camera that starts at the real FRONT pose and turns / moves away, as
+GEN3C needs its first frame to be a real image). --render_hw H W renders at another size: the intrinsics are scaled
+to width W and the image centre-cropped to height H (GEN3C: 704 x 1280). With --memory_dirs (the trajectories filled in
 earlier rounds, scripts/fill_views.py) every --obs_stride-th view of those, rendered by the current model, also
 counts as an observer: the 3D memory that keeps later rounds from generating the same region again.
 
@@ -29,7 +32,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import build_trainer  # noqa: E402
-from dashrecon.gen.views import ViewMove, hole_mask, memory_observers, render_moved, training_observers  # noqa: E402
+from dashrecon.gen.novel import refined_c2w, to_device  # noqa: E402
+from dashrecon.gen.views import ViewMove, hole_mask, memory_observers, moved_c2w, render_at, training_observers  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 
 
@@ -39,6 +43,8 @@ def main() -> None:
     parser.add_argument("--move", required=True, help='e.g. "right=1.5,yaw=15" (keys: right, up, forward, yaw, pitch)')
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--frame_stride", type=int, default=1, help="render every n-th frame (2 halves the Wan fill time)")
+    parser.add_argument("--ramp_frames", type=int, default=0, help="0 = full move from the first view")
+    parser.add_argument("--render_hw", type=int, nargs=2, help="H W; default: the training size")
     parser.add_argument("--obs_stride", type=int, default=2)
     parser.add_argument("--memory_dirs", nargs="*", default=[], help="views dirs filled in earlier rounds")
     parser.add_argument("--depth_tol", type=float, default=0.10)
@@ -68,17 +74,26 @@ def main() -> None:
     cams, hole_frac = [], []
     with torch.no_grad():
         for v, k in enumerate(range(0, len(dataset.full_image_set), args.frame_stride)):
-            out, ii, ci, c2w = render_moved(trainer, dataset, k, move, device)
-            h, w = int(ci["height"]), int(ci["width"])
+            ii, ci = dataset.full_image_set.get_image(k, 1)
+            ii, ci = to_device(ii, device), to_device(ci, device)
+            f = min(1.0, v / args.ramp_frames) if args.ramp_frames > 0 else 1.0
+            c2w = moved_c2w(refined_c2w(trainer, ii, ci), ViewMove(**{key: f * val for key, val in vars(move).items()}))
+            h0, w0 = int(ci["height"]), int(ci["width"])
+            h, w = (h0, w0) if args.render_hw is None else tuple(args.render_hw)
+            kk = ci["intrinsics"].clone()
+            kk[:2] *= w / w0
+            kk[1, 2] -= (h0 * w / w0 - h) / 2
+            assert h <= h0 * w / w0 + 1e-6, f"--render_hw {h} x {w} is taller than the scaled image {h0 * w / w0:.1f}"
+            out = render_at(trainer, ii, ci, c2w, kk, (h, w))
             depth = out["depth"][..., 0]
-            hole, count, _ = hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, args.depth_tol, args.res_ratio,
+            hole, count, _ = hole_mask(out, ii["viewdirs"], kk, c2w, observers, args.depth_tol, args.res_ratio,
                                        args.sky_alpha, args.sky_elev_deg, args.open_px, args.min_area, args.dilate_px)
             rgb = (out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8)
             Image.fromarray(rgb).save(os.path.join(args.out_dir, "rgb", f"{v:03d}.png"))
             Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(args.out_dir, "mask", f"{v:03d}.png"))
             np.save(os.path.join(args.out_dir, "depth", f"{v:03d}.npy"), depth.cpu().numpy().astype(np.float16))
             np.save(os.path.join(args.out_dir, "count", f"{v:03d}.npy"), count.astype(np.float16))
-            cams.append({"frame": int(dataset.start_timestep + k), "c2w": c2w.cpu().numpy().tolist(), "K": ci["intrinsics"].cpu().numpy().tolist(),
+            cams.append({"frame": int(dataset.start_timestep + k), "c2w": c2w.cpu().numpy().tolist(), "K": kk.cpu().numpy().tolist(), "ramp": f,
                          "hw": [h, w]})
             hole_frac.append(float(hole.mean()))
     with open(os.path.join(args.out_dir, "cams.json"), "w") as f:
