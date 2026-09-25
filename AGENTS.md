@@ -379,8 +379,8 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
 - [x] Phase 5：点云融合与清理（2026-09-24：按临时标准验收；5 个场景都有逐步点数和截图/网页；"一致性过滤后几何指标更好"需要 LiDAR 评测，延后。见 DECISIONS H）
 - [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
-- [ ] Phase 6：E3–E4（含横向偏移渲染）
-- [ ] Phase 7：NKSR 与 E5（2026-09-24：任务 1–3 的网格重建已完成，按临时标准验收，见 DECISIONS I；E5 与 Phase 6 一起训练）
+- [x] Phase 6：E3–E4（含横向偏移渲染）（2026-09-25：按临时标准验收；E3 / E4 / E5 在 5 个场景完成训练和 0 / 0.5 / 1 / 2 横移渲染，结果见 DECISIONS J）
+- [x] Phase 7：NKSR 与 E5（2026-09-24：网格重建按临时标准验收，见 DECISIONS I；2026-09-25：E5 完成，与 E4 的对比记在 DECISIONS J。留出帧均值 E5 高 0.26 dB，主要来自 val094；几何评测延后）
 - [ ] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-24：生成器、E6、E5+pp 代码完成，在 val056 上冒烟测试通过，见 DECISIONS K；5 个场景的正式运行进行中）
 - [ ] （延后）Phase 1：评测工具
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
@@ -622,3 +622,4 @@ done
 - 2026-09-24：Phase 5 完成（§12）；§4 列出 fusion/backproject.py 和新脚本；§13 新增 13.5（Phase 5 命令），可视化命令加入 `vis_fusion.py` 和 `build_viewer.py --fusion`。
 - 2026-09-24：D8、D9（先网格后 3DGS；E5 在网格上初始化并正则）；Phase 7 网格重建完成；§13 新增 13.6（网格命令），显示抽样规模下调到 64 MB 以内，`build_viewer.py --mesh`；§6、§7 更新 E5 定义与执行顺序。
 - 2026-09-24：Phase 8 代码完成（`dashrecon/gen/`、`scripts/train_ggds.py`、`scripts/postprocess_frames.py`，DECISIONS K）；§6 Phase 8 按实现改写（t 上界退火、横移 0.5–2.5、天空不参与生成 loss）；§13 新增 13.8（Phase 8 命令），原 13.8–13.10 顺延；13.9 的显示抽样规模改为实际值，并补上 `export_splats.py` 和 `--splat_exp`。
+- 2026-09-25：Phase 6、Phase 7（E5）完成（§12），结果记在 DECISIONS J。
