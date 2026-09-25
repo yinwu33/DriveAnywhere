@@ -12,7 +12,8 @@ export VIRTUAL_ENV="$ROOT/.venvs/recam"
 git -C "$SRC" checkout -q fcf98bc86e876bb534518cd99e8a65b282f0f16e
 uv venv "$VIRTUAL_ENV" --python 3.10
 uv pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
-uv pip install -e "$SRC"
+uv pip install setuptools==80.9.0 wheel
+uv pip install --no-build-isolation -e "$SRC"  # setup.py imports pkg_resources
 uv pip install lightning pandas
 "$VIRTUAL_ENV/bin/python" - <<EOF
 from huggingface_hub import hf_hub_download, snapshot_download
