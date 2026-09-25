@@ -64,6 +64,7 @@ def main() -> None:
     assert (args.num_frames - 1) % 4 == 0, "Wan clips need 4k + 1 frames"
     commit = git_commit()
     from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanTransformer3DModel, WanVideoToVideoPipeline
+    from huggingface_hub import snapshot_download
     from transformers import T5TokenizerFast, UMT5EncoderModel
     import imageio
 
@@ -74,12 +75,16 @@ def main() -> None:
     full_size = frames[0].size
     size = (args.width, args.height)
 
+    # the pinned T2V snapshot as a local path: diffusers queries the Hub API for a sharded model with a revision,
+    # which fails with HF_HUB_OFFLINE=1
+    t2v_dir = snapshot_download(T2V_ID, revision=T2V_REVISION, local_files_only=True,
+                                allow_patterns=["model_index.json", "scheduler/*", "transformer/*"])  # as envs/setup_wan.sh
     pipe = WanVideoToVideoPipeline(
         tokenizer=T5TokenizerFast.from_pretrained(VACE_ID, subfolder="tokenizer"),  # class from the VACE model_index.json
         text_encoder=UMT5EncoderModel.from_pretrained(VACE_ID, subfolder="text_encoder", torch_dtype=torch.bfloat16),
-        transformer=WanTransformer3DModel.from_pretrained(T2V_ID, subfolder="transformer", revision=T2V_REVISION, torch_dtype=torch.bfloat16),
+        transformer=WanTransformer3DModel.from_pretrained(os.path.join(t2v_dir, "transformer"), torch_dtype=torch.bfloat16),
         vae=AutoencoderKLWan.from_pretrained(VACE_ID, subfolder="vae", torch_dtype=torch.float32),
-        scheduler=UniPCMultistepScheduler.from_pretrained(T2V_ID, subfolder="scheduler", revision=T2V_REVISION),
+        scheduler=UniPCMultistepScheduler.from_pretrained(os.path.join(t2v_dir, "scheduler")),
     )
     pipe.to("cuda")
 
