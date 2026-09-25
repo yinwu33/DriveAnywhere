@@ -5,8 +5,9 @@ every frame, a "3D cache" render of that camera (warped image + mask of valid pi
 the cache where it is valid and to generate the rest consistently. Our 3DGS render is such a cache: this script
 feeds a scripts/render_views.py directory rendered at GEN3C's 704 x 1280 with a ramped move (--render_hw 704 1280
 --ramp_frames n, so view 0 is the real FRONT pose):
-    - conditioning frame of the first chunk: the real FRONT image of view 0's frame from --image_dir (the undistorted
-      1920 x 1280 images the run was trained on, scaled by 2/3 and centre-cropped like the render's intrinsics);
+    - conditioning frame of the first chunk: the real FRONT image of view 0's frame (<data.data_root>/<scene_idx>/
+      images/<t:03d>_0.jpg of the rendered run's config: the undistorted 1920 x 1280 images it was trained on),
+      scaled by 2/3 and centre-cropped like the render's intrinsics;
     - cache for each view: the render where training views saw the surface (mask/ = 0), -1 (empty, as GEN3C's own
       forward warp) and mask 0 in the holes; view 0 uses the real image with a full mask;
     - chunks of 121 frames, autoregressive as gen3c_dynamic.py: each later chunk starts from the last generated
@@ -22,7 +23,7 @@ generative: true).
 
 Example (from the DriveAnywhere repo root):
     CUDA_HOME=/usr/local/cuda-12.1 .venvs/gen3c/bin/python scripts/gen3c_fill.py \
-        --views_dir results/E8/val056/views/r1_yaw30 --image_dir data/dashrecon/_undistorted/calib-glomap/056/images
+        --views_dir results/E8/val056/views/r1_yaw30
 """
 import argparse
 import json
@@ -56,16 +57,20 @@ def real_frame(path: str) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--views_dir", required=True)
-    parser.add_argument("--image_dir", required=True)
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
     commit = git_commit()
-    views_dir, image_dir = os.path.abspath(args.views_dir), os.path.abspath(args.image_dir)
+    from omegaconf import OmegaConf
+
+    views_dir = os.path.abspath(args.views_dir)
     with open(os.path.join(views_dir, "cams.json")) as f:
-        cams = json.load(f)["cams"]
+        meta = json.load(f)
+    cams = meta["cams"]
+    data_cfg = OmegaConf.load(os.path.join(meta["log_dir"], "config.yaml")).data
+    image_dir = os.path.abspath(os.path.join(data_cfg.data_root, f"{int(data_cfg.scene_idx):03d}", "images"))
     n = len(cams)
     assert all(c["hw"] == [H, W] for c in cams), "render the views with --render_hw 704 1280"
     assert cams[0]["ramp"] == 0.0, "view 0 must be the real FRONT pose (--ramp_frames > 0)"
@@ -119,7 +124,7 @@ def main() -> None:
     with open(os.path.join(views_dir, "fill.json"), "w") as f:
         json.dump({"generator": "GEN3C-Cosmos-7B", "gen3c_commit": "db2ffe12ced12ddafcec5e0422ee46ce8520746b",
                    "weights_revision": "9bcfdb4f3924f41376daeadf6200826c12a3bf8e", "params": vars(args), "chunks": chunks,
-                   "conditioning": "real FRONT image of view 0, then the last generated frame", "composited": False,
+                   "conditioning": "real FRONT image of view 0, then the last generated frame", "image_dir": image_dir, "composited": False,
                    "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": True, "dashrecon_commit": commit}, f, indent=2)
     print(f"[gen3c_fill] {views_dir}: {n} views in {len(chunks)} chunks, {sum(c['seconds'] for c in chunks) / 60:.1f} min", flush=True)
 
