@@ -307,6 +307,9 @@ data/dashrecon/<scene_id>/<backend_tag>/
 | E5 | 同 E4 | 同 E4 | 同 E4 | NKSR 网格：在网格面上初始化 Gaussian，并用网格渲染的深度/法向正则（D9，参照 LSD-3D 的几何部分） | 完全非 oracle |
 | E6 | 同 E5 | 同 E5 | 同 E5 | 从 E5 继续训练，对偏离轨迹的视角做 GGDS 式蒸馏：冻结的 SDXL + ControlNet depth，以网格视差为条件（D10–D12） | 完全非 oracle，**含生成内容** |
 | E5+pp | 同 E5 | 同 E5 | 同 E5 | 不训练，对 E5 的渲染逐帧做同样的去噪（对照组） | 完全非 oracle，**含生成内容** |
+| E4c、E5c | 自标定：GLOMAP 共享内参 + 径向畸变 + 位姿，去畸变图像（D13） | 同 E4、E5，但在去畸变图像上；深度来自给定内参和位姿的 MapAnything | 同 E4，但在去畸变图像上重新分割 | — | 完全非 oracle |
+| E7 | 同 E5c | 同 E5c | 同 E5c | 从 E5c 继续训练，用 NVIDIA Fixer 修复的新视角渐进蒸馏（D14，Difix3D+ 做法） | 完全非 oracle，**含生成内容** |
+| E5c+fx | 同 E5c | 同 E5c | 同 E5c | 不训练，对 E5c 的渲染逐帧用 Fixer 修复（对照组） | 完全非 oracle，**含生成内容** |
 
 注意：E1 使用估计位姿但 LiDAR 在 GT 世界坐标下，需要先把估计轨迹 Sim(3) 对齐到 GT，才能使用 LiDAR；该实验必须标注为半 oracle。
 
@@ -378,11 +381,12 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
 - [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
 - [x] Phase 5：点云融合与清理（2026-09-24：按临时标准验收；5 个场景都有逐步点数和截图/网页；"一致性过滤后几何指标更好"需要 LiDAR 评测，延后。见 DECISIONS H）
-- [ ] （延后，用户决定）Phase 3 修正：焦距低估、尺度偏小、轨迹抖动、坡度被抹平（OPEN_QUESTIONS 14–17）。修完后重跑 Phase 3 及其下游
+- [ ] Phase 3 修正（2026-09-25 取消延后，D13）：相机自标定 + SfM 位姿已完成，轨迹抖动消失、焦距误差降到 4–14%（DECISIONS L）；尺度偏小（OPEN_QUESTIONS 15）和坡度（17）待查；下游 E5c 训练进行中
 - [x] Phase 6：E3–E4（含横向偏移渲染）（2026-09-25：按临时标准验收；E3 / E4 / E5 在 5 个场景完成训练和 0 / 0.5 / 1 / 2 横移渲染，结果见 DECISIONS J）
 - [x] Phase 7：NKSR 与 E5（2026-09-24：网格重建按临时标准验收，见 DECISIONS I；2026-09-25：E5 完成，与 E4 的对比记在 DECISIONS J。留出帧均值 E5 高 0.26 dB，主要来自 val094；几何评测延后）
 - [x] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-25：按临时标准验收；E6 和 E5+pp 在 5 个场景完成，横移对比渲染和网页 E5 / E6 切换已产出。留出帧 E6 比 E5 低 0.19 dB，E5+pp 低 1.1 dB；横移视角的改善只有目测，跨相机评测延后。见 DECISIONS K）
-- [ ] （延后）Phase 1：评测工具
+- [ ] （延后）Phase 1：评测工具（2026-09-25：任务 2 的简化版"跨相机检查"已完成，D15，`scripts/eval_cross_camera.py`；其余延后）
+- [ ] Phase 8 换用 Fixer（D14）：E7 和 E5c+fx 进行中
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
 
@@ -606,6 +610,51 @@ done
 | Apache 对比 run | `data/dashrecon/_checkpoint_compare/map-anything-apache/` |
 | 诊断 JSON | `data/dashrecon/diagnostics/phase3_pose.json` |
 | 组装好的网页 | `data/dashrecon/viewer/review/` |
+| 相机自标定（D13） | `data/dashrecon/<scene_id>/calib-glomap/`：`camera.json`（共享 K、k1 k2）、`frames.txt`、`poses_c2w.npy`（SfM 坐标系和单位）、`sparse_obs.npz`、`meta.json`、`colmap/sparse/`；去畸变图像 `data/dashrecon/_undistorted/calib-glomap/<idx>/images/<t>_0.jpg` |
+| 自标定流水线的 Phase 3–7 产物 | `data/dashrecon/<scene_id>/pose-glomap_depth-mapanything/`、`mask-gsam2_sky-segformer_img-glomap/`、`pose-glomap_depth-mapanything__mask-gsam2_sky-segformer_img-glomap/` |
+| 跨相机检查（D15） | `results/<exp>/<scene_id>/cross_camera/`：`metrics.json`、`<t>_<cam>.jpg`（GT \| 颜色对齐后的渲染 \| 重叠区） |
+| E7 / E5c+fx（D14） | `results/E7/<scene_id>/`（另有 `fixer_params.json`、`gen/round<r>_view<k>.jpg`：渲染 \| Fixer 目标）；`results/E5cfx/<scene_id>/` |
+
+### 13.12 自标定流水线（D13）、跨相机检查（D15）与 Fixer（D14）
+
+```bash
+CUDA_HOME=/usr/local/cuda-12.1 bash envs/setup_sfm.sh     # pycolmap 4.2（CPU）
+CUDA_HOME=/usr/local/cuda-12.1 bash envs/setup_fixer.sh   # NVIDIA Fixer（不用 NGC 容器），权重 nvidia/Fixer
+U=data/dashrecon/_undistorted/calib-glomap
+for s in val056 val039 val041 val087 val094; do
+  # 自标定：GLOMAP，共享 RADIAL 相机，动态和天空像素不提特征 -> calib-glomap/ 与去畸变图像
+  .venvs/sfm/bin/python scripts/run_calib.py --scene_id $s --processed_root data/waymo/processed/validation \
+      --mask_dir data/dashrecon/$s/mask-gsam2_sky-segformer --out_root data/dashrecon --undistorted_root $U \
+      --max_features 8192 --overlap 20 --seed 0
+  # MapAnything：输入去畸变图像、共享内参和 SfM 位姿，补深度；SfM 位姿按稀疏点深度比缩放 -> pose-glomap_depth-mapanything/
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True .venvs/mapanything/bin/python scripts/run_pose.py --scene_id $s \
+      --backend mapanything --model_id facebook/map-anything --processed_root $U \
+      --camera_dir data/dashrecon/$s/calib-glomap --out_root data/dashrecon --scale model --max_views 300
+  # 去畸变图像上的掩码（参数同 13.4）
+  .venvs/masks/bin/python scripts/run_masks.py --scene_id $s --processed_root $U --out_root data/dashrecon \
+      --detector_id IDEA-Research/grounding-dino-base --sam_id facebook/sam2.1-hiera-large --box_threshold 0.25 \
+      --text_threshold 0.25 --dilate_px 5 --seg_model_id nvidia/segformer-b5-finetuned-cityscapes-1024-1024 \
+      --seg_input_hw 1024 1536 --image_tag img-glomap
+  # 融合与网格：13.5、13.6 的命令，换成 --pose_dir .../pose-glomap_depth-mapanything、
+  # --mask_dir .../mask-gsam2_sky-segformer_img-glomap、--processed_root $U
+done
+export PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1
+for s in val056 val039 val041 val087 val094; do
+  python scripts/train_gs.py --exp E5c --scene_id $s --output_root results
+  python scripts/train_fixer.py --scene_id $s --output_root results                     # E7
+  python scripts/postprocess_frames.py --scene_id $s --output_root results --generator fixer --init_exp E5c \
+      --offsets 0 0.5 1 2 --still_frames 50 100 150 --video_offsets 1                  # E5c+fx
+  for e in E3 E4 E5 E6 E5c E7; do
+    python scripts/render_lateral.py --log_dir results/$e/$s --offsets 0 0.5 1 2 --still_frames 50 100 150 --fps 10
+    # 跨相机检查（评测代码，读 GT）：FRONT_LEFT / FRONT_RIGHT，每 5 帧一次
+    python scripts/eval_cross_camera.py --log_dir results/$e/$s --gt_root data/waymo/processed/validation \
+        --frame_stride 5 --alpha 0.5 --example_frames 50 100 150
+  done
+done
+.venvs/mapanything/bin/python scripts/diagnose_pose.py --processed_root data/waymo/processed/validation \
+    --tag pose-glomap_depth-mapanything --run glomap=data/dashrecon --primary glomap \
+    --out data/dashrecon/diagnostics/phase3_pose_glomap.json
+```
 
 ---
 
@@ -630,3 +679,4 @@ done
 - 2026-09-25：网页 3DGS 模式加入 E5 / E6 切换（`build_viewer.py --splat_exps`），每个实验每个场景 8 万个 Gaussian（§13.9、§13.10）。
 - 2026-09-25：网页加入帧进度条（§13.10）；`vis_pose.py` 的网页数据改为存每一帧的位姿和帧号。
 - 2026-09-25：Phase 8 完成（§12），结果记在 DECISIONS K。
+- 2026-09-25：D13–D15：相机自标定流水线（E4c、E5c）、跨相机检查、Fixer（E7、E5c+fx）；§7 新增这些实验；§12 更新；§13 新增 13.12 与产物位置。
