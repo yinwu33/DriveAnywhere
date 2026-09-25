@@ -389,7 +389,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 7：NKSR 与 E5（2026-09-24：网格重建按临时标准验收，见 DECISIONS I；2026-09-25：E5 完成，与 E4 的对比记在 DECISIONS J。留出帧均值 E5 高 0.26 dB，主要来自 val094；几何评测延后）
 - [x] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-25：按临时标准验收；E6 和 E5+pp 在 5 个场景完成，横移对比渲染和网页 E5 / E6 切换已产出。留出帧 E6 比 E5 低 0.19 dB，E5+pp 低 1.1 dB；横移视角的改善只有目测，跨相机评测延后。见 DECISIONS K）
 - [ ] （延后）Phase 1：评测工具（2026-09-25：任务 2 的简化版"跨相机检查"已完成，D15，`scripts/eval_cross_camera.py`；其余延后）
-- [ ] Phase 8 换用 Fixer（D14）：E7 和 E5c+fx 进行中
+- [x] Phase 8 换用 Fixer（D14）：E7 和 E5c+fx 在 5 个场景完成（2026-09-25，DECISIONS M）。E7 与 E5c 基本持平；E5c+fx 使留出帧 LPIPS 0.210 → 0.183；未观测区域仍然是空的，见 OPEN_QUESTIONS 35
 - [ ] （延后）Phase 2：E0 oracle 上界；以及 E1、E2
 - [ ] （延后）汇总报告 `results/SUMMARY.md`
 
@@ -669,7 +669,12 @@ done
 # vis_pose / vis_masks 的 --processed_root 用 $U
 .venvs/mapanything/bin/python scripts/build_viewer.py --scene_root data/dashrecon --tag pose-glomap_depth-mapanything \
     --diagnostics data/dashrecon/diagnostics/phase3_pose_glomap.json --page_title "DashRecon Calibrated Review" \
-    --mask_tag mask-gsam2_sky-segformer_img-glomap --fusion --mesh --out_dir data/dashrecon/viewer/calib
+    --mask_tag mask-gsam2_sky-segformer_img-glomap --fusion --mesh --training_dir results/_vis_calib \
+    --results_root results --splat_exps E5c E7 --out_dir data/dashrecon/viewer/calib
+# 其中 results/_vis_calib 与 E5c / E7 的高斯：
+#   export_splats.py --log_dir results/{E5c,E7}/$s --scene_id $s --max_splats 80000 --min_opacity 0.05 --max_scale_pct 99.5
+#   vis_training.py --results_root results --exps E5c E5cfx E7 --frames 50 100 150 --offsets 0 0.5 1 2 --cell_width 480 \
+#       --gen_exp E7 --gen_views 2 --processed_root $U --out_dir results/_vis_calib
 ```
 
 在线（Claude Artifact，私有）：https://claude.ai/artifact/SzEh7vBbofCdSWA2nQr3sC （"DashRecon Calibrated Review"；原流水线仍是 13.10 的链接）。发布方式同 13.10。
@@ -700,3 +705,4 @@ done
 - 2026-09-25：D13–D15：相机自标定流水线（E4c、E5c）、跨相机检查、Fixer（E7、E5c+fx）；§7 新增这些实验；§12 更新；§13 新增 13.12 与产物位置。
 - 2026-09-25：§0 新增第 8 条（用户要求）：每完成一个任务项就 commit；长任务启动前工作区必须干净。
 - 2026-09-25：§13.10 新增交互式高斯查看器（`scripts/view_gs.py`）。
+- 2026-09-25：Phase 8 的 Fixer 实验（E7、E5c+fx）完成；自标定页面加入 3DGS、对比拼图和跨相机表（§13.12）。
