@@ -64,7 +64,7 @@ def main() -> None:
     assert (args.num_frames - 1) % 4 == 0, "Wan clips need 4k + 1 frames"
     commit = git_commit()
     from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanTransformer3DModel, WanVideoToVideoPipeline
-    from transformers import AutoTokenizer, UMT5EncoderModel
+    from transformers import T5TokenizerFast, UMT5EncoderModel
     import imageio
 
     ks = list(range(args.start, args.start + args.num_frames))
@@ -75,7 +75,7 @@ def main() -> None:
     size = (args.width, args.height)
 
     pipe = WanVideoToVideoPipeline(
-        tokenizer=AutoTokenizer.from_pretrained(VACE_ID, subfolder="tokenizer"),
+        tokenizer=T5TokenizerFast.from_pretrained(VACE_ID, subfolder="tokenizer"),  # class from the VACE model_index.json
         text_encoder=UMT5EncoderModel.from_pretrained(VACE_ID, subfolder="text_encoder", torch_dtype=torch.bfloat16),
         transformer=WanTransformer3DModel.from_pretrained(T2V_ID, subfolder="transformer", revision=T2V_REVISION, torch_dtype=torch.bfloat16),
         vae=AutoencoderKLWan.from_pretrained(VACE_ID, subfolder="vae", torch_dtype=torch.float32),
