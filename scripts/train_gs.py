@@ -4,6 +4,8 @@
     E4  init: Phase 5 fused cloud (points_fused.ply)
     E5  init: flat Gaussians on the NKSR mesh + mesh depth / normal regularisation (DECISIONS D9)
 All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFormer sky masks, FRONT only.
+    E4c, E5c  as E4, E5 on the self-calibrated camera (DECISIONS D13): undistorted FRONT images, shared
+              GLOMAP intrinsics, GLOMAP poses scaled to MapAnything depth, masks of the undistorted images.
 
 Checks GT isolation on the merged config (dashrecon.train.guard) before training, then runs
 tools/train.py:main. Output: <output_root>/<exp>/<scene_id>/ (drivestudio log dir: config.yaml, checkpoints,
@@ -30,27 +32,32 @@ from dashrecon.scenes import get_scene  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 
 CONFIG = "configs/dashrecon/static_bg.yaml"
-POSE_TAG = "pose-mapanything_depth-mapanything"
-MASK_TAG = "mask-gsam2_sky-segformer"
-FUSION_TAG = f"{POSE_TAG}__{MASK_TAG}"
+# per camera pipeline: (pose tag, mask tag, image root)
+PIPELINES = {
+    "mapanything": ("pose-mapanything_depth-mapanything", "mask-gsam2_sky-segformer", "data/waymo/processed/validation"),
+    "glomap": ("pose-glomap_depth-mapanything", "mask-gsam2_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
+}
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
-EXPERIMENTS = ("E3", "E4", "E5")
+EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap"}
 
 
 def experiment_opts(exp: str, scene_id: str) -> list[str]:
     """CLI overrides (OmegaConf dot-list) for one experiment and scene."""
     scene = get_scene(scene_id)
-    pose_dir = io.scene_dir("data/dashrecon", scene_id, POSE_TAG)
-    mask_dir = io.scene_dir("data/dashrecon", scene_id, MASK_TAG)
-    fusion_dir = io.scene_dir("data/dashrecon", scene_id, FUSION_TAG)
+    pose_tag, mask_tag, image_root = PIPELINES[EXPERIMENTS[exp]]
+    fusion_tag = f"{pose_tag}__{mask_tag}"
+    pose_dir = io.scene_dir("data/dashrecon", scene_id, pose_tag)
+    mask_dir = io.scene_dir("data/dashrecon", scene_id, mask_tag)
+    fusion_dir = io.scene_dir("data/dashrecon", scene_id, fusion_tag)
     opts = [
+        f"data.data_root={image_root}",
         f"data.scene_idx={scene.scene_idx}",
         f"data.pixel_source.pose_dir={pose_dir}",
         f"data.pixel_source.mask_dir={mask_dir}",
     ]
     if exp == "E3":
-        init = ["source=ply", f"path={io.scene_dir(E3_ROOT, scene_id, FUSION_TAG)}/points_fused.ply"]
-    elif exp == "E4":
+        init = ["source=ply", f"path={io.scene_dir(E3_ROOT, scene_id, fusion_tag)}/points_fused.ply"]
+    elif exp in ("E4", "E4c"):
         init = ["source=ply", f"path={fusion_dir}/points_fused.ply"]
     else:
         init = ["source=mesh", f"path={fusion_dir}/mesh_nksr.ply"]
@@ -74,7 +81,7 @@ def collect_metrics(log_dir: str, splits: list[str]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--exp", required=True, choices=EXPERIMENTS)
+    parser.add_argument("--exp", required=True, choices=list(EXPERIMENTS))
     parser.add_argument("--scene_id", required=True)
     parser.add_argument("--output_root", required=True)
     parser.add_argument("opts", nargs=argparse.REMAINDER, help="extra OmegaConf overrides (e.g. trainer.optim.num_iters=2000)")

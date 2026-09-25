@@ -32,13 +32,14 @@ class PoseBackend(ABC):
     name: str
 
     @abstractmethod
-    def estimate(self, image_paths: list[str], intrinsics: np.ndarray | None) -> PoseResult:
+    def estimate(self, image_paths: list[str], intrinsics: np.ndarray | None, poses_c2w: np.ndarray | None) -> PoseResult:
         """Estimate cameras and depth for an ordered image sequence.
 
         Args:
             image_paths: ordered image files (one per frame).
-            intrinsics: optional known (3,3) or (N,3,3) intrinsics on the original image grid;
-                ``None`` means the backend estimates them (the default, DECISIONS D3).
+            intrinsics: known (3,3) or (N,3,3) intrinsics on the image grid, e.g. from a self-calibration
+                (DECISIONS D13), or ``None`` for the backend to estimate them. Never Waymo calibration (D3).
+            poses_c2w: known (N,4,4) OpenCV camera-to-world poses up to scale (needs ``intrinsics``), or ``None``.
 
         Returns:
             A :class:`PoseResult` with one entry per image.

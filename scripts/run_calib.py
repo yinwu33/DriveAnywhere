@@ -30,6 +30,7 @@ from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import front_image_paths, get_scene  # noqa: E402
 
 TAG = "calib-glomap"
+EDGE_TOLERANCE_PX = 2.0
 
 
 def main() -> None:
@@ -67,15 +68,18 @@ def main() -> None:
     h, w = cv2.imread(paths[0]).shape[:2]
     dist5 = np.array([res.dist[0], res.dist[1], 0.0, 0.0, 0.0])
     map_x, map_y = cv2.initUndistortRectifyMap(res.K, dist5, None, res.K, (w, h), cv2.CV_32FC1)
-    # barrel distortion keeps every undistorted pixel inside the original image at the same K
-    assert map_x.min() >= -0.5 and map_x.max() <= w - 0.5 and map_y.min() >= -0.5 and map_y.max() <= h - 0.5, (
-        f"undistortion samples outside the image (x {map_x.min():.1f}..{map_x.max():.1f}, "
+    # barrel distortion keeps the undistorted image (same K) inside the original one up to a thin border: allow
+    # EDGE_TOLERANCE_PX outside the image (filled by replicating the edge pixel); anything more needs a cropped K
+    outside = max(-0.5 - map_x.min(), map_x.max() - (w - 0.5), -0.5 - map_y.min(), map_y.max() - (h - 0.5), 0.0)
+    assert outside <= EDGE_TOLERANCE_PX, (
+        f"undistortion samples {outside:.1f} px outside the image (x {map_x.min():.1f}..{map_x.max():.1f}, "
         f"y {map_y.min():.1f}..{map_y.max():.1f}): a cropped K would be needed")
     os.makedirs(out_img_dir)
     for name, path in zip(names, paths):
         img = cv2.imread(path)
         assert img.shape[:2] == (h, w), (path, img.shape)
-        cv2.imwrite(os.path.join(out_img_dir, name), cv2.remap(img, map_x, map_y, cv2.INTER_LINEAR),
+        cv2.imwrite(os.path.join(out_img_dir, name),
+                    cv2.remap(img, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE),
                     [cv2.IMWRITE_JPEG_QUALITY, 95])
 
     io.write_camera(calib_dir, {"model": "COLMAP RADIAL, principal point fixed", "image_hw": [h, w],
@@ -91,6 +95,7 @@ def main() -> None:
         "poses_frame": "SfM world frame and units (not metric, not gravity-aligned)",
         "undistorted_images": os.path.relpath(out_img_dir),
         "undistort_map_range": {"x": [float(map_x.min()), float(map_x.max())], "y": [float(map_y.min()), float(map_y.max())]},
+        "undistort_outside_px": float(outside),
         "num_observations": int(len(res.obs["z"])),
         **res.stats,
         "uses_oracle": False, "uses_calibration": False,

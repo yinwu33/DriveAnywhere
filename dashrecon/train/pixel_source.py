@@ -1,7 +1,8 @@
 """drivestudio pixel source fed by dashrecon products (AGENTS.md Phase 6; selected with data.pixel_source.type).
 
 Reads only:
-    <data_path>/images/<t:03d>_0.jpg                  FRONT images (same files as upstream)
+    <data_path>/images/<t:03d>_0.jpg                  FRONT images: the upstream files, or the undistorted FRONT-only
+                                                      tree of a self-calibration (data.data_root, DECISIONS D13)
     pixel_source.pose_dir  (Phase 3, dashrecon.io)    intrinsics, poses_c2w, depth, depth_conf, meta
     pixel_source.mask_dir  (Phase 4, dashrecon.io)    mask_dynamic / mask_sky
 No GT pose, calibration, LiDAR, boxes or GT-derived masks are read (AGENTS.md section 10); nothing is

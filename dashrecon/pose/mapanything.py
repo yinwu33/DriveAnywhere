@@ -1,12 +1,15 @@
 """MapAnything pose + pointmap backend (runs in the ``.venvs/mapanything`` venv).
 
 API confirmed against facebookresearch/map-anything @ 3d10cf7 (v1.1.4):
-    - ``mapanything.utils.image.load_images`` resizes with ``crop_resize_if_necessary``: a full-extent
-      resize to floor(size * max(target / size)) followed by a centred crop to the target resolution
-      picked by ``find_closest_aspect_ratio`` (1920x1280 -> 518x345 -> crop to 518x336);
+    - ``mapanything.utils.image.load_images`` (images only) and ``preprocess_inputs`` (images with optional
+      ``intrinsics`` (3,3), ``camera_poses`` (4,4) OpenCV cam2world in any world frame, ``is_metric_scale``)
+      both resize with ``crop_resize_if_necessary``: a full-extent resize to floor(size * max(target / size))
+      followed by a centred crop to the target resolution picked by ``find_closest_aspect_ratio``
+      (1920x1280 -> 518x345 -> crop to 518x336); ``preprocess_inputs`` moves the intrinsics with the image;
     - ``MapAnything.infer`` returns per view ``intrinsics`` (pixel centres at integer coordinates,
       see ``recover_pinhole_intrinsics_from_ray_directions``), ``camera_poses`` (OpenCV cam2world,
-      world = first view), ``depth_z``, ``conf`` and ``mask``.
+      world = first view, or the input world when poses are given), ``depth_z``, ``conf``, ``mask`` and
+      ``metric_scaling_factor``. Given poses condition the prediction but are not reproduced exactly.
 """
 import time
 
@@ -14,14 +17,16 @@ import numpy as np
 import torch
 from PIL import Image
 
-from dashrecon.io import image_intrinsics_from_depth
+from dashrecon.io import depth_intrinsics, image_intrinsics_from_depth
 from dashrecon.pose.base import PoseBackend, PoseResult
 
 MAPANYTHING_COMMIT = "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9"
+INFER_PARAMS = {"memory_efficient_inference": True, "use_amp": True, "amp_dtype": "bf16", "apply_mask": True,
+                "mask_edges": True, "apply_confidence_mask": False}
 
 
 class MapAnythingBackend(PoseBackend):
-    """Image-only metric reconstruction with MapAnything."""
+    """Metric reconstruction with MapAnything, from images alone or with known intrinsics and poses."""
 
     name = "mapanything"
 
@@ -42,7 +47,7 @@ class MapAnythingBackend(PoseBackend):
         self.model = MapAnything.from_pretrained(model_id).to(self.device).eval()
 
     def _depth_grid(self, image_hw: tuple[int, int], depth_hw: tuple[int, int]) -> dict:
-        """Replicate ``crop_resize_if_necessary`` (no intrinsics given) to describe the depth grid."""
+        """Replicate ``crop_resize_if_necessary`` to describe the depth grid."""
         h, w = image_hw
         th, tw = depth_hw
         scale = max(tw / w, th / h) + 1e-8
@@ -54,36 +59,41 @@ class MapAnythingBackend(PoseBackend):
             "depth_hw": [th, tw],
         }
 
-    def estimate(self, image_paths: list[str], intrinsics: np.ndarray | None) -> PoseResult:
-        from mapanything.utils.image import load_images
+    def _views(self, image_paths: list[str], intrinsics: np.ndarray | None, poses_c2w: np.ndarray | None) -> list:
+        from mapanything.utils.image import load_images, preprocess_inputs
 
-        if intrinsics is not None:
-            raise NotImplementedError("calibrated intrinsics are deferred (DECISIONS D3)")
+        if intrinsics is None:
+            assert poses_c2w is None, "known poses need known intrinsics"
+            return load_images(image_paths, resolution_set=self.resolution_set)
+        assert intrinsics.shape == (3, 3), f"expected one shared (3,3) intrinsics, got {intrinsics.shape}"
+        views = []
+        for i, p in enumerate(image_paths):
+            v = {"img": np.asarray(Image.open(p).convert("RGB")), "intrinsics": torch.from_numpy(intrinsics).float()}
+            if poses_c2w is not None:
+                v["camera_poses"] = torch.from_numpy(poses_c2w[i]).float()
+                v["is_metric_scale"] = torch.tensor([False])
+            views.append(v)
+        return preprocess_inputs(views, resolution_set=self.resolution_set)
+
+    def estimate(self, image_paths: list[str], intrinsics: np.ndarray | None, poses_c2w: np.ndarray | None) -> PoseResult:
         if len(image_paths) > self.max_views:
             raise NotImplementedError(
                 f"{len(image_paths)} views > max_views={self.max_views}: chunked inference "
                 "(AGENTS Phase 3 task 3) is not implemented yet"
             )
+        assert poses_c2w is None or len(poses_c2w) == len(image_paths), (len(poses_c2w), len(image_paths))
         sizes = {Image.open(p).size for p in image_paths}
         assert len(sizes) == 1, f"images must share one size, got {sizes}"
         (w, h), = sizes
 
-        views = load_images(image_paths, resolution_set=self.resolution_set)
+        views = self._views(image_paths, intrinsics, poses_c2w)
         th, tw = (int(x) for x in views[0]["true_shape"][0])
         depth_grid = self._depth_grid((h, w), (th, tw))
 
         torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.time()
         with torch.no_grad():
-            preds = self.model.infer(
-                views,
-                memory_efficient_inference=True,
-                use_amp=True,
-                amp_dtype="bf16",
-                apply_mask=True,
-                mask_edges=True,
-                apply_confidence_mask=False,
-            )
+            preds = self.model.infer(views, **INFER_PARAMS)
         torch.cuda.synchronize(self.device)
         runtime = time.time() - t0
         peak_gb = torch.cuda.max_memory_allocated(self.device) / 1024**3
@@ -96,9 +106,16 @@ class MapAnythingBackend(PoseBackend):
         assert depth.shape[1:] == (th, tw), (depth.shape, th, tw)
         depth = np.where(mask & (depth > 0), depth, 0.0).astype(np.float32)
         scaling = np.stack([p["metric_scaling_factor"][0].float().cpu().numpy() for p in preds])
+        if intrinsics is not None:
+            # the given calibration must come back unchanged on the depth grid (same resize/crop as ours)
+            err = np.abs(k_depth - depth_intrinsics(intrinsics, depth_grid)[None]).max()
+            assert err < 0.5, f"MapAnything intrinsics differ from the given ones by {err:.2f} px on the depth grid"
+            k_image = np.broadcast_to(intrinsics, (len(image_paths), 3, 3)).copy()
+        else:
+            k_image = image_intrinsics_from_depth(k_depth.astype(np.float64), depth_grid)
 
         return PoseResult(
-            intrinsics=image_intrinsics_from_depth(k_depth.astype(np.float64), depth_grid),
+            intrinsics=k_image,
             poses_c2w=poses.astype(np.float64),
             depth=depth,
             depth_conf=conf.astype(np.float32),
@@ -108,15 +125,9 @@ class MapAnythingBackend(PoseBackend):
                 "model_id": self.model_id,
                 "code_commit": MAPANYTHING_COMMIT,
                 "torch": torch.__version__,
-                "infer_params": {
-                    "memory_efficient_inference": True,
-                    "use_amp": True,
-                    "amp_dtype": "bf16",
-                    "apply_mask": True,
-                    "mask_edges": True,
-                    "apply_confidence_mask": False,
-                    "resolution_set": self.resolution_set,
-                },
+                "infer_params": {**INFER_PARAMS, "resolution_set": self.resolution_set},
+                "inputs": ["images"] + (["intrinsics"] if intrinsics is not None else [])
+                          + (["camera_poses (non-metric)"] if poses_c2w is not None else []),
                 "num_views": len(image_paths),
                 "runtime_s": runtime,
                 "peak_vram_gb": peak_gb,

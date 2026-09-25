@@ -3,6 +3,9 @@ from omegaconf import OmegaConf
 
 ALLOWED_MODELS = {"Background", "Sky", "Affine", "CamPose"}
 DASHRECON_ROOT = "data/dashrecon/"
+# where FRONT images may come from: the original processed split, or the undistorted FRONT-only tree of a
+# self-calibration (DECISIONS D13), which holds no other file
+IMAGE_ROOTS = ("data/waymo/processed/validation", "data/dashrecon/_undistorted/calib-glomap")
 
 
 def assert_non_oracle(cfg: OmegaConf) -> None:
@@ -14,6 +17,7 @@ def assert_non_oracle(cfg: OmegaConf) -> None:
     assert list(ps.cameras) == [0], f"FRONT camera only, got {list(ps.cameras)}"
     assert ps.load_objects is False and ps.load_smpl is False, "GT boxes must not be loaded"
     assert ps.undistort is False, "undistortion would use Waymo calibration"
+    assert d.data_root in IMAGE_ROOTS, f"images must come from {IMAGE_ROOTS}, got {d.data_root}"
     assert set(cfg.model.keys()) <= ALLOWED_MODELS, f"only static background models allowed: {set(cfg.model.keys())}"
     init = cfg.model.Background.init
     assert "from_lidar" not in init, "LiDAR initialisation is oracle"

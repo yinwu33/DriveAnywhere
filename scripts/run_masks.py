@@ -6,7 +6,8 @@ section 10) and writes, via ``dashrecon.io``, to ``<out_root>/<scene_id>/mask-gs
     meta.json (models, parameters, runtime, peak VRAM, per-frame masked-pixel ratios and detections).
 
 Masks do not depend on the pose backend, so they live in their own backend-tag directory
-(DECISIONS F).
+(DECISIONS F). Masks of another image set (e.g. the undistorted images of a self-calibration, DECISIONS D13,
+given as ``--processed_root``) take ``--image_tag``: ``mask-gsam2_sky-segformer_<image_tag>/``.
 
 Example (masks venv):
     .venvs/masks/bin/python scripts/run_masks.py --scene_id val041 \
@@ -45,6 +46,7 @@ def main() -> None:
     parser.add_argument("--dilate_px", type=int, required=True)
     parser.add_argument("--seg_model_id", required=True)
     parser.add_argument("--seg_input_hw", type=int, nargs=2, required=True)
+    parser.add_argument("--image_tag", default=None, help="suffix naming a non-original image set, e.g. img-glomap")
     args = parser.parse_args()
 
     commit = git_commit()  # at start: later edits must not change what this run records
@@ -55,7 +57,8 @@ def main() -> None:
     dyn = GroundedSam2Backend(args.detector_id, args.sam_id, tuple(args.prompts), args.box_threshold,
                               args.text_threshold, args.dilate_px)
     seg = SegformerSkyRoadBackend(args.seg_model_id, tuple(args.seg_input_hw))
-    out_dir = io.scene_dir(args.out_root, args.scene_id, f"mask-{dyn.name}_sky-{seg.name}")
+    tag = f"mask-{dyn.name}_sky-{seg.name}" + ("" if args.image_tag is None else f"_{args.image_tag}")
+    out_dir = io.scene_dir(args.out_root, args.scene_id, tag)
     print(f"[run_masks] {args.scene_id}: {len(paths)} FRONT frames -> {out_dir}", flush=True)
 
     torch.cuda.reset_peak_memory_stats()
@@ -84,6 +87,7 @@ def main() -> None:
         "scene_id": args.scene_id,
         "segment": scene.segment,
         "image_hw": image_hw,
+        "image_source": [os.path.relpath(p) for p in (paths[0], paths[-1])],
         "dynamic": dyn.meta(),
         "semantic": seg.meta(),
         "runtime_s": runtime,
