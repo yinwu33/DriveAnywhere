@@ -582,6 +582,13 @@ done
   然后访问 http://localhost:8000。远程机器需先转发端口，例如 `ssh -L 8000:localhost:8000 <host>`。页面需要联网，才能从 CDN 加载 three.js r128 和字体。
 - **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`、`*.fusion.js`、`*.mesh.js` 和 `training/*.jpg`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
 
+- **完整高斯场景（交互式，需要端口转发）**：`scripts/view_gs.py` 加载训练好的 run，渲染全部 Background 高斯（按视角计算颜色）加天空，比网页的 8 万个底色高斯完整。
+  ```bash
+  PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
+      .venvs/main/bin/python scripts/view_gs.py --log_dirs results/E5/val056 results/E6/val056 --port 8080
+  ```
+  本地执行 `ssh -L 8080:localhost:8080 <host>` 后打开 http://localhost:8080。左侧面板：`run` 切换实验；`frame` 和 `lateral offset` 把相机放到某一帧的 FRONT 相机（可横移）；鼠标拖动旋转、右键平移、滚轮前后移动。
+
 网页的工作方式：
 - 模板 `dashrecon/viewer/index.html` 用 three.js 渲染点云、相机轨迹和视锥。
 - 场景列表、诊断数字、可视化参数和掩码统计都来自 `build_viewer.py` 生成的 `config.js`，页面里没有硬编码的数字。
@@ -692,3 +699,4 @@ done
 - 2026-09-25：Phase 8 完成（§12），结果记在 DECISIONS K。
 - 2026-09-25：D13–D15：相机自标定流水线（E4c、E5c）、跨相机检查、Fixer（E7、E5c+fx）；§7 新增这些实验；§12 更新；§13 新增 13.12 与产物位置。
 - 2026-09-25：§0 新增第 8 条（用户要求）：每完成一个任务项就 commit；长任务启动前工作区必须干净。
+- 2026-09-25：§13.10 新增交互式高斯查看器（`scripts/view_gs.py`）。
