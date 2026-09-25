@@ -14,6 +14,10 @@ with the current model and restored by Fixer (single step at --timestep; dashrec
 restored image is its target until the next refresh. Fixer is ~0.12 s per 960x640 image, so the pool is refreshed
 much more often than E6's SDXL targets (every 1000 steps).
 
+Loss weights: LPIPS-VGG between a render and its Fixer target is ~0.15 and L1 ~0.015 (val056 smoke run), so
+gen_w 0.5 and lpips_w 0.2 put gen_loss (~0.02) level with the real-frame rgb + ssim losses (~0.025) instead of
+the E6 weights (1.0, 0.5), which would make it ~4x larger.
+
 As in E6: kept pixels are those the mesh covers or where the rendered Gaussian opacity exceeds --keep_alpha
 (elsewhere the target is the detached render); novel views run with novel_view=True and frozen Affine and Sky;
 the opacity reset is disabled and every learning rate warms up over --warmup_steps (the checkpoint has no
@@ -80,8 +84,8 @@ def main() -> None:
     parser.add_argument("--timestep", type=int, default=250)
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--lr_scale", type=float, default=1.0)
-    parser.add_argument("--gen_w", type=float, default=1.0)
-    parser.add_argument("--lpips_w", type=float, default=0.5)
+    parser.add_argument("--gen_w", type=float, default=0.5)
+    parser.add_argument("--lpips_w", type=float, default=0.2)
     parser.add_argument("--keep_alpha", type=float, default=0.5)
     parser.add_argument("--save_views", type=int, default=4)
     parser.add_argument("--print_every", type=int, default=100)
