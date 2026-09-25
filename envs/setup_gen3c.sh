@@ -28,6 +28,7 @@ uv pip install ninja pybind11 wheel
 CUDNN_PATH="$VIRTUAL_ENV/lib/python3.10/site-packages/nvidia/cudnn" NVTE_FRAMEWORK=pytorch MAX_JOBS=12 \
     uv pip install --no-build-isolation "transformer_engine[pytorch]==1.12.0"
 uv pip install "git+https://github.com/microsoft/MoGe.git@74fbce054ebed49800de42d0ad0e83495065719a"
+uv pip install huggingface-hub==0.29.2  # MoGe pulls a 1.x hub, which transformers 4.49 (requirements.txt) refuses
 APEX="$ROOT/.venvs/src/apex"
 [ -d "$APEX" ] || git clone https://github.com/NVIDIA/apex.git "$APEX"
 # May 2025 (GEN3C's time): apex from August 2025 on registers torch.library ops that torch 2.6 rejects
