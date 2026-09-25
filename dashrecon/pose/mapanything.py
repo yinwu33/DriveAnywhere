@@ -87,7 +87,7 @@ class MapAnythingBackend(PoseBackend):
         (w, h), = sizes
 
         views = self._views(image_paths, intrinsics, poses_c2w)
-        th, tw = (int(x) for x in views[0]["true_shape"][0])
+        th, tw = (int(x) for x in views[0]["img"].shape[-2:])  # (1, 3, h, w) after either preprocessing path
         depth_grid = self._depth_grid((h, w), (th, tw))
 
         torch.cuda.reset_peak_memory_stats(self.device)
