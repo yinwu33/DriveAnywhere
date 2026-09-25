@@ -384,7 +384,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [x] Phase 3：位姿与点图估计（2026-09-24：按临时标准验收；MapAnything 在 5 个场景跑通。内参、尺度、抖动问题见 OPEN_QUESTIONS 14–17）
 - [x] Phase 4：动态与天空掩码（2026-09-24：按临时标准验收；Grounded-SAM-2 + SegFormer 在 5 个场景跑通，逐帧比例记在 meta.json；与 GT moving 的 IoU 延后。见 DECISIONS G）
 - [x] Phase 5：点云融合与清理（2026-09-24：按临时标准验收；5 个场景都有逐步点数和截图/网页；"一致性过滤后几何指标更好"需要 LiDAR 评测，延后。见 DECISIONS H）
-- [ ] Phase 3 修正（2026-09-25 取消延后，D13）：相机自标定 + SfM 位姿已完成，轨迹抖动消失、焦距误差降到 4–14%（DECISIONS L）；尺度偏小（OPEN_QUESTIONS 15）和坡度（17）待查；下游 E5c 训练进行中
+- [x] Phase 3 修正（2026-09-25，D13）：相机自标定 + SfM 位姿，轨迹抖动消失，焦距误差 4–14%；E5c 在 5 个场景完成，留出帧均值 +3.8 dB，跨相机 +0.9 dB（DECISIONS L）。尺度偏小（OPEN_QUESTIONS 15）、坡度（17）、焦距与畸变混淆（33）仍待处理
 - [x] Phase 6：E3–E4（含横向偏移渲染）（2026-09-25：按临时标准验收；E3 / E4 / E5 在 5 个场景完成训练和 0 / 0.5 / 1 / 2 横移渲染，结果见 DECISIONS J）
 - [x] Phase 7：NKSR 与 E5（2026-09-24：网格重建按临时标准验收，见 DECISIONS I；2026-09-25：E5 完成，与 E4 的对比记在 DECISIONS J。留出帧均值 E5 高 0.26 dB，主要来自 val094；几何评测延后）
 - [x] Phase 8：生成式蒸馏与后处理（E6、E5+pp，D10–D12）（2026-09-25：按临时标准验收；E6 和 E5+pp 在 5 个场景完成，横移对比渲染和网页 E5 / E6 切换已产出。留出帧 E6 比 E5 低 0.19 dB，E5+pp 低 1.1 dB；横移视角的改善只有目测，跨相机评测延后。见 DECISIONS K）
