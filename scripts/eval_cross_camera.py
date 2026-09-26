@@ -22,6 +22,9 @@ reference run saw (the hole mask of dashrecon.gen.views with the render_views.py
 reference run's rendered depth, not the evaluated one's, so every run is scored on the same pixels), minus GT
 dynamic objects. PSNR / SSIM there use the overlap colour fit; LPIPS pastes the render over the reference on the
 unseen pixels only. With the reference run itself these are the numbers generative completion has to improve.
+--save_unseen writes these masks (<out_subdir>/unseen/<t:03d>_<cam>.png, on the ground-truth image grid) and
+--unseen_dir loads them instead of --region_ref, for runs in another world frame (the oracle upper bound U3 uses GT
+poses), so they are scored on the same pixels of the same real images.
 
 Outputs in <log_dir>/<out_subdir>/: metrics.json (means per camera and overall, per-frame values), and
 <t:03d>_<cam>.jpg (reference | colour-fitted render | overlap in grey, unseen in red) for --example_frames.
@@ -96,10 +99,15 @@ def main() -> None:
     parser.add_argument("--example_frames", type=int, nargs="*", required=True)
     parser.add_argument("--cams", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--region_ref", help="log_dir of the run whose unseen region is scored (e.g. results/E5c/<scene>)")
+    parser.add_argument("--save_unseen", action="store_true", help="write the --region_ref unseen masks")
+    parser.add_argument("--unseen_dir", help="unseen masks written by --save_unseen (instead of --region_ref)")
     parser.add_argument("--out_subdir", default="cross_camera")
     args = parser.parse_args()
     commit = git_commit()
     device = torch.device("cuda")
+    assert not (args.region_ref and args.unseen_dir), "--region_ref or --unseen_dir, not both"
+    assert not args.save_unseen or args.region_ref, "--save_unseen needs --region_ref"
+    regions = args.region_ref is not None or args.unseen_dir is not None
 
     cfg = OmegaConf.load(os.path.join(args.log_dir, "config.yaml"))
     from datasets.driving_dataset import DrivingDataset
@@ -132,6 +140,8 @@ def main() -> None:
 
     out_dir = os.path.join(args.log_dir, args.out_subdir)
     os.makedirs(out_dir, exist_ok=True)
+    if args.save_unseen:
+        os.makedirs(os.path.join(out_dir, "unseen"), exist_ok=True)
     per_frame = []
     sel = list(range(0, len(frames), args.frame_stride))
     for t in args.example_frames:
@@ -169,11 +179,17 @@ def main() -> None:
                 out = trainer(ii, ci, novel_view=True)
                 if args.region_ref is not None:
                     ref_out = ref_trainer(ii, ci, novel_view=True)
-                    unseen = hole_mask(ref_out, ii["viewdirs"], k_r, c2w, observers, **HOLE)[0] & ~dyn
+                    hole = hole_mask(ref_out, ii["viewdirs"], k_r, c2w, observers, **HOLE)[0]
+                    if args.save_unseen:
+                        Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(out_dir, "unseen", f"{t:03d}_{cam}.png"))
+                    unseen = hole & ~dyn
+                if args.unseen_dir is not None:
+                    hole = np.asarray(Image.open(os.path.join(args.unseen_dir, f"{t:03d}_{cam}.png")).resize((w, h), Image.NEAREST)) > 127
+                    unseen = hole & ~dyn
                 render = out["rgb"].clamp(0, 1).cpu().numpy()
                 overlap = (out["opacity"][..., 0].cpu().numpy() > args.alpha) & ~dyn
                 row = {"frame": t, "cam": cam_name, "coverage": float(overlap.mean())}
-                if args.region_ref is not None:
+                if regions:
                     row["unseen_frac"] = float(unseen.mean())
                 if overlap.sum() > 1000:
                     fitted = colour_fit(render, ref, overlap)
@@ -185,14 +201,14 @@ def main() -> None:
                         "ssim": float(ssim_map[overlap].mean()),
                         "lpips": float(trainer.lpips(paste(fitted), ref_t)), "lpips_raw": float(trainer.lpips(paste(render), ref_t)),
                     })
-                    if args.region_ref is not None and unseen.sum() > 1000:
+                    if regions and unseen.sum() > 1000:
                         row.update({
                             "unseen_psnr": masked_psnr(fitted, ref, unseen), "unseen_ssim": float(ssim_map[unseen].mean()),
                             "unseen_lpips": float(trainer.lpips(torch.from_numpy(np.where(unseen[..., None], fitted, ref)).permute(2, 0, 1)[None].to(device), ref_t)),
                         })
                     if t in args.example_frames:
                         panel = np.repeat(overlap[..., None], 3, -1).astype(np.float32) * 0.6
-                        if args.region_ref is not None:
+                        if regions:
                             panel[unseen] = (0.9, 0.2, 0.2)
                         vis = np.concatenate([ref, fitted, panel], 1)
                         Image.fromarray((vis * 255).round().astype(np.uint8)).save(os.path.join(out_dir, f"{t:03d}_{cam}.jpg"), quality=88)
@@ -205,20 +221,20 @@ def main() -> None:
         scored = [r for r in rows if "psnr" in r]
         summary[cam_name] = {"frames": len(rows), "scored": len(scored), "coverage": float(np.mean([r["coverage"] for r in rows])),
                              **{k: float(np.mean([r[k] for r in scored])) for k in keys}}
-        if args.region_ref is not None:
+        if regions:
             unseen_scored = [r for r in rows if "unseen_psnr" in r]
             summary[cam_name].update({"unseen_frac": float(np.mean([r["unseen_frac"] for r in rows])), "unseen_scored": len(unseen_scored),
                                       **{k: float(np.mean([r[k] for r in unseen_scored])) for k in unseen_keys}})
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump({"reads_gt": True, "log_dir": args.log_dir, "scene_idx": scene_idx, "frame_stride": args.frame_stride,
                    "alpha": args.alpha, "gt_to_est_scale": s, "cams": [CAM_NAMES[c] for c in args.cams],
-                   "region_ref": args.region_ref, "hole_params": HOLE, "obs_stride": OBS_STRIDE,
+                   "region_ref": args.region_ref, "unseen_dir": args.unseen_dir, "hole_params": HOLE, "obs_stride": OBS_STRIDE,
                    "placement": "per-frame: estimated FRONT pose x GT FRONT->side extrinsics (translation scaled by the Sim3 scale)",
                    "summary": summary, "per_frame": per_frame, "dashrecon_commit": commit}, f, indent=2)
     a = summary["all"]
     print(f"[eval_cross_camera] {args.log_dir}: coverage {a['coverage']:.2f}, PSNR {a['psnr']:.2f} (raw {a['psnr_raw']:.2f}), "
           f"SSIM {a['ssim']:.3f}, LPIPS {a['lpips']:.3f} over {a['scored']} images", flush=True)
-    if args.region_ref is not None:
+    if regions:
         for name, v in summary.items():
             print(f"[eval_cross_camera]   {name}: unseen {v['unseen_frac']:.3f} of the view, PSNR {v['unseen_psnr']:.2f}, "
                   f"SSIM {v['unseen_ssim']:.3f}, LPIPS {v['unseen_lpips']:.3f} over {v['unseen_scored']} images", flush=True)
