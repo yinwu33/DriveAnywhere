@@ -47,7 +47,7 @@ from skimage.metrics import structural_similarity
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
-from dashrecon.gen.views import hole_mask, training_observers  # noqa: E402
+from dashrecon.gen.views import front_image_index, hole_mask, training_observers  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import get_scene  # noqa: E402
 from datasets.base.pixel_source import get_rays  # noqa: E402
@@ -118,12 +118,12 @@ def main() -> None:
     gt_dir = os.path.join(args.gt_root, f"{scene_idx:03d}")
     full = dataset.full_image_set
     frames = np.arange(dataset.start_timestep, dataset.end_timestep)
-    assert len(frames) == len(full), (len(frames), len(full))
+    assert len(frames) == dataset.num_img_timesteps, (len(frames), dataset.num_img_timesteps)
 
     # estimated FRONT poses as trained (pose_dir), GT FRONT camera centres, and the scale between them
     est = []
     for i in range(len(frames)):
-        _, ci = full.get_image(i, 1)
+        _, ci = full.get_image(front_image_index(dataset, i), 1)
         est.append(ci["camera_to_world"].cpu().numpy().astype(np.float64))
     est = np.stack(est)
     front_to_ego = gt_cam_to_ego(gt_dir, 0)
@@ -146,7 +146,7 @@ def main() -> None:
             dist = k_gt[4:9]
             for i in sel:
                 t = int(frames[i])
-                ii, ci = full.get_image(i, 1)
+                ii, ci = full.get_image(front_image_index(dataset, i), 1)
                 ii, ci = to_device(ii, device), to_device(ci, device)
                 ref_full = cv2.cvtColor(cv2.imread(os.path.join(gt_dir, "images", f"{t:03d}_{cam}.jpg")), cv2.COLOR_BGR2RGB)
                 H, W = ref_full.shape[:2]

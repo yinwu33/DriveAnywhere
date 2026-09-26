@@ -39,7 +39,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
-from dashrecon.gen.views import backproject, render_at  # noqa: E402
+from dashrecon.gen.views import backproject, front_image_index, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
@@ -174,7 +174,7 @@ def main() -> None:
         loss_dict = trainer.compute_losses(outputs=outputs, image_infos=ii, cam_infos=ci)
 
         v = views[int(rng.integers(len(views)))]
-        fi, fc = dataset.full_image_set.get_image(v["frame"] - dataset.start_timestep, 1)
+        fi, fc = dataset.full_image_set.get_image(front_image_index(dataset, v["frame"] - dataset.start_timestep), 1)
         fi, fc = to_device(fi, device), to_device(fc, device)
         for p in frozen_params:
             p.requires_grad_(False)

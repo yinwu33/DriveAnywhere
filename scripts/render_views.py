@@ -33,7 +33,8 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import build_trainer  # noqa: E402
 from dashrecon.gen.novel import refined_c2w, to_device  # noqa: E402
-from dashrecon.gen.views import ViewMove, hole_mask, memory_observers, moved_c2w, render_at, training_observers  # noqa: E402
+from dashrecon.gen.views import (ViewMove, front_image_index, hole_mask, memory_observers, moved_c2w, render_at,  # noqa: E402
+                                 training_observers)
 from dashrecon.provenance import git_commit  # noqa: E402
 
 
@@ -73,8 +74,8 @@ def main() -> None:
         os.makedirs(os.path.join(args.out_dir, sub), exist_ok=True)
     cams, hole_frac = [], []
     with torch.no_grad():
-        for v, k in enumerate(range(0, len(dataset.full_image_set), args.frame_stride)):
-            ii, ci = dataset.full_image_set.get_image(k, 1)
+        for v, k in enumerate(range(0, dataset.num_img_timesteps, args.frame_stride)):
+            ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, k), 1)
             ii, ci = to_device(ii, device), to_device(ci, device)
             f = min(1.0, v / args.ramp_frames) if args.ramp_frames > 0 else 1.0
             c2w = moved_c2w(refined_c2w(trainer, ii, ci), ViewMove(**{key: f * val for key, val in vars(move).items()}))

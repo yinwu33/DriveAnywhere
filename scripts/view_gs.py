@@ -30,7 +30,7 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import build_trainer  # noqa: E402
-from dashrecon.gen.views import ViewMove, moved_c2w  # noqa: E402
+from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w  # noqa: E402
 
 
 def rotmat_to_wxyz(r: np.ndarray) -> np.ndarray:
@@ -66,8 +66,8 @@ class Run:
         self.trainer.set_eval()
         full = dataset.full_image_set
         self.c2w, self.vfov = [], []
-        for i in range(len(full)):
-            _, ci = full.get_image(i, 1)
+        for i in range(dataset.num_img_timesteps):
+            _, ci = full.get_image(front_image_index(dataset, i), 1)
             self.c2w.append(ci["camera_to_world"].cpu().numpy().astype(np.float64))
             self.vfov.append(float(2 * np.arctan(0.5 * float(ci["height"]) / float(ci["intrinsics"][1, 1]))))
         self.frames = np.arange(dataset.start_timestep, dataset.end_timestep)

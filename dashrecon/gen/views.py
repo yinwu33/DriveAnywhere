@@ -109,6 +109,14 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
     return observers
 
 
+def front_image_index(dataset, k: int) -> int:
+    """Index in ``dataset.full_image_set`` of the FRONT (camera 0) image of the k-th frame of the run. drivestudio
+    orders images frame-major (datasets/base/pixel_source.py parse_img_idx: frame * num_cams + camera), so with the
+    FRONT camera alone this is k; with several cameras (the oracle upper bound U3) it skips the others."""
+    ps = dataset.pixel_source
+    return k * ps.num_cams + ps.camera_data[0].unique_cam_idx
+
+
 def render_at(trainer, image_infos: dict, cam_infos: dict, c2w: torch.Tensor, k: torch.Tensor, hw) -> dict:
     """Render a frame's image/camera infos from camera c2w (OpenCV, no CamPose) with drivestudio intrinsics k on an
     (h, w) grid, which may differ from the training size; rays (and so the sky model), the image-size fields and the
@@ -135,7 +143,7 @@ def render_moved(trainer, dataset, k: int, move: ViewMove, device: torch.device)
     Returns (outputs, image_infos, cam_infos, c2w)."""
     from dashrecon.gen.novel import refined_c2w, to_device
 
-    ii, ci = dataset.full_image_set.get_image(k, 1)
+    ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, k), 1)
     ii, ci = to_device(ii, device), to_device(ci, device)
     c2w = moved_c2w(refined_c2w(trainer, ii, ci), move)
     out = render_at(trainer, ii, ci, c2w, ci["intrinsics"], (int(ci["height"]), int(ci["width"])))
@@ -157,7 +165,7 @@ def memory_observers(trainer, dataset, views_dirs: list, stride: int, device: to
         with open(os.path.join(d, "cams.json")) as f:
             cams = json.load(f)["cams"]
         for c in cams[::stride]:
-            ii, ci = dataset.full_image_set.get_image(c["frame"] - dataset.start_timestep, 1)
+            ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, c["frame"] - dataset.start_timestep), 1)
             ii, ci = to_device(ii, device), to_device(ci, device)
             c2w = torch.tensor(c["c2w"], dtype=torch.float32, device=device)
             k = torch.tensor(c["K"], dtype=torch.float32, device=device)
