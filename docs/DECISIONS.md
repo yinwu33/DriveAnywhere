@@ -766,3 +766,25 @@ E5 的细节：
   - 不增密、同样多训 6000 步：32.32 / 0.930 / 0.093。
   
   所以留出帧的提升主要来自多训练，增密只让 LPIPS 略好。原轨迹上"发虚"的主因仍是相机 / 位姿（OPEN_QUESTIONS 38）。
+
+---
+
+## Q. 方法上界 U3：drivestudio StreetGS，3 个前向相机 + LiDAR + 真值（2026-09-26，用户决定，oracle）
+
+**用户决定**："我想测量方法的上界……先不做消融，直接测量上界。"动机：其他方法的效果看起来很好，而我们复现的结果一般，需要知道差距来自单目设定还是来自实现。
+
+**做法（只在 val056 上）**：
+- drivestudio 自带的 `configs/streetgs.yaml`，按上游发表时的用法运行：
+  - 3 个前向相机（FRONT、FRONT_LEFT、FRONT_RIGHT），960×640；
+  - Waymo 真值位姿、内外参和畸变（`undistort: True`）；
+  - LiDAR 初始化（80 万点）和深度监督；
+  - 真值框生成的 RigidNodes（`only_moving: true`：val056 没有运动车辆，停放车辆作为背景重建，不掩掉）；
+  - 天空、Affine、CamPose 与上游默认一致；每隔 10 帧留出 1 帧，30000 步。
+- **这是 oracle 实验**：违反 AGENTS §2 的"只用 FRONT、不读 GT、不用标定"，结果只作上界参考。SIDE_LEFT / SIDE_RIGHT 不参与训练，仍是真正的外推评测。
+- 需要补的数据：
+  - `scripts/extract_lidar.py`：本地 v1.4.3 validation 没有 scene flow，上游 `--process_keys lidar` 会读 flow 失败（C5）。脚本复用上游的转换函数，flow 写 0、flow 类别写 −1（数据集自己的"无 flow 标注"值）；drivestudio 只在评测里用 flow。val056：197 帧，每帧约 16 万点。
+  - `scripts/sky_masks_processed.py`：用 Phase 4 的 SegFormer 生成 drivestudio 格式的天空掩码（相机 0 / 1 / 2 的天空比例 0.34 / 0.20 / 0.23）。
+- 可比的评测：
+  - `scripts/eval_front_heldout.py`：只评 FRONT 留出帧。drivestudio 的 metrics.json 对所有相机取平均，3 相机和单相机的结果不可比。
+  - `eval_cross_camera.py --save_unseen / --unseen_dir`：U3 在真值世界系里，不能按 E5c 重新渲染来判定未观测区域，改为读取 E5c 存下的掩码，在同一张真实侧相机图像的同一组像素上评。
+  - `views.front_image_index`：drivestudio 的多相机图像按帧优先排列，Phase 9 的脚本和查看器改为按 FRONT 取图。
