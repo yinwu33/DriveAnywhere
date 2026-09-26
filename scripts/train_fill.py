@@ -15,7 +15,8 @@ Continues --init_log_dir (E5c for the first round, then E8 itself) with the fill
    Opacity reset off, densification off (stage 2 is past stop_split_at), learning rates warm up over
    --warmup_steps (the checkpoint has no optimizer state), as in scripts/train_fixer.py.
 
-Output: <out_log_dir>/ config.yaml, checkpoint_final.pth (also rounds/ckpt_r<round>.pth), metrics/, videos/,
+Output: <out_log_dir>/ config.yaml, checkpoint_final.pth (also rounds/ckpt_r<round>.pth), metrics/ (this round's;
+earlier rounds' in rounds/metrics_r<k>/), videos/,
 metrics.json, meta.json (generative: true, per round: views, spawned Gaussians, runtime), fill_params_r<round>.json.
 
 Example (main venv):
@@ -126,6 +127,13 @@ def main() -> None:
     cfg.log_dir = args.out_log_dir
     for sub in ("metrics", "videos", "rounds"):
         os.makedirs(os.path.join(args.out_log_dir, sub), exist_ok=True)
+    if args.round > 0:  # the previous round's drivestudio metrics files, so collect_metrics finds this round's only
+        old = sorted(os.listdir(os.path.join(args.out_log_dir, "metrics")))
+        assert old, f"round {args.round}: no metrics of round {args.round - 1} in {args.out_log_dir}/metrics"
+        keep = os.path.join(args.out_log_dir, "rounds", f"metrics_r{args.round - 1}")
+        os.makedirs(keep)
+        for name in old:
+            shutil.move(os.path.join(args.out_log_dir, "metrics", name), os.path.join(keep, name))
     params = {**vars(args), "init_ckpt": init_ckpt, "start_step": start, "dashrecon_commit": commit}
     with open(os.path.join(args.out_log_dir, f"fill_params_r{args.round}.json"), "w") as f:
         json.dump(params, f, indent=2)
