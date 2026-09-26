@@ -28,14 +28,56 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
-from dashrecon.pose.mapanything import MapAnythingBackend  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
+
+MOGE_REVISION = "cb0e8bbd6b1e243589717c78e750b1ba4c093acf"  # Ruicheng/moge-2-vitl-normal (MIT)
+
+
+def mapanything_depth(args, paths: list, k_cv: np.ndarray, poses: np.ndarray, h: int, w: int) -> tuple[list, dict]:
+    """MapAnything with the trajectory's intrinsics and poses; depth nearest-upsampled to the full grid."""
+    from dashrecon.pose.mapanything import MapAnythingBackend
+
+    backend = MapAnythingBackend(args.model_id, args.max_views, 518, args.max_intrinsics_dev)
+    res = backend.estimate(paths, intrinsics=k_cv, poses_c2w=poses)
+    grid = res.depth_grid
+    assert grid["image_hw"] == [h, w], (grid["image_hw"], h, w)
+    # full-grid pixel -> depth-grid pixel (nearest), as io.image_to_depth_grid_coords
+    ys, xs = np.mgrid[0:h, 0:w]
+    ud, vd = io.image_to_depth_grid_coords(xs.astype(np.float64), ys.astype(np.float64), grid)
+    ui, vi = np.rint(ud).astype(np.int64), np.rint(vd).astype(np.int64)
+    th, tw = grid["depth_hw"]
+    inside = (ui >= 0) & (ui < tw) & (vi >= 0) & (vi < th)
+    depths = []
+    for k in range(len(paths)):
+        d = np.zeros((h, w), dtype=np.float64)
+        d[inside] = res.depth[k][vi[inside], ui[inside]]
+        depths.append(d)
+    return depths, res.meta
+
+
+def moge_depth(args, paths: list, k_cv: np.ndarray, h: int, w: int) -> tuple[list, dict]:
+    """MoGe-2 per frame with the known horizontal field of view (runs in .venvs/gen3c, which has MoGe)."""
+    import torch
+    from moge.model.v2 import MoGeModel
+
+    model = MoGeModel.from_pretrained(args.model_id, revision=MOGE_REVISION).cuda().eval()
+    fov_x = float(np.degrees(2 * np.arctan(w / (2 * k_cv[0, 0]))))
+    depths = []
+    with torch.no_grad():
+        for p in paths:
+            img = torch.from_numpy(np.asarray(Image.open(p).convert("RGB"), dtype=np.float32) / 255.0).permute(2, 0, 1).cuda()
+            d = model.infer(img, fov_x=fov_x)["depth"].float().cpu().numpy().astype(np.float64)
+            assert d.shape == (h, w), (d.shape, h, w)
+            depths.append(np.where(np.isfinite(d), d, 0.0))
+    return depths, {"backend": "moge-2", "model_id": args.model_id, "revision": MOGE_REVISION, "fov_x_deg": fov_x,
+                    "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--views_dir", required=True)
-    parser.add_argument("--model_id", required=True)
+    parser.add_argument("--backend", choices=["mapanything", "moge"], default="mapanything")
+    parser.add_argument("--model_id", required=True, help="facebook/map-anything or Ruicheng/moge-2-vitl-normal")
     parser.add_argument("--min_count", type=int, default=2)
     parser.add_argument("--max_views", type=int, default=300)
     parser.add_argument("--max_intrinsics_dev", type=float, default=0.5,
@@ -56,22 +98,14 @@ def main() -> None:
     k_cv[0, 2] -= 0.5
     k_cv[1, 2] -= 0.5
     poses = np.array([c["c2w"] for c in cams], dtype=np.float64)
-    backend = MapAnythingBackend(args.model_id, args.max_views, 518, args.max_intrinsics_dev)
-    res = backend.estimate(paths, intrinsics=k_cv, poses_c2w=poses)
-    grid = res.depth_grid
-    assert grid["image_hw"] == [h, w], (grid["image_hw"], h, w)
-
-    # full-grid pixel -> depth-grid pixel (nearest), as io.image_to_depth_grid_coords
-    ys, xs = np.mgrid[0:h, 0:w]
-    ud, vd = io.image_to_depth_grid_coords(xs.astype(np.float64), ys.astype(np.float64), grid)
-    ui, vi = np.rint(ud).astype(np.int64), np.rint(vd).astype(np.int64)
-    th, tw = grid["depth_hw"]
-    inside = (ui >= 0) & (ui < tw) & (vi >= 0) & (vi < th)
+    if args.backend == "mapanything":
+        depths, backend_meta = mapanything_depth(args, paths, k_cv, poses, h, w)
+    else:
+        depths, backend_meta = moge_depth(args, paths, k_cv, h, w)
     os.makedirs(os.path.join(args.views_dir, "filled_depth"), exist_ok=True)
     stats = []
     for k in range(len(cams)):
-        d = np.zeros((h, w), dtype=np.float64)
-        d[inside] = res.depth[k][vi[inside], ui[inside]]
+        d = depths[k]
         rendered = np.load(os.path.join(args.views_dir, "depth", f"{k:03d}.npy")).astype(np.float64)
         count = np.load(os.path.join(args.views_dir, "count", f"{k:03d}.npy"))
         ref = (count >= args.min_count) & (d > 0) & (rendered > 0)
@@ -99,7 +133,7 @@ def main() -> None:
                       "ring_median_abs_log_ratio": ring_err, "reference_fraction": float(ref.mean()),
                       "valid_fraction": float((d > 0).mean())})
     with open(os.path.join(args.views_dir, "depth.json"), "w") as f:
-        json.dump({"model_id": args.model_id, "params": vars(args), "backend_meta": res.meta, "frames": stats,
+        json.dump({"model_id": args.model_id, "params": vars(args), "backend_meta": backend_meta, "frames": stats,
                    "dashrecon_commit": commit}, f, indent=2)
     sc = np.array([s["scale"] for s in stats])
     print(f"[depth_views] {args.views_dir}: scale {np.median(sc):.3f} (p5 {np.percentile(sc, 5):.3f}, p95 {np.percentile(sc, 95):.3f}), "
