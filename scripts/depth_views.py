@@ -38,6 +38,9 @@ def main() -> None:
     parser.add_argument("--model_id", required=True)
     parser.add_argument("--min_count", type=int, default=2)
     parser.add_argument("--max_views", type=int, default=300)
+    parser.add_argument("--max_intrinsics_dev", type=float, default=0.5,
+                        help="bound on MapAnything's predicted-vs-given intrinsics (val056 yaw 60: focal 27 %% off on the "
+                             "mostly generated, weakly structured frames; the depth is re-scaled per hole)")
     parser.add_argument("--ring_px", type=int, default=20)
     parser.add_argument("--min_ring_px", type=int, default=200)
     args = parser.parse_args()
@@ -53,7 +56,7 @@ def main() -> None:
     k_cv[0, 2] -= 0.5
     k_cv[1, 2] -= 0.5
     poses = np.array([c["c2w"] for c in cams], dtype=np.float64)
-    backend = MapAnythingBackend(args.model_id, args.max_views, 518)
+    backend = MapAnythingBackend(args.model_id, args.max_views, 518, args.max_intrinsics_dev)
     res = backend.estimate(paths, intrinsics=k_cv, poses_c2w=poses)
     grid = res.depth_grid
     assert grid["image_hw"] == [h, w], (grid["image_hw"], h, w)

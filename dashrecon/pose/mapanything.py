@@ -30,17 +30,21 @@ class MapAnythingBackend(PoseBackend):
 
     name = "mapanything"
 
-    def __init__(self, model_id: str, max_views: int, resolution_set: int) -> None:
+    def __init__(self, model_id: str, max_views: int, resolution_set: int, max_intrinsics_dev: float = 0.05) -> None:
         """
         Args:
             model_id: Hugging Face model id, e.g. ``facebook/map-anything-apache``.
             max_views: largest sequence handled in one inference call; longer sequences need chunked
                 inference (Phase 3 task 3), which is not implemented yet and raises.
             resolution_set: MapAnything resolution set (518 for MapAnything).
+            max_intrinsics_dev: largest relative focal / principal-point deviation of the predicted rays from given
+                intrinsics before estimate() refuses (0.05 for camera estimation; scripts/depth_views.py passes a
+                larger bound for generated frames, whose depth it re-scales per hole anyway).
         """
         from mapanything.models import MapAnything
 
         self.model_id = model_id
+        self.max_intrinsics_dev = max_intrinsics_dev
         self.max_views = max_views
         self.resolution_set = resolution_set
         self.device = torch.device("cuda")
@@ -114,7 +118,8 @@ class MapAnythingBackend(PoseBackend):
             k_given = depth_intrinsics(intrinsics, depth_grid)
             focal_dev = float(np.abs(k_depth[:, 0, 0] / k_given[0, 0] - 1).max())
             pp_dev = float(np.abs(k_depth[:, :2, 2] - k_given[:2, 2]).max() / max(th, tw))
-            assert focal_dev < 0.05 and pp_dev < 0.05, f"predicted rays disagree with the given intrinsics: focal {focal_dev:.3f}, pp {pp_dev:.3f}"
+            assert focal_dev < self.max_intrinsics_dev and pp_dev < self.max_intrinsics_dev, \
+                f"predicted rays disagree with the given intrinsics: focal {focal_dev:.3f}, pp {pp_dev:.3f} (bound {self.max_intrinsics_dev})"
             input_check = {"predicted_vs_given_focal_max_rel": focal_dev, "predicted_vs_given_pp_max_rel": pp_dev}
             k_image = np.broadcast_to(intrinsics, (len(image_paths), 3, 3)).copy()
         else:
