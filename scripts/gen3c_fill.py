@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import cv2
 import imageio
@@ -64,6 +65,12 @@ def main() -> None:
     parser.add_argument("--views_dir", required=True)
     parser.add_argument("--buffers", nargs="+", default=["render"], help='up to two of "render", "real0", "real1", ... (newest first)')
     parser.add_argument("--buffers_only", action="store_true", help="write buffers.mp4 and stop before generation")
+    parser.add_argument("--out_dir", help="separate output directory; inputs in views_dir stay untouched")
+    parser.add_argument("--cache_policy", choices=["fixed", "consistent"], default="fixed")
+    parser.add_argument("--memory_dirs", nargs="*", default=[])
+    parser.add_argument("--validation_dirs", nargs="*", default=[])
+    parser.add_argument("--memory_radius", type=int, default=6)
+    parser.add_argument("--require_memory", action="store_true", help="fail if no validated memory reaches the cache")
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
     parser.add_argument("--fps", type=int, default=10)
@@ -76,6 +83,24 @@ def main() -> None:
     with open(os.path.join(views_dir, "cams.json")) as f:
         meta = json.load(f)
     cams = meta["cams"]
+    out_dir = views_dir if args.out_dir is None else os.path.abspath(args.out_dir)
+    if os.path.exists(os.path.join(out_dir, "filled")):
+        raise FileExistsError(f"refusing to overwrite existing generated frames: {out_dir}")
+    if args.cache_policy == "fixed" and (args.memory_dirs or args.validation_dirs or args.require_memory):
+        raise ValueError("memory options require --cache_policy consistent")
+    memory_dirs = [Path(p).resolve() for p in args.memory_dirs]
+    validation_dirs = [Path(p).resolve() for p in args.validation_dirs]
+    os.makedirs(out_dir, exist_ok=True)
+    if out_dir != views_dir:
+        for name in ("cams.json", "rgb", "mask", "depth", "count", "src"):
+            src_path = os.path.join(views_dir, name)
+            if os.path.exists(src_path):
+                dst_path = os.path.join(out_dir, name)
+                if os.path.lexists(dst_path):
+                    if os.path.realpath(dst_path) != os.path.realpath(src_path):
+                        raise FileExistsError(dst_path)
+                else:
+                    os.symlink(src_path, dst_path)
     data_cfg = OmegaConf.load(os.path.join(meta["log_dir"], "config.yaml")).data
     image_dir = os.path.abspath(os.path.join(data_cfg.data_root, f"{int(data_cfg.scene_idx):03d}", "images"))
     n = len(cams)
@@ -104,31 +129,48 @@ def main() -> None:
             sources[src["frame"]] = (torch.from_numpy(img).permute(2, 0, 1)[None].to(device), pts, (depth > 0).float()[None, None])
         return sources[src["frame"]]
 
-    warp = np.zeros((n, len(args.buffers), H, W, 3), dtype=np.float32)
-    valid = np.zeros((n, len(args.buffers), H, W), dtype=np.float32)
-    with torch.no_grad():
-        for k, c in enumerate(cams):
-            k_cv = torch.tensor(c["K"], device=device)
-            k_cv[0, 2] -= 0.5  # GEN3C projects to integer pixel centres, drivestudio intrinsics use +0.5
-            k_cv[1, 2] -= 0.5
-            w2c = torch.linalg.inv(torch.tensor(c["c2w"], device=device))
-            for b, name in enumerate(args.buffers):
-                if name == "render":
-                    warp[k, b] = np.where(holes[k][..., None], -1.0, renders[k].astype(np.float32) / 127.5 - 1.0)
-                    valid[k, b] = (~holes[k]).astype(np.float32)
-                    continue
-                assert name.startswith("real"), name
-                img, pts, m = source(c["src"][int(name[4:])])
-                wimg, wmask, _, _ = forward_warp(img, m, None, None, w2c[None], k_cv[None], k_cv[None], world_points1=pts)
-                warp[k, b] = wimg[0].permute(1, 2, 0).clamp(-1, 1).cpu().numpy()
-                valid[k, b] = wmask[0, 0].cpu().numpy()
+    if args.cache_policy == "consistent":
+        from dashrecon.gen.cache import build_consistent_cache
+        warp, valid, cache_report = build_consistent_cache(
+            cams, Path(views_dir), data_cfg, Path(image_dir), memory_dirs, validation_dirs,
+            real_frame, args.memory_radius, .10, .12)
+        if args.require_memory and cache_report["memory_coverage"] <= 0:
+            raise ValueError("no validated memory reached the generator; see validation results")
+    else:
+        warp = np.zeros((n, len(args.buffers), H, W, 3), dtype=np.float32)
+        valid = np.zeros((n, len(args.buffers), H, W), dtype=np.float32)
+        with torch.no_grad():
+            for k, c in enumerate(cams):
+                k_cv = torch.tensor(c["K"], device=device)
+                k_cv[0, 2] -= 0.5  # GEN3C projects to integer pixel centres, drivestudio intrinsics use +0.5
+                k_cv[1, 2] -= 0.5
+                w2c = torch.linalg.inv(torch.tensor(c["c2w"], device=device))
+                for b, name in enumerate(args.buffers):
+                    if name == "render":
+                        warp[k, b] = np.where(holes[k][..., None], -1.0, renders[k].astype(np.float32) / 127.5 - 1.0)
+                        valid[k, b] = (~holes[k]).astype(np.float32)
+                        continue
+                    assert name.startswith("real"), name
+                    img, pts, m = source(c["src"][int(name[4:])])
+                    wimg, wmask, _, _ = forward_warp(img, m, None, None, w2c[None], k_cv[None], k_cv[None], world_points1=pts)
+                    warp[k, b] = wimg[0].permute(1, 2, 0).clamp(-1, 1).cpu().numpy()
+                    valid[k, b] = wmask[0, 0].cpu().numpy()
+        cache_report = {"policy": "fixed", "buffers": args.buffers}
     warp[0, 0] = first.astype(np.float32) / 127.5 - 1.0  # view 0 is the real FRONT pose: the real image, fully valid
     valid[0, 0] = 1.0
-    coverage = [float(valid[:, b].mean()) for b in range(len(args.buffers))]
+    # Release CUDA source tensors before loading the 7B diffusion model.
+    sources.clear()
+    torch.cuda.empty_cache()
+    buffer_count = warp.shape[1]
+    coverage = [float(valid[:, b].mean()) for b in range(buffer_count)]
+    cache_report.update({"views_dir": views_dir, "params": vars(args), "coverage": coverage,
+                         "dashrecon_commit": commit})
+    with open(os.path.join(out_dir, "cache.json"), "w") as f:
+        json.dump(cache_report, f, indent=2)
     print(f"[gen3c_fill] buffers {args.buffers}: valid fraction {[round(x, 3) for x in coverage]}", flush=True)
-    writer = imageio.get_writer(os.path.join(views_dir, "buffers.mp4"), mode="I", fps=args.fps)  # render | buffers, before generation
+    writer = imageio.get_writer(os.path.join(out_dir, "buffers.mp4"), mode="I", fps=args.fps)  # render | buffers, before generation
     for k in range(n):
-        row = np.concatenate([renders[k]] + [((warp[k, b] + 1) * 127.5).round().astype(np.uint8) for b in range(len(args.buffers))], 1)
+        row = np.concatenate([renders[k]] + [((warp[k, b] + 1) * 127.5).round().astype(np.uint8) for b in range(buffer_count)], 1)
         writer.append_data(cv2.resize(row, (row.shape[1] // 2, row.shape[0] // 2), interpolation=cv2.INTER_AREA))
     writer.close()
     if args.buffers_only:
@@ -157,20 +199,20 @@ def main() -> None:
         start += CHUNK - 1
     out = out[:n]
 
-    os.makedirs(os.path.join(views_dir, "filled"), exist_ok=True)
-    writer = imageio.get_writer(os.path.join(views_dir, "filled_compare.mp4"), mode="I", fps=args.fps)
+    os.makedirs(os.path.join(out_dir, "filled"), exist_ok=True)
+    writer = imageio.get_writer(os.path.join(out_dir, "filled_compare.mp4"), mode="I", fps=args.fps)
     for k in range(n):
-        Image.fromarray(out[k]).save(os.path.join(views_dir, "filled", f"{k:03d}.png"))
+        Image.fromarray(out[k]).save(os.path.join(out_dir, "filled", f"{k:03d}.png"))
         shown = renders[k].copy()
         shown[holes[k]] = (0.45 * shown[holes[k]] + 0.55 * np.array([230, 40, 40])).astype(np.uint8)
         row = np.concatenate([shown, out[k]], 1)
         writer.append_data(cv2.resize(row, (row.shape[1] // 2, row.shape[0] // 2), interpolation=cv2.INTER_AREA))
     writer.close()
-    with open(os.path.join(views_dir, "fill.json"), "w") as f:
+    with open(os.path.join(out_dir, "fill.json"), "w") as f:
         json.dump({"generator": "GEN3C-Cosmos-7B", "gen3c_commit": "db2ffe12ced12ddafcec5e0422ee46ce8520746b",
                    "weights_revision": "9bcfdb4f3924f41376daeadf6200826c12a3bf8e", "params": vars(args), "chunks": chunks,
                    "conditioning": "real FRONT image of view 0, then the last generated frame", "image_dir": image_dir,
-                   "buffers": args.buffers, "buffer_valid_fraction": coverage, "composited": False,
+                   "buffers": args.buffers, "cache_policy": args.cache_policy, "memory_dirs": [str(p) for p in memory_dirs], "buffer_valid_fraction": coverage, "composited": False,
                    "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": True, "dashrecon_commit": commit}, f, indent=2)
     print(f"[gen3c_fill] {views_dir}: {n} views in {len(chunks)} chunks, {sum(c['seconds'] for c in chunks) / 60:.1f} min", flush=True)
 
