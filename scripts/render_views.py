@@ -50,6 +50,8 @@ def main() -> None:
     parser.add_argument("--memory_dirs", nargs="*", default=[], help="views dirs filled in earlier rounds")
     parser.add_argument("--depth_tol", type=float, default=0.10)
     parser.add_argument("--res_ratio", type=float, default=3.0)
+    parser.add_argument("--rgb_tol", type=float, required=True,
+                        help="mean absolute RGB difference to the observer's image for a pixel to count as seen (DECISIONS R)")
     parser.add_argument("--sky_alpha", type=float, default=0.5)
     parser.add_argument("--sky_elev_deg", type=float, default=5.0)
     parser.add_argument("--open_px", type=int, default=9)
@@ -87,7 +89,7 @@ def main() -> None:
             assert h <= h0 * w / w0 + 1e-6, f"--render_hw {h} x {w} is taller than the scaled image {h0 * w / w0:.1f}"
             out = render_at(trainer, ii, ci, c2w, kk, (h, w))
             depth = out["depth"][..., 0]
-            hole, count, _ = hole_mask(out, ii["viewdirs"], kk, c2w, observers, args.depth_tol, args.res_ratio,
+            hole, count, _ = hole_mask(out, ii["viewdirs"], kk, c2w, observers, args.depth_tol, args.res_ratio, args.rgb_tol,
                                        args.sky_alpha, args.sky_elev_deg, args.open_px, args.min_area, args.dilate_px)
             rgb = (out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8)
             Image.fromarray(rgb).save(os.path.join(args.out_dir, "rgb", f"{v:03d}.png"))

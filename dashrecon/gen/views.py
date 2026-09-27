@@ -7,9 +7,11 @@ y axis (positive = to the right) and ``pitch`` about its x axis (positive = up),
 Hole mask of a rendered view: a pixel is "seen" when its rendered surface point (back-projected with the rendered
 z-depth) projects into a training view, lands on a pixel that view did not mask as dynamic or sky (masked pixels
 give the Gaussians there no photometric signal: the ghosts of masked parked cars, the grey blocks floating in the
-sky of val056), agrees with that view's rendered depth
-within ``depth_tol`` (relative, so it was not occluded there) and that view was at most ``res_ratio`` times farther
-away (comparable resolution).
+sky of val056), agrees with that view's rendered depth within ``depth_tol`` (relative, so it was not occluded
+there), has a rendered colour within ``rgb_tol`` (mean absolute RGB difference) of that view's real image at the
+projected pixel (semi-transparent floaters pass the depth test but not this one; OPEN_QUESTIONS 39), and that view was
+at most ``res_ratio`` times farther away (comparable resolution). Training views carry their training image, memory
+views (earlier filled rounds) their filled frame.
 Unseen pixels that are not sky are holes; this covers both empty space and the unconstrained Gaussians a 3DGS model
 leaves in unobserved regions (those render opaque, so an opacity test misses them: val039 test, 0.2 % vs 13 % of
 the view). Sky = rendered opacity below ``sky_alpha`` on a ray pointing above ``sky_elev_deg``. The raw mask is
@@ -61,9 +63,11 @@ def backproject(depth: torch.Tensor, k: torch.Tensor, c2w: torch.Tensor) -> torc
     return torch.stack([xs, ys, depth], -1).reshape(-1, 3) @ c2w[:3, :3].T + c2w[:3, 3]
 
 
-def seen_count(points: torch.Tensor, depth_novel: torch.Tensor, observers: list, depth_tol: float, res_ratio: float) -> torch.Tensor:
+def seen_count(points: torch.Tensor, depth_novel: torch.Tensor, rgb_novel: torch.Tensor, observers: list, depth_tol: float,
+               res_ratio: float, rgb_tol: float) -> torch.Tensor:
     """Number of observer views (dicts with w2c, K, depth (h, w), valid (h, w) bool = pixel constrained by that
-    view) that saw each point at comparable resolution."""
+    view, rgb (h, w, 3) = its real image) that saw each point at comparable resolution with a matching colour.
+    points (N, 3), depth_novel (N,), rgb_novel (N, 3) in [0, 1]."""
     count = torch.zeros(len(points), device=points.device)
     for o in observers:
         h, w = o["depth"].shape
@@ -76,7 +80,9 @@ def seen_count(points: torch.Tensor, depth_novel: torch.Tensor, observers: list,
         dz[inside] = o["depth"][v[inside], u[inside]].float()
         ok = torch.zeros_like(inside)
         ok[inside] = o["valid"][v[inside], u[inside]]
-        count += (ok & ((dz - z).abs() < depth_tol * z) & (z < res_ratio * depth_novel)).float()
+        drgb = torch.full_like(z, float("inf"))
+        drgb[inside] = (o["rgb"][v[inside], u[inside]].float() - rgb_novel[inside]).abs().mean(-1)
+        count += (ok & ((dz - z).abs() < depth_tol * z) & (z < res_ratio * depth_novel) & (drgb < rgb_tol)).float()
     return count
 
 
@@ -105,7 +111,7 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
         ii, ci = to_device(ii, device), to_device(ci, device)
         out = trainer(ii, ci)
         observers.append({"w2c": torch.linalg.inv(trainer._last_cam.camtoworlds), "K": ci["intrinsics"], "depth": out["depth"][..., 0].half(),
-                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)})
+                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5), "rgb": ii["pixels"].half()})
     return observers
 
 
@@ -152,10 +158,13 @@ def render_moved(trainer, dataset, k: int, move: ViewMove, device: torch.device)
 
 @torch.no_grad()
 def memory_observers(trainer, dataset, views_dirs: list, stride: int, device: torch.device) -> list:
-    """Every stride-th view of earlier filled trajectories (render_views.py cams.json), rendered by the current model:
-    the 3D memory of Phase 9, so regions filled in an earlier round count as seen and are not generated again."""
+    """Every stride-th view of earlier filled trajectories (render_views.py cams.json), rendered by the current model,
+    with its filled frame as the image: the 3D memory of Phase 9, so regions filled in an earlier round count as seen
+    and are not generated again."""
     import json
     import os
+
+    from PIL import Image
 
     from dashrecon.gen.novel import to_device
 
@@ -164,23 +173,27 @@ def memory_observers(trainer, dataset, views_dirs: list, stride: int, device: to
     for d in views_dirs:
         with open(os.path.join(d, "cams.json")) as f:
             cams = json.load(f)["cams"]
-        for c in cams[::stride]:
+        for j in range(0, len(cams), stride):
+            c = cams[j]
             ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, c["frame"] - dataset.start_timestep), 1)
             ii, ci = to_device(ii, device), to_device(ci, device)
             c2w = torch.tensor(c["c2w"], dtype=torch.float32, device=device)
             k = torch.tensor(c["K"], dtype=torch.float32, device=device)
             out = render_at(trainer, ii, ci, c2w, k, c["hw"])
+            filled = np.asarray(Image.open(os.path.join(d, "filled", f"{j:03d}.png")).convert("RGB"), dtype=np.float32) / 255.0
             observers.append({"w2c": torch.linalg.inv(c2w), "K": k, "depth": out["depth"][..., 0].half(),
-                              "valid": torch.ones(out["depth"].shape[:2], dtype=torch.bool, device=device)})
+                              "valid": torch.ones(out["depth"].shape[:2], dtype=torch.bool, device=device),
+                              "rgb": torch.from_numpy(filled).to(device).half()})
     return observers
 
 
 def hole_mask(outputs: dict, viewdirs: torch.Tensor, k: torch.Tensor, c2w: torch.Tensor, observers: list, depth_tol: float,
-              res_ratio: float, sky_alpha: float, sky_elev_deg: float, open_px: int, min_area: int, dilate_px: int):
+              res_ratio: float, rgb_tol: float, sky_alpha: float, sky_elev_deg: float, open_px: int, min_area: int, dilate_px: int):
     """Hole mask of a rendered view (module docstring). Returns (hole (H, W) bool, count (H, W) float32, sky (H, W) bool)."""
     depth = outputs["depth"][..., 0]
     h, w = depth.shape
-    count = seen_count(backproject(depth, k, c2w), depth.reshape(-1), observers, depth_tol, res_ratio).reshape(h, w).cpu().numpy()
+    rgb = outputs["rgb"].clamp(0, 1).reshape(-1, 3).float()
+    count = seen_count(backproject(depth, k, c2w), depth.reshape(-1), rgb, observers, depth_tol, res_ratio, rgb_tol).reshape(h, w).cpu().numpy()
     alpha = outputs["opacity"][..., 0].cpu().numpy()
     elev = np.degrees(np.arcsin(np.clip(viewdirs[..., 2].cpu().numpy(), -1.0, 1.0)))
     sky = (alpha < sky_alpha) & (elev >= sky_elev_deg)

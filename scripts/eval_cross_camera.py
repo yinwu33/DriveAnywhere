@@ -57,7 +57,10 @@ from datasets.base.pixel_source import get_rays  # noqa: E402
 
 CAM_NAMES = {1: "FRONT_LEFT", 2: "FRONT_RIGHT", 3: "SIDE_LEFT", 4: "SIDE_RIGHT"}
 # hole mask parameters: scripts/render_views.py defaults
-HOLE = {"depth_tol": 0.10, "res_ratio": 3.0, "sky_alpha": 0.5, "sky_elev_deg": 5.0, "open_px": 9, "min_area": 3000, "dilate_px": 7}
+# rgb_tol 3.0 = photometric test off: the evaluation region keeps the definition every Phase 9 / upper-bound number
+# was measured on (E5c's masks, saved in results/E5c/<scene>/cross_camera_p9/unseen; DECISIONS N, Q)
+HOLE = {"depth_tol": 0.10, "res_ratio": 3.0, "rgb_tol": 3.0, "sky_alpha": 0.5, "sky_elev_deg": 5.0, "open_px": 9, "min_area": 3000,
+        "dilate_px": 7}
 OBS_STRIDE = 2
 # Waymo camera frame (x forward, y left, z up) -> OpenCV, as datasets/waymo/waymo_sourceloader.py
 OPENCV2DATASET = np.array([[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=np.float64)
