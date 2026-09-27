@@ -7,7 +7,10 @@ the scene with the rendered depth where that is reliable (pixels >= --min_count 
       pixels within --ring_px outside it, so the filled surface meets the observed one at the hole border (a single
       scale per frame left 13-30 % steps there, val039 round 0); a hole whose ring has fewer than --min_ring_px
       reliable pixels takes the frame scale, and how many did is recorded;
-    - everything else by the frame scale, the median over all reliable pixels of the frame.
+    - everything else by the frame scale, the median over all reliable pixels of the frame;
+    - a frame with fewer than --min_ref_px reliable pixels (a view nothing observed, e.g. val056 E10 yaw 90) gets no
+      depth (all zero: train_fill.py spawns nothing from it and applies no depth loss there; its filled image still
+      supervises colour); such frames are counted and printed.
 
 Output in the views directory: filled_depth/<k:03d>.npy (float16 z-depth on the full render grid, 0 = invalid; nearest
 upsampling of the MapAnything grid), depth.json (per frame: frame scale and spread, holes with a ring scale / with the
@@ -85,6 +88,7 @@ def main() -> None:
                              "mostly generated, weakly structured frames; the depth is re-scaled per hole)")
     parser.add_argument("--ring_px", type=int, default=20)
     parser.add_argument("--min_ring_px", type=int, default=200)
+    parser.add_argument("--min_ref_px", type=int, default=1000)
     args = parser.parse_args()
     commit = git_commit()
     with open(os.path.join(args.views_dir, "cams.json")) as f:
@@ -109,7 +113,10 @@ def main() -> None:
         rendered = np.load(os.path.join(args.views_dir, "depth", f"{k:03d}.npy")).astype(np.float64)
         count = np.load(os.path.join(args.views_dir, "count", f"{k:03d}.npy"))
         ref = (count >= args.min_count) & (d > 0) & (rendered > 0)
-        assert ref.sum() > 1000, f"frame {k}: only {ref.sum()} reference pixels"
+        if ref.sum() < args.min_ref_px:
+            np.save(os.path.join(args.views_dir, "filled_depth", f"{k:03d}.npy"), np.zeros_like(d, dtype=np.float16))
+            stats.append({"k": k, "no_reference": True, "reference_pixels": int(ref.sum())})
+            continue
         ratio = rendered[ref] / d[ref]
         s = float(np.median(ratio))
         out = d * s
@@ -135,12 +142,13 @@ def main() -> None:
     with open(os.path.join(args.views_dir, "depth.json"), "w") as f:
         json.dump({"model_id": args.model_id, "params": vars(args), "backend_meta": backend_meta, "frames": stats,
                    "dashrecon_commit": commit}, f, indent=2)
-    sc = np.array([s["scale"] for s in stats])
-    print(f"[depth_views] {args.views_dir}: scale {np.median(sc):.3f} (p5 {np.percentile(sc, 5):.3f}, p95 {np.percentile(sc, 95):.3f}), "
-          f"median |log ratio| {np.median([s['median_abs_log_ratio'] for s in stats]):.3f}; holes with a ring scale "
-          f"{sum(s['holes_ring_scaled'] for s in stats)}, with the frame scale {sum(s['holes_frame_scaled'] for s in stats)}, "
-          f"ring |log ratio| after alignment {np.median([e for s in stats for e in s['ring_median_abs_log_ratio']]):.3f}", flush=True)
-
+    aligned = [s for s in stats if "scale" in s]
+    sc = np.array([s["scale"] for s in aligned])
+    print(f"[depth_views] {args.views_dir}: {len(stats) - len(aligned)} of {len(stats)} frames without reference pixels (no depth); "
+          f"scale {np.median(sc):.3f} (p5 {np.percentile(sc, 5):.3f}, p95 {np.percentile(sc, 95):.3f}), "
+          f"median |log ratio| {np.median([s['median_abs_log_ratio'] for s in aligned]):.3f}; holes with a ring scale "
+          f"{sum(s['holes_ring_scaled'] for s in aligned)}, with the frame scale {sum(s['holes_frame_scaled'] for s in aligned)}, "
+          f"ring |log ratio| after alignment {np.median([e for s in aligned for e in s['ring_median_abs_log_ratio']]):.3f}", flush=True)
 
 if __name__ == "__main__":
     main()
