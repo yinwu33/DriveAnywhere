@@ -59,7 +59,7 @@ for ((r = first; r < ${#moves[@]}; r++)); do
   else
     .venvs/gen3c/bin/python scripts/depth_views.py --views_dir "$vd" --backend moge --model_id Ruicheng/moge-2-vitl-normal
   fi
-  $MAIN scripts/train_fill.py --scene_id "$scene" --init_log_dir "$src" --out_log_dir "$out" --round "$r" \
+  $MAIN scripts/train_fill.py --scene_id "$scene" --exp "$(basename "$(dirname "$out")")" --init_log_dir "$src" --out_log_dir "$out" --round "$r" \
       --views_dirs "${views[@]:0:$((r + 1))}"
 done
 echo "[run_phase9] $scene: rounds $first..$((${#moves[@]} - 1)) done ($(date +%H:%M))"

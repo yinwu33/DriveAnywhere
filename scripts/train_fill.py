@@ -44,7 +44,6 @@ from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
 
-EXP = "E8"
 SH_C0 = 0.28209479177387814
 RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
@@ -97,6 +96,7 @@ def main() -> None:
     parser.add_argument("--scene_id", required=True)
     parser.add_argument("--init_log_dir", required=True)
     parser.add_argument("--out_log_dir", required=True)
+    parser.add_argument("--exp", required=True, help="experiment id written to metrics.json / meta.json (E8, E10)")
     parser.add_argument("--round", type=int, required=True)
     parser.add_argument("--views_dirs", nargs="+", required=True, help="all rounds so far, newest last (spawning uses the newest)")
     parser.add_argument("--steps", type=int, default=3000)
@@ -219,7 +219,7 @@ def main() -> None:
     runtime = time.time() - t_begin
     splits = [s for s, on in (("test", cfg.render.render_test), ("full", cfg.render.render_full)) if on]
     with open(os.path.join(args.out_log_dir, "metrics.json"), "w") as f:
-        json.dump({"exp": EXP, "scene_id": args.scene_id, "round": args.round, **collect_metrics(args.out_log_dir, splits)}, f, indent=2)
+        json.dump({"exp": args.exp, "scene_id": args.scene_id, "round": args.round, **collect_metrics(args.out_log_dir, splits)}, f, indent=2)
     meta_path = os.path.join(args.out_log_dir, "meta.json")
     rounds = json.load(open(meta_path))["rounds"] if args.round > 0 else []
     assert len(rounds) == args.round, f"meta.json has {len(rounds)} rounds, this is round {args.round}"
@@ -228,7 +228,7 @@ def main() -> None:
                    "gaussians_after": int(sum(trainer.get_gaussian_count().values())), "steps": [start + 1, start + args.steps],
                    "runtime_s": runtime, "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "dashrecon_commit": commit})
     with open(meta_path, "w") as f:
-        json.dump({"exp": EXP, "scene_id": args.scene_id, "init": rounds[0]["init_log_dir"], "rounds": rounds,
+        json.dump({"exp": args.exp, "scene_id": args.scene_id, "init": rounds[0]["init_log_dir"], "rounds": rounds,
                    "dashrecon_commit": commit, "torch": torch.__version__, "runtime_s": sum(r["runtime_s"] for r in rounds),
                    "peak_vram_gb": max(r["peak_vram_gb"] for r in rounds), "generative": True, "uses_oracle": False,
                    "oracle_note": "FRONT images + dashrecon products + frozen Wan2.1-VACE and MapAnything; checked by dashrecon.train.guard"},
