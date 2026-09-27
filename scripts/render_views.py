@@ -50,8 +50,8 @@ def main() -> None:
     parser.add_argument("--memory_dirs", nargs="*", default=[], help="views dirs filled in earlier rounds")
     parser.add_argument("--depth_tol", type=float, default=0.10)
     parser.add_argument("--res_ratio", type=float, default=3.0)
-    parser.add_argument("--rgb_tol", type=float, required=True,
-                        help="mean absolute RGB difference to the observer's image for a pixel to count as seen (DECISIONS R)")
+    parser.add_argument("--rgb_tol", type=float, default=0.10,
+                        help="mean absolute RGB difference to the observer's image for a pixel to count as seen; 0.10 from val056 E5c yaw 45 (DECISIONS R)")
     parser.add_argument("--sky_alpha", type=float, default=0.5)
     parser.add_argument("--sky_elev_deg", type=float, default=5.0)
     parser.add_argument("--open_px", type=int, default=9)

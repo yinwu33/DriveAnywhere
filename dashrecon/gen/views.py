@@ -160,7 +160,9 @@ def render_moved(trainer, dataset, k: int, move: ViewMove, device: torch.device)
 def memory_observers(trainer, dataset, views_dirs: list, stride: int, device: torch.device) -> list:
     """Every stride-th view of earlier filled trajectories (render_views.py cams.json), rendered by the current model,
     with its filled frame as the image: the 3D memory of Phase 9, so regions filled in an earlier round count as seen
-    and are not generated again."""
+    and are not generated again. A memory view vouches only for the pixels that round filled (its hole mask): the
+    rest of its frame was the render of that time, junk included, and counting it made later rounds keep that junk
+    as "seen" (val056 E8 round 3; OPEN_QUESTIONS 39)."""
     import json
     import os
 
@@ -182,7 +184,7 @@ def memory_observers(trainer, dataset, views_dirs: list, stride: int, device: to
             out = render_at(trainer, ii, ci, c2w, k, c["hw"])
             filled = np.asarray(Image.open(os.path.join(d, "filled", f"{j:03d}.png")).convert("RGB"), dtype=np.float32) / 255.0
             observers.append({"w2c": torch.linalg.inv(c2w), "K": k, "depth": out["depth"][..., 0].half(),
-                              "valid": torch.ones(out["depth"].shape[:2], dtype=torch.bool, device=device),
+                              "valid": torch.from_numpy(np.asarray(Image.open(os.path.join(d, "mask", f"{j:03d}.png"))) > 127).to(device),
                               "rgb": torch.from_numpy(filled).to(device).half()})
     return observers
 
