@@ -6,9 +6,11 @@
 #                                          hole masks;
 #                                          the views of rounds < r are the 3D memory (--memory_dirs)
 #   2. fill_views.py    (wan venv)         Wan2.1-VACE-1.3B fills the holes (<fill> vace), or
-#      gen3c_fill.py    (gen3c venv)       GEN3C regenerates the view from the render as its 3D cache (<fill> gen3c:
-#                                          rendered at 704 x 1280, the move ramped in over 20 views from the FRONT pose)
-#   3. depth_views.py   (mapanything venv) depth of the filled frames, aligned to the rendered depth
+#      gen3c_fill.py    (gen3c venv)       GEN3C regenerates the view (<fill> gen3c: rendered at 704 x 1280, the move
+#                                          ramped in over 20 views from the FRONT pose; cache = the real FRONT frames
+#                                          6 and 15 frames earlier, warped into the view; DECISIONS R)
+#   3. depth_views.py   (mapanything venv) depth of the filled frames, aligned to the rendered depth (vace: MapAnything;
+#                       (gen3c venv)       gen3c: MoGe-2, as MapAnything's rays drift on generated side views)
 #   4. train_fill.py    (main venv)        spawn Gaussians in the holes, distil all rounds' views so far
 # The current model is <init_log_dir> for round 0 and <out_log_dir> afterwards. Views go to <out_log_dir>/views/
 # r<r>_<move with "=" dropped and "," -> "_">. Rounds before <first_round> must already be complete (their views
@@ -23,7 +25,7 @@ set -euo pipefail
 scene=$1; init=$2; out=$3; first=$4; stride=$5; fill=$6; shift 6
 case "$fill" in
   vace) render_opts=(); ;;
-  gen3c) render_opts=(--ramp_frames 20 --render_hw 704 1280); ;;
+  gen3c) render_opts=(--ramp_frames 20 --render_hw 704 1280 --src_offsets 6 15); ;;
   *) echo "fill must be vace or gen3c, got $fill" >&2; exit 2; ;;
 esac
 moves=("$@")
@@ -50,9 +52,13 @@ for ((r = first; r < ${#moves[@]}; r++)); do
   if [ "$fill" = vace ]; then
     .venvs/wan/bin/python scripts/fill_views.py --views_dir "$vd"
   else
-    .venvs/gen3c/bin/python scripts/gen3c_fill.py --views_dir "$vd"
+    .venvs/gen3c/bin/python scripts/gen3c_fill.py --views_dir "$vd" --buffers real0 real1
   fi
-  .venvs/mapanything/bin/python scripts/depth_views.py --views_dir "$vd" --model_id facebook/map-anything
+  if [ "$fill" = vace ]; then
+    .venvs/mapanything/bin/python scripts/depth_views.py --views_dir "$vd" --model_id facebook/map-anything
+  else
+    .venvs/gen3c/bin/python scripts/depth_views.py --views_dir "$vd" --backend moge --model_id Ruicheng/moge-2-vitl-normal
+  fi
   $MAIN scripts/train_fill.py --scene_id "$scene" --init_log_dir "$src" --out_log_dir "$out" --round "$r" \
       --views_dirs "${views[@]:0:$((r + 1))}"
 done
