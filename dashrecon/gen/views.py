@@ -8,10 +8,12 @@ Hole mask of a rendered view: a pixel is "seen" when its rendered surface point 
 z-depth) projects into a training view, lands on a pixel that view did not mask as dynamic or sky (masked pixels
 give the Gaussians there no photometric signal: the ghosts of masked parked cars, the grey blocks floating in the
 sky of val056), agrees with that view's rendered depth within ``depth_tol`` (relative, so it was not occluded
-there), has a rendered colour within ``rgb_tol`` (mean absolute RGB difference) of that view's real image at the
-projected pixel (semi-transparent floaters pass the depth test but not this one; OPEN_QUESTIONS 39), and that view was
-at most ``res_ratio`` times farther away (comparable resolution). Training views carry their training image, memory
-views (earlier filled rounds) their filled frame.
+there), has a rendered colour within ``rgb_tol`` (mean absolute RGB difference) of that view's image at the projected pixel
+(OPEN_QUESTIONS 39), and that view was at most ``res_ratio`` times farther away (comparable resolution). Training views
+carry their own render: a floater is view-dependent, so the two renders disagree there, while a correctly placed
+surface renders alike from both (comparing with the real image instead flagged the textured hedge beside the car as
+unseen on val056, because a blurry render never matches the sharp photo pixel by pixel). Memory views (earlier
+filled rounds) carry their filled frame.
 Unseen pixels that are not sky are holes; this covers both empty space and the unconstrained Gaussians a 3DGS model
 leaves in unobserved regions (those render opaque, so an opacity test misses them: val039 test, 0.2 % vs 13 % of
 the view). Sky = rendered opacity below ``sky_alpha`` on a ray pointing above ``sky_elev_deg``. The raw mask is
@@ -66,7 +68,7 @@ def backproject(depth: torch.Tensor, k: torch.Tensor, c2w: torch.Tensor) -> torc
 def seen_count(points: torch.Tensor, depth_novel: torch.Tensor, rgb_novel: torch.Tensor, observers: list, depth_tol: float,
                res_ratio: float, rgb_tol: float) -> torch.Tensor:
     """Number of observer views (dicts with w2c, K, depth (h, w), valid (h, w) bool = pixel constrained by that
-    view, rgb (h, w, 3) = its real image) that saw each point at comparable resolution with a matching colour.
+    view, rgb (h, w, 3) = its image) that saw each point at comparable resolution with a matching colour.
     points (N, 3), depth_novel (N,), rgb_novel (N, 3) in [0, 1]."""
     count = torch.zeros(len(points), device=points.device)
     for o in observers:
@@ -111,7 +113,7 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
         ii, ci = to_device(ii, device), to_device(ci, device)
         out = trainer(ii, ci)
         observers.append({"w2c": torch.linalg.inv(trainer._last_cam.camtoworlds), "K": ci["intrinsics"], "depth": out["depth"][..., 0].half(),
-                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5), "rgb": ii["pixels"].half()})
+                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5), "rgb": out["rgb"].clamp(0, 1).half()})
     return observers
 
 
