@@ -48,15 +48,25 @@ SH_C0 = 0.28209479177387814
 RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
 
-def load_views(views_dir: str, device: torch.device) -> list:
+def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None) -> list:
     with open(os.path.join(views_dir, "cams.json")) as f:
         cams = json.load(f)["cams"]
+    if validation_dir is not None:
+        with open(os.path.join(validation_dir, "validation.json")) as f:
+            validation = json.load(f)
+        if os.path.realpath(validation["views_dir"]) != os.path.realpath(views_dir):
+            raise ValueError(f"validation directory does not belong to {views_dir}")
     views = []
     for k, c in enumerate(cams):
         rgb = np.asarray(Image.open(os.path.join(views_dir, "filled", f"{k:03d}.png")).convert("RGB"), dtype=np.float32) / 255.0
         hole = np.asarray(Image.open(os.path.join(views_dir, "mask", f"{k:03d}.png"))) > 127
         depth = np.load(os.path.join(views_dir, "filled_depth", f"{k:03d}.npy")).astype(np.float32)
-        views.append({"k": k, "frame": c["frame"], "dir": views_dir,
+        confidence = np.ones(hole.shape, np.float32)
+        if validation_dir is not None:
+            confidence = np.load(os.path.join(validation_dir, "confidence", f"{k:03d}.npy")).astype(np.float32)
+            if confidence.shape != hole.shape or not np.isfinite(confidence).all() or not ((confidence >= 0) & (confidence <= 1)).all():
+                raise ValueError(f"invalid generation confidence in {views_dir}, view {k}")
+        views.append({"confidence": torch.from_numpy(confidence).to(device), "k": k, "frame": c["frame"], "dir": views_dir,
                       "c2w": torch.tensor(c["c2w"], dtype=torch.float32, device=device),
                       "K": torch.tensor(c["K"], dtype=torch.float32, device=device),
                       "rgb": torch.from_numpy(rgb).to(device).half(), "hole": torch.from_numpy(hole).to(device),
@@ -71,13 +81,15 @@ def spawn(views: list, spawn_stride: int, pixel_stride: int, scale_factor: float
         hole = v["hole"].clone()
         sub = torch.zeros_like(hole)
         sub[::pixel_stride, ::pixel_stride] = True
-        sel = (hole & sub & (v["depth"] > 0)).reshape(-1)
+        sel = (hole & sub & (v["depth"] > 0) & (v["confidence"] > 0)).reshape(-1)
         if sel.sum() == 0:
             continue
         p = backproject(v["depth"].float(), v["K"], v["c2w"])[sel]
         pts.append(p)
         cols.append(v["rgb"].float().reshape(-1, 3)[sel])
         foot.append(v["depth"].float().reshape(-1)[sel] / v["K"][0, 0] * pixel_stride)
+    if not pts:
+        raise ValueError("no validated positive-depth hole pixels to spawn; inspect geometry before distillation")
     pts, cols, foot = torch.cat(pts), torch.cat(cols), torch.cat(foot)
     voxel = 0.5 * float(foot.median())
     _, first = np.unique(np.floor(pts.cpu().numpy() / voxel).astype(np.int64), axis=0, return_index=True)
@@ -99,6 +111,7 @@ def main() -> None:
     parser.add_argument("--exp", required=True, help="experiment id written to metrics.json / meta.json (E8, E10)")
     parser.add_argument("--round", type=int, required=True)
     parser.add_argument("--views_dirs", nargs="+", required=True, help="all rounds so far, newest last (spawning uses the newest)")
+    parser.add_argument("--validation_dirs", nargs="*", help="one validation directory per views_dir; confidence gates spawning and losses")
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--warmup_steps", type=int, default=300)
     parser.add_argument("--spawn_stride", type=int, default=3)
@@ -112,6 +125,10 @@ def main() -> None:
     parser.add_argument("--print_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    if args.validation_dirs is not None and len(args.validation_dirs) != len(args.views_dirs):
+        raise ValueError("one --validation_dirs entry per --views_dirs required")
+    if args.validation_dirs is not None and args.seen_w != 0:
+        raise ValueError("validated distillation requires --seen_w 0; real frames anchor observed appearance")
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -146,7 +163,8 @@ def main() -> None:
     t_begin = time.time()
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
-    views = [v for d in args.views_dirs for v in load_views(d, device)]
+    validation_dirs = [None] * len(args.views_dirs) if args.validation_dirs is None else args.validation_dirs
+    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd)]
     newest = [v for v in views if v["dir"] == args.views_dirs[-1]]
     bg = state["models"]["Background"]
     new = spawn(newest, args.spawn_stride, args.pixel_stride, args.scale_factor, args.init_opacity, bg["_features_rest"].shape[1:])
@@ -184,12 +202,14 @@ def main() -> None:
         trainer.update_visibility_filter()  # postprocess_per_train_step reads the last render's radii and gradients
         rgb, target = nv["rgb"], v["rgb"].float()
         hole = v["hole"].float()[..., None]
-        wmap = hole + args.seen_w * (1.0 - hole)
-        l1 = ((rgb - target).abs() * wmap).sum() / (3.0 * wmap.sum())
-        pasted = hole * target + (1.0 - hole) * rgb.detach()
+        confidence = v["confidence"][..., None]
+        accepted = hole * confidence
+        wmap = accepted + args.seen_w * (1.0 - hole)
+        l1 = ((rgb - target).abs() * wmap).sum() / (3.0 * wmap.sum().clamp(min=1.0))
+        pasted = accepted * target + (1.0 - accepted) * rgb.detach()
         lp = lpips_vgg(rgb.permute(2, 0, 1)[None] * 2 - 1, pasted.permute(2, 0, 1)[None] * 2 - 1).mean()
         loss_dict["fill_rgb_loss"] = args.fill_w * (l1 + args.lpips_w * lp)
-        dmask = (v["hole"] & (v["depth"] > 0)).float()
+        dmask = (v["hole"] & (v["depth"] > 0)).float() * v["confidence"]
         inv = (1.0 / nv["depth"][..., 0].clamp(min=1e-3) - 1.0 / v["depth"].float().clamp(min=1e-3)).abs()
         loss_dict["fill_depth_loss"] = args.depth_w * (inv * dmask).sum() / dmask.sum().clamp(min=1.0)
 
@@ -231,7 +251,8 @@ def main() -> None:
         json.dump({"exp": args.exp, "scene_id": args.scene_id, "init": rounds[0]["init_log_dir"], "rounds": rounds,
                    "dashrecon_commit": commit, "torch": torch.__version__, "runtime_s": sum(r["runtime_s"] for r in rounds),
                    "peak_vram_gb": max(r["peak_vram_gb"] for r in rounds), "generative": True, "uses_oracle": False,
-                   "oracle_note": "FRONT images + dashrecon products + frozen Wan2.1-VACE and MapAnything; checked by dashrecon.train.guard"},
+                   "validation_dirs": validation_dirs,
+                   "oracle_note": "FRONT + dashrecon products and generated RGB-D; generator/depth provenance in each views_dir fill.json/depth.json; checked by dashrecon.train.guard"},
                   f, indent=2)
     print(f"[train_fill] {args.scene_id} round {args.round}: {runtime / 60:.1f} min -> {args.out_log_dir}", flush=True)
 
