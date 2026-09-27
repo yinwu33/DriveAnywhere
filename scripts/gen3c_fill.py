@@ -10,6 +10,11 @@ feeds a scripts/render_views.py directory rendered at GEN3C's 704 x 1280 with a 
       scaled by 2/3 and centre-cropped like the render's intrinsics;
     - cache for each view: the render where training views saw the surface (mask/ = 0), -1 (empty, as GEN3C's own
       forward warp) and mask 0 in the holes; view 0 uses the real image with a full mask;
+    - --buffers picks up to two cache buffers per view (GEN3C-Cosmos-7B takes frame_buffer_max = 2, newest first):
+      "render" is the above; "realN" is the real FRONT image of the view's N-th warp source (render_views.py
+      --src_offsets: frame t - d_N), forward-warped into the view with GEN3C's own splatting (forward_warp_utils_pytorch,
+      world points from the run's rendered depth at that source camera). Real warps carry real texture, which a
+      blurry 3DGS render as the only cache does not (DECISIONS P: the render-only cache gave blurry output);
     - chunks of 121 frames, autoregressive as gen3c_dynamic.py: each later chunk starts from the last generated
       frame (one frame overlap), the last chunk repeats the last view to fill up.
 Pipeline construction and the call follow cosmos_predict1/diffusion/inference/gen3c_dynamic.py @ db2ffe1 with all
@@ -18,7 +23,7 @@ unused) and its defaults (35 steps, guidance 1, seed 1); --fps is passed as the 
 
 GEN3C regenerates the whole frame; the output is written unchanged as filled/<k:03d>.png so depth_views.py and
 train_fill.py run as after fill_views.py (train_fill weights the hole pixels 1 and the rest --seen_w). Also written:
-filled_compare.mp4 (render with holes in red | GEN3C), fill.json (generator, parameters, seconds, commit,
+buffers.mp4 (render | each cache buffer, before generation; --buffers_only stops there), filled_compare.mp4 (render with holes in red | GEN3C), fill.json (generator, parameters, seconds, commit,
 generative: true).
 
 Example (from the DriveAnywhere repo root):
@@ -57,6 +62,8 @@ def real_frame(path: str) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--views_dir", required=True)
+    parser.add_argument("--buffers", nargs="+", default=["render"], help='up to two of "render", "real0", "real1", ... (newest first)')
+    parser.add_argument("--buffers_only", action="store_true", help="write buffers.mp4 and stop before generation")
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
     parser.add_argument("--fps", type=int, default=10)
@@ -78,15 +85,54 @@ def main() -> None:
     holes = np.stack([np.asarray(Image.open(os.path.join(views_dir, "mask", f"{k:03d}.png"))) > 127 for k in range(n)])
     first = real_frame(os.path.join(image_dir, f"{cams[0]['frame']:03d}_0.jpg"))
 
-    warp = renders.astype(np.float32) / 127.5 - 1.0
-    warp[holes] = -1.0
-    warp[0] = first.astype(np.float32) / 127.5 - 1.0
-    valid = (~holes).astype(np.float32)
-    valid[0] = 1.0
-
+    assert 1 <= len(args.buffers) <= 2, args.buffers
     os.chdir(GEN3C)  # relative config and checkpoint paths of the repository
     sys.path.insert(0, GEN3C)
+    from cosmos_predict1.diffusion.inference.forward_warp_utils_pytorch import forward_warp
     from cosmos_predict1.diffusion.inference.gen3c_pipeline import Gen3cPipeline
+    from dashrecon.gen.views import backproject
+
+    device = torch.device("cuda")
+    sources = {}
+
+    def source(src: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Real FRONT image of a warp source in [-1, 1] (1, 3, H, W) and its world points (1, H, W, 3)."""
+        if src["frame"] not in sources:
+            img = real_frame(os.path.join(image_dir, f"{src['frame']:03d}_0.jpg")).astype(np.float32) / 127.5 - 1.0
+            depth = torch.from_numpy(np.load(os.path.join(views_dir, "src", f"{src['frame']:03d}.npy")).astype(np.float32)).to(device)
+            pts = backproject(depth, torch.tensor(src["K"], device=device), torch.tensor(src["c2w"], device=device)).reshape(1, H, W, 3)
+            sources[src["frame"]] = (torch.from_numpy(img).permute(2, 0, 1)[None].to(device), pts, (depth > 0).float()[None, None])
+        return sources[src["frame"]]
+
+    warp = np.zeros((n, len(args.buffers), H, W, 3), dtype=np.float32)
+    valid = np.zeros((n, len(args.buffers), H, W), dtype=np.float32)
+    with torch.no_grad():
+        for k, c in enumerate(cams):
+            k_cv = torch.tensor(c["K"], device=device)
+            k_cv[0, 2] -= 0.5  # GEN3C projects to integer pixel centres, drivestudio intrinsics use +0.5
+            k_cv[1, 2] -= 0.5
+            w2c = torch.linalg.inv(torch.tensor(c["c2w"], device=device))
+            for b, name in enumerate(args.buffers):
+                if name == "render":
+                    warp[k, b] = np.where(holes[k][..., None], -1.0, renders[k].astype(np.float32) / 127.5 - 1.0)
+                    valid[k, b] = (~holes[k]).astype(np.float32)
+                    continue
+                assert name.startswith("real"), name
+                img, pts, m = source(c["src"][int(name[4:])])
+                wimg, wmask, _, _ = forward_warp(img, m, None, None, w2c[None], k_cv[None], k_cv[None], world_points1=pts)
+                warp[k, b] = wimg[0].permute(1, 2, 0).clamp(-1, 1).cpu().numpy()
+                valid[k, b] = wmask[0, 0].cpu().numpy()
+    warp[0, 0] = first.astype(np.float32) / 127.5 - 1.0  # view 0 is the real FRONT pose: the real image, fully valid
+    valid[0, 0] = 1.0
+    coverage = [float(valid[:, b].mean()) for b in range(len(args.buffers))]
+    print(f"[gen3c_fill] buffers {args.buffers}: valid fraction {[round(x, 3) for x in coverage]}", flush=True)
+    writer = imageio.get_writer(os.path.join(views_dir, "buffers.mp4"), mode="I", fps=args.fps)  # render | buffers, before generation
+    for k in range(n):
+        row = np.concatenate([renders[k]] + [((warp[k, b] + 1) * 127.5).round().astype(np.uint8) for b in range(len(args.buffers))], 1)
+        writer.append_data(cv2.resize(row, (row.shape[1] // 2, row.shape[0] // 2), interpolation=cv2.INTER_AREA))
+    writer.close()
+    if args.buffers_only:
+        return
 
     pipeline = Gen3cPipeline(
         inference_type="video2world", checkpoint_dir="checkpoints", checkpoint_name="Gen3C-Cosmos-7B",
@@ -95,15 +141,14 @@ def main() -> None:
         disable_guardrail=True, disable_prompt_encoder=True, guidance=args.guidance, num_steps=args.num_steps,
         height=H, width=W, fps=args.fps, num_video_frames=CHUNK, seed=args.seed)
     assert pipeline.model.chunk_size == CHUNK, pipeline.model.chunk_size
-    device = torch.device("cuda")
     torch.cuda.reset_peak_memory_stats()
 
-    out, chunks, cond, start = [], [], torch.from_numpy(warp[0]).permute(2, 0, 1)[None, :, None].to(device), 0
+    out, chunks, cond, start = [], [], torch.from_numpy(warp[0, 0]).permute(2, 0, 1)[None, :, None].to(device), 0
     while start < n - 1 or start == 0:
         idx = [min(i, n - 1) for i in range(start, start + CHUNK)]
         t0 = time.time()
-        imgs = torch.from_numpy(warp[idx]).permute(0, 3, 1, 2)[None, :, None].to(device)   # B, F, N=1, C, H, W
-        masks = torch.from_numpy(valid[idx])[None, :, None, None].to(device)                 # B, F, N=1, 1, H, W
+        imgs = torch.from_numpy(warp[idx]).permute(0, 1, 4, 2, 3)[None].to(device)   # B, F, N, C, H, W
+        masks = torch.from_numpy(valid[idx])[None, :, :, None].to(device)            # B, F, N, 1, H, W
         video, _ = pipeline.generate(prompt="", image_path=cond, rendered_warp_images=imgs, rendered_warp_masks=masks)
         out.extend(list(video) if start == 0 else list(video[1:]))
         cond = torch.from_numpy(video[-1].astype(np.float32) / 127.5 - 1.0).permute(2, 0, 1)[None, :, None].to(device)
@@ -124,7 +169,8 @@ def main() -> None:
     with open(os.path.join(views_dir, "fill.json"), "w") as f:
         json.dump({"generator": "GEN3C-Cosmos-7B", "gen3c_commit": "db2ffe12ced12ddafcec5e0422ee46ce8520746b",
                    "weights_revision": "9bcfdb4f3924f41376daeadf6200826c12a3bf8e", "params": vars(args), "chunks": chunks,
-                   "conditioning": "real FRONT image of view 0, then the last generated frame", "image_dir": image_dir, "composited": False,
+                   "conditioning": "real FRONT image of view 0, then the last generated frame", "image_dir": image_dir,
+                   "buffers": args.buffers, "buffer_valid_fraction": coverage, "composited": False,
                    "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": True, "dashrecon_commit": commit}, f, indent=2)
     print(f"[gen3c_fill] {views_dir}: {n} views in {len(chunks)} chunks, {sum(c['seconds'] for c in chunks) / 60:.1f} min", flush=True)
 

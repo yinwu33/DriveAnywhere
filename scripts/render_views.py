@@ -6,7 +6,10 @@ and z-depth. Holes are the pixels no training view saw at comparable resolution 
 test against every --obs_stride-th training frame), excluding sky. --ramp_frames n scales the move linearly from
 zero at the first view to full at view n (a camera that starts at the real FRONT pose and turns / moves away, as
 GEN3C needs its first frame to be a real image). --render_hw H W renders at another size: the intrinsics are scaled
-to width W and the image centre-cropped to height H (GEN3C: 704 x 1280). With --memory_dirs (the trajectories filled in
+to width W and the image centre-cropped to height H (GEN3C: 704 x 1280). --src_offsets d1 d2 ... records, for view
+k at frame t, the real FRONT frames t - d (clamped at the first frame) as warp sources for gen3c_fill.py: their
+refined camera and intrinsics go to cams.json ("src"), their z-depth rendered by the run at that camera and size to
+src/<frame:03d>.npy (float16). With --memory_dirs (the trajectories filled in
 earlier rounds, scripts/fill_views.py) every --obs_stride-th view of those, rendered by the current model, also
 counts as an observer: the 3D memory that keeps later rounds from generating the same region again.
 
@@ -46,6 +49,7 @@ def main() -> None:
     parser.add_argument("--frame_stride", type=int, default=1, help="render every n-th frame (2 halves the Wan fill time)")
     parser.add_argument("--ramp_frames", type=int, default=0, help="0 = full move from the first view")
     parser.add_argument("--render_hw", type=int, nargs=2, help="H W; default: the training size")
+    parser.add_argument("--src_offsets", type=int, nargs="*", default=[], help="real FRONT frames t - d as GEN3C warp sources")
     parser.add_argument("--obs_stride", type=int, default=2)
     parser.add_argument("--memory_dirs", nargs="*", default=[], help="views dirs filled in earlier rounds")
     parser.add_argument("--depth_tol", type=float, default=0.10)
@@ -72,8 +76,9 @@ def main() -> None:
     n_train_obs = len(observers)
     observers += memory_observers(trainer, dataset, args.memory_dirs, args.obs_stride, device)
 
-    for sub in ("rgb", "mask", "depth", "count"):
+    for sub in ("rgb", "mask", "depth", "count") + (("src",) if args.src_offsets else ()):
         os.makedirs(os.path.join(args.out_dir, sub), exist_ok=True)
+    src_cams = {}
     cams, hole_frac = [], []
     with torch.no_grad():
         for v, k in enumerate(range(0, dataset.num_img_timesteps, args.frame_stride)):
@@ -97,7 +102,18 @@ def main() -> None:
             np.save(os.path.join(args.out_dir, "depth", f"{v:03d}.npy"), depth.cpu().numpy().astype(np.float16))
             np.save(os.path.join(args.out_dir, "count", f"{v:03d}.npy"), count.astype(np.float16))
             cams.append({"frame": int(dataset.start_timestep + k), "c2w": c2w.cpu().numpy().tolist(), "K": kk.cpu().numpy().tolist(), "ramp": f,
-                         "hw": [h, w]})
+                         "hw": [h, w], "src": []})
+            for d in args.src_offsets:
+                ks = max(k - d, 0)
+                if ks not in src_cams:
+                    si, sc = dataset.full_image_set.get_image(front_image_index(dataset, ks), 1)
+                    si, sc = to_device(si, device), to_device(sc, device)
+                    sc2w = refined_c2w(trainer, si, sc)
+                    sout = render_at(trainer, si, sc, sc2w, kk, (h, w))
+                    np.save(os.path.join(args.out_dir, "src", f"{dataset.start_timestep + ks:03d}.npy"),
+                            sout["depth"][..., 0].cpu().numpy().astype(np.float16))
+                    src_cams[ks] = {"frame": int(dataset.start_timestep + ks), "c2w": sc2w.cpu().numpy().tolist(), "K": kk.cpu().numpy().tolist()}
+                cams[-1]["src"].append(src_cams[ks])
             hole_frac.append(float(hole.mean()))
     with open(os.path.join(args.out_dir, "cams.json"), "w") as f:
         json.dump({"log_dir": args.log_dir, "move": vars(move), "params": vars(args), "cams": cams, "hole_frac": hole_frac,
