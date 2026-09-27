@@ -103,6 +103,8 @@ def main() -> None:
                     os.symlink(src_path, dst_path)
     data_cfg = OmegaConf.load(os.path.join(meta["log_dir"], "config.yaml")).data
     image_dir = os.path.abspath(os.path.join(data_cfg.data_root, f"{int(data_cfg.scene_idx):03d}", "images"))
+    if args.cache_policy == "consistent":
+        data_cfg.pixel_source.mask_dir = os.path.abspath(data_cfg.pixel_source.mask_dir)
     n = len(cams)
     assert all(c["hw"] == [H, W] for c in cams), "render the views with --render_hw 704 1280"
     assert cams[0]["ramp"] == 0.0, "view 0 must be the real FRONT pose (--ramp_frames > 0)"
