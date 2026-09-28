@@ -41,11 +41,16 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
     if len(memory_dirs) != len(memory_validation_dirs):
         raise ValueError("one validation directory per generated memory required")
     memories = []
+    positive_indices = []
     for directory, validation in zip(memory_dirs, memory_validation_dirs):
         report = json.loads((validation / "validation.json").read_text())
         if Path(report["views_dir"]).resolve() != directory.resolve():
             raise ValueError(f"memory validation does not belong to {directory}")
-        memories.append((directory, validation, json.loads((directory / "cams.json").read_text())["cams"]))
+        cameras = json.loads((directory / "cams.json").read_text())["cams"]
+        if len(report["frames"]) != len(cameras) or [r["k"] for r in report["frames"]] != list(range(len(cameras))):
+            raise ValueError("validation rows must correspond to memory cameras")
+        positive_indices.append([r["k"] for r in report["frames"] if r["accepted_pixels"] > 0])
+        memories.append((directory, validation, cameras))
 
     @lru_cache(maxsize=12)
     def load_memory(d: int, j: int) -> RGBDView:
@@ -92,7 +97,7 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
         memory_conflict = np.zeros_like(support)
         memory_used = []
         for d, (directory, _, mcams) in enumerate(memories):
-            for j in memory_candidate_indices(mcams, cams[k], 16, max_references, "pose"):
+            for j in memory_candidate_indices(mcams, cams[k], 16, max_references, "pose", positive_indices[d]):
                 agree, disagree = reprojection_evidence(query, load_memory(d, j), depth_tol, rgb_tol)
                 memory_support += agree
                 memory_conflict += disagree
@@ -121,6 +126,7 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
                          "min_baseline_scene_units": min_baseline, "max_references": max_references,
                          "min_parallax_degrees": min_parallax_degrees, "depth_tol": depth_tol, "rgb_tol": rgb_tol,
                          "memory_dirs": [str(p) for p in memory_dirs],
+                         "positive_memory_frame_indices": positive_indices,
                          "memory_conflict_policy": "reject contradicted validated memory; memory not counted as new independent support",
                          "min_support": min_support, "max_conflict_fraction": max_conflict_fraction},
               "accepted_fraction": sum(r["accepted_pixels"] for r in rows) / max(1, holes),

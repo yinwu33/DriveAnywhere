@@ -38,7 +38,7 @@ def main() -> None:
     state = {"completed": False, "started": time.time(), "stages": [], "dashrecon_commit": commit}
     meta = {"dashrecon_commit": commit, "generative": True, "uses_oracle": False,
             "oracle_note": "FRONT-only E5c and fresh candidates; no hidden camera, GT, E10/E11 or HUGSIM inputs",
-            "generator_weights_frozen": True, "kind": "surrounding-camera completion experiment; no quality success assumed",
+            "generator_weights_frozen": True, "round_code_commits": {"r0": commit, "r1": commit}, "kind": "surrounding-camera completion experiment; no quality success assumed",
             "versions": {name: version(name) for name in ["torch", "numpy", "scipy", "Pillow", "gsplat", "lpips"]},
             "input_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                              for p in [args.config, Path(cfg["init_log_dir"]) / "config.yaml", Path(cfg["init_log_dir"]) / "checkpoint_final.pth"]}}

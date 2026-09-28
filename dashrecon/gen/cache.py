@@ -33,11 +33,15 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
     if len(memory_dirs) != len(validation_dirs) or memory_radius < 0:
         raise ValueError("one validation directory per memory, and nonnegative radius required")
     memory = []
+    positive_indices = []
     for directory, validation in zip(memory_dirs, validation_dirs):
         meta = json.loads((validation / "validation.json").read_text())
         if Path(meta["views_dir"]).resolve() != directory.resolve():
             raise ValueError(f"validation does not belong to {directory}")
         mcams = json.loads((directory / "cams.json").read_text())["cams"]
+        if len(meta["frames"]) != len(mcams) or [r["k"] for r in meta["frames"]] != list(range(len(mcams))):
+            raise ValueError("validation rows must correspond to memory cameras")
+        positive_indices.append([r["k"] for r in meta["frames"] if r["accepted_pixels"] > 0])
         memory.append((directory, validation, mcams))
     h, w = cams[0]["hw"]
     device = torch.device("cuda")
@@ -117,7 +121,8 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
         best = None
         candidate_rows = []
         for d, (directory, _, mcams) in enumerate(memory):
-            nearby = memory_candidate_indices(mcams, c, memory_radius, max_memory_candidates, memory_candidate_policy)
+            pool = positive_indices[d] if memory_candidate_policy == "pose" else None
+            nearby = memory_candidate_indices(mcams, c, memory_radius, max_memory_candidates, memory_candidate_policy, pool)
             for j in nearby:
                 rgb_m, valid_m, depth_m = warp(memory_source(d, j), mcams[j], c)
                 overlap = valid_m & real_union
@@ -154,6 +159,8 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
     memory_source.cache_clear()
     return out, valid, {"policy": "real_first_coverage_validated_memory", "frames": rows,
                         "memory_candidate_policy": memory_candidate_policy, "max_memory_candidates": max_memory_candidates,
+                        "positive_memory_frame_indices": positive_indices,
+                        "candidate_filter": "positive validation before pose ranking; legacy frame ranking unchanged",
                         "skipped_heldout_source_frames": sorted(skipped_test),
                         "memory_coverage": float(np.mean([r["memory_coverage"] for r in rows])),
                         "validation_dirs": [str(p) for p in validation_dirs]}

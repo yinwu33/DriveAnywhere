@@ -52,6 +52,18 @@ def test_back_memory_is_selected_over_front_at_the_same_frame() -> None:
     assert memory_candidate_indices(cams, {**query, "frame": 150}, 16, 3, "pose") == []
 
 
+def test_empty_nearest_frames_do_not_evict_validated_memory() -> None:
+    """A verified oblique frame is useful even when closer rear frames are empty."""
+    cams = [{"frame": 104, "c2w": np.eye(4).tolist()} for _ in range(7)]
+    a = np.deg2rad(25.)
+    oblique = np.eye(4)
+    oblique[:3, :3] = [[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]]
+    cams[6]["c2w"] = oblique.tolist()
+    assert memory_candidate_indices(cams, cams[0], 16, 6, "pose") == list(range(6))
+    assert memory_candidate_indices(cams, cams[0], 16, 6, "pose", [6]) == [6]
+    assert memory_candidate_indices(cams, cams[0], 16, 6, "pose", []) == []
+
+
 def test_self_consistent_new_surface_cannot_replace_conflicting_validated_memory(tmp_path: Path) -> None:
     """Two translated new references alone pass; contradicted old memory rejects."""
     cams = []
@@ -70,7 +82,8 @@ def test_self_consistent_new_surface_cannot_replace_conflicting_validated_memory
             np.save(directory / "filled_depth" / f"{k:03d}.npy", np.full((12,16), 5., np.float32))
     old_validation = tmp_path / "old_validation"
     (old_validation / "confidence").mkdir(parents=True)
-    (old_validation / "validation.json").write_text(json.dumps({"views_dir": str(directories[1])}))
+    (old_validation / "validation.json").write_text(json.dumps({"views_dir": str(directories[1]),
+        "frames": [{"k": k, "accepted_pixels": 12 * 16} for k in range(3)]}))
     for k in range(3):
         np.save(old_validation / "confidence" / f"{k:03d}.npy", np.ones((12,16), np.float16))
     common = dict(views_dir=directories[0], offsets=[-1,1], depth_tol=.1, rgb_tol=.12, min_support=2,

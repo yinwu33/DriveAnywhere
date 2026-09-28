@@ -50,8 +50,8 @@ def main() -> None:
             input_rows.append({'round': r, 'frame': frame, 'hashes': {
                 str(p.resolve()): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}})
         for p in [camera_meta, cache, depth, fill, report]:
-            if p['dashrecon_commit'] != meta['dashrecon_commit']:
-                raise ValueError('mixed reconstruction commits')
+            if p['dashrecon_commit'] != meta['round_code_commits'][f'r{r}']:
+                raise ValueError('undocumented reconstruction commit')
         cams = camera_meta['cams']
         if len(cams) != 121 or len(cache['frames']) != 121 or len(report['frames']) != 121:
             raise ValueError('native 121-frame records required')

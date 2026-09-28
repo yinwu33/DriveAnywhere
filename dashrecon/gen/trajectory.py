@@ -29,17 +29,21 @@ def surrounding_plan(anchors: list[int], pan_views: int, transfer_views: int,
 
 
 def memory_candidate_indices(cams: list[dict], query: dict, radius: int,
-                             count: int, policy: str) -> list[int]:
+                             count: int, policy: str,
+                             eligible_indices: list[int] | None = None) -> list[int]:
     """Rank memory for a repeated position by direction as well as distance."""
     if radius < 0 or count < 1:
         raise ValueError("nonnegative frame radius and positive candidate count required")
+    pool = list(range(len(cams))) if eligible_indices is None else eligible_indices
+    if len(set(pool)) != len(pool) or any(j < 0 or j >= len(cams) for j in pool):
+        raise ValueError("eligible memory indices must be distinct and in range")
     if policy == "frame":
-        nearest = sorted(range(len(cams)), key=lambda j: abs(cams[j]["frame"] - query["frame"]))[:count]
+        nearest = sorted(pool, key=lambda j: abs(cams[j]["frame"] - query["frame"]))[:count]
         return [j for j in nearest if abs(cams[j]["frame"] - query["frame"]) <= radius]
     if policy != "pose":
         raise ValueError(f"unknown memory candidate policy: {policy}")
     target = np.asarray(query["c2w"])
-    eligible = [j for j, c in enumerate(cams) if abs(c["frame"] - query["frame"]) <= radius]
+    eligible = [j for j in pool if abs(cams[j]["frame"] - query["frame"]) <= radius]
     poses = np.asarray([cams[j]["c2w"] for j in eligible])
     if not eligible:
         return []  # explicitly absent memory, reported by the cache builder
