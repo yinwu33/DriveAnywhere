@@ -1,0 +1,28 @@
+scene_id: val056
+init_log_dir: results/E5c/val056
+output_dir: results/E13/val056/surround_20260928
+anchors: [96, 104, 112]
+pan_views: 37
+transfer_views: 5
+sides: [1, -1]
+render_hw: [704, 1280]
+src_offsets: [0, 6, 15]
+generation_steps: 35
+generation_seed: 1
+optimization_steps: 4000
+optimization_seed: 0
+training_view_indices: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84, 87, 90, 93, 96, 99, 102, 105, 108, 111, 114, 117, 120]
+diagnostic_indices: [9, 18, 27, 36, 51, 60, 69, 93, 102, 111, 120]
+min_baseline_scene_units: 1.0
+min_parallax_degrees: 0.5
+max_references: 4
+depth_tolerance: 0.10
+rgb_tolerance: 0.12
+min_support: 2
+max_conflict_fraction: 0.25
+memory_radius: 16
+max_memory_candidates: 6
+spawn_stride: 1
+pixel_stride: 2
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]

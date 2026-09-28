@@ -70,6 +70,8 @@ def main() -> None:
     parser.add_argument("--memory_dirs", nargs="*", default=[])
     parser.add_argument("--validation_dirs", nargs="*", default=[])
     parser.add_argument("--memory_radius", type=int, default=6)
+    parser.add_argument("--memory_candidate_policy", choices=["frame", "pose"], default="frame")
+    parser.add_argument("--max_memory_candidates", type=int, default=3)
     parser.add_argument("--require_memory", action="store_true", help="fail if no validated memory reaches the cache")
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
@@ -135,7 +137,7 @@ def main() -> None:
         from dashrecon.gen.cache import build_consistent_cache
         warp, valid, cache_report = build_consistent_cache(
             cams, Path(views_dir), data_cfg, Path(image_dir), memory_dirs, validation_dirs,
-            real_frame, args.memory_radius, .10, .12)
+            real_frame, args.memory_radius, .10, .12, args.memory_candidate_policy, args.max_memory_candidates)
         if args.require_memory and cache_report["memory_coverage"] <= 0:
             raise ValueError("no validated memory reached the generator; see validation results")
     else:

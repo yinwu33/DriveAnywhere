@@ -13,13 +13,15 @@ from PIL import Image
 import torch
 
 from dashrecon.gen.views import backproject
+from dashrecon.gen.trajectory import memory_candidate_indices
 from dashrecon.scenes import train_frame_mask
 
 
 def build_consistent_cache(cams: list, views_dir: Path, data_cfg, image_dir: Path,
                            memory_dirs: list[Path], validation_dirs: list[Path],
                            real_frame, memory_radius: int, depth_tol: float,
-                           rgb_tol: float) -> tuple[np.ndarray, np.ndarray, dict]:
+                           rgb_tol: float, memory_candidate_policy: str = "frame",
+                           max_memory_candidates: int = 3) -> tuple[np.ndarray, np.ndarray, dict]:
     """Two buffers: best real source; complementary real source plus memory holes.
 
 Only train FRONT pixels outside estimated dynamic/sky masks enter real caches.
@@ -115,10 +117,8 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
         best = None
         candidate_rows = []
         for d, (directory, _, mcams) in enumerate(memory):
-            nearby = sorted(range(len(mcams)), key=lambda j: abs(mcams[j]["frame"] - c["frame"]))[:3]
+            nearby = memory_candidate_indices(mcams, c, memory_radius, max_memory_candidates, memory_candidate_policy)
             for j in nearby:
-                if abs(mcams[j]["frame"] - c["frame"]) > memory_radius:
-                    continue
                 rgb_m, valid_m, depth_m = warp(memory_source(d, j), mcams[j], c)
                 overlap = valid_m & real_union
                 ref_depth = np.where(valid0, depth0, depth1)
@@ -153,6 +153,7 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
     real_source.cache_clear()
     memory_source.cache_clear()
     return out, valid, {"policy": "real_first_coverage_validated_memory", "frames": rows,
+                        "memory_candidate_policy": memory_candidate_policy, "max_memory_candidates": max_memory_candidates,
                         "skipped_heldout_source_frames": sorted(skipped_test),
                         "memory_coverage": float(np.mean([r["memory_coverage"] for r in rows])),
                         "validation_dirs": [str(p) for p in validation_dirs]}

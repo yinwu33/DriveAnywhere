@@ -18,13 +18,15 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashrecon.gen.consistency import RGBDView, accepted_confidence, reprojection_evidence
 from dashrecon.provenance import git_commit
-from dashrecon.gen.trajectory import translated_references
+from dashrecon.gen.trajectory import memory_candidate_indices, translated_references
 
 
 def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: float,
              rgb_tol: float, min_support: int, max_conflict_fraction: float,
              reference_policy: str = "offsets", min_baseline: float = 1.,
-             max_references: int = 4, min_parallax_degrees: float = 0.) -> dict:
+             max_references: int = 4, min_parallax_degrees: float = 0.,
+             memory_dirs: list[Path] | None = None,
+             memory_validation_dirs: list[Path] | None = None) -> dict:
     """Create full-resolution evidence and record per-frame acceptance statistics."""
     if views_dir.resolve() == out_dir.resolve():
         raise ValueError("validation must have its own output directory")
@@ -34,6 +36,27 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
     for sub in ("confidence", "support"):
         (out_dir / sub).mkdir()
     cams = json.loads((views_dir / "cams.json").read_text())["cams"]
+    memory_dirs = [] if memory_dirs is None else memory_dirs
+    memory_validation_dirs = [] if memory_validation_dirs is None else memory_validation_dirs
+    if len(memory_dirs) != len(memory_validation_dirs):
+        raise ValueError("one validation directory per generated memory required")
+    memories = []
+    for directory, validation in zip(memory_dirs, memory_validation_dirs):
+        report = json.loads((validation / "validation.json").read_text())
+        if Path(report["views_dir"]).resolve() != directory.resolve():
+            raise ValueError(f"memory validation does not belong to {directory}")
+        memories.append((directory, validation, json.loads((directory / "cams.json").read_text())["cams"]))
+
+    @lru_cache(maxsize=12)
+    def load_memory(d: int, j: int) -> RGBDView:
+        directory, validation, cameras = memories[d]
+        c = cameras[j]
+        rgb = np.asarray(Image.open(directory / "filled" / f"{j:03d}.png").convert("RGB"), dtype=np.float32) / 255
+        depth = np.load(directory / "filled_depth" / f"{j:03d}.npy").astype(np.float32)
+        conf = np.load(validation / "confidence" / f"{j:03d}.npy")
+        hole = np.asarray(Image.open(directory / "mask" / f"{j:03d}.png")) > 127
+        valid = hole & (conf > 0) & np.isfinite(depth) & (depth > 0)
+        return RGBDView(rgb, depth, np.array(c["K"]), np.array(c["c2w"]), valid)
 
     @lru_cache(maxsize=12)
     def load(k: int) -> RGBDView:
@@ -65,18 +88,30 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
             support += agree
             conflict += disagree
             used.append(j)
+        memory_support = np.zeros_like(support)
+        memory_conflict = np.zeros_like(support)
+        memory_used = []
+        for d, (directory, _, mcams) in enumerate(memories):
+            for j in memory_candidate_indices(mcams, cams[k], 16, max_references, "pose"):
+                agree, disagree = reprojection_evidence(query, load_memory(d, j), depth_tol, rgb_tol)
+                memory_support += agree
+                memory_conflict += disagree
+                memory_used.append({"views_dir": str(directory), "k": j})
         hole = np.asarray(Image.open(views_dir / "mask" / f"{k:03d}.png")) > 127
-        conf = accepted_confidence(support, conflict, min_support, max_conflict_fraction) * hole
+        conf = accepted_confidence(support, conflict, min_support, max_conflict_fraction) * hole * (memory_conflict == 0)
         np.save(out_dir / "confidence" / f"{k:03d}.npy", conf.astype(np.float16))
         panel = np.zeros((*hole.shape, 3), np.uint8)
         panel[hole] = (100, 100, 100)  # unknown
-        panel[hole & (conflict > 0)] = (220, 60, 50)
+        panel[hole & ((conflict + memory_conflict) > 0)] = (220, 60, 50)
         panel[conf > 0] = (40, 190, 110)
         Image.fromarray(panel).save(out_dir / "support" / f"{k:03d}.png")
         rows.append({"k": k, "frame": cams[k]["frame"], "references": used,
+                     "memory_references": memory_used,
+                     "memory_supported_pixels": int((hole & (memory_support > 0)).sum()),
+                     "memory_conflict_pixels": int((hole & (memory_conflict > 0)).sum()),
                      "hole_pixels": int(hole.sum()), "accepted_pixels": int((conf > 0).sum()),
                      "conflict_pixels": int((hole & (conflict > 0)).sum()),
-                     "unknown_pixels": int((hole & ((support + conflict) == 0)).sum()),
+                     "unknown_pixels": int((hole & ((support + conflict + memory_support + memory_conflict) == 0)).sum()),
                      "accepted_fraction": float((conf > 0).sum() / max(1, hole.sum()))})
         if k % 10 == 0:
             print(f"[validate] {k}/{len(cams)} accepted {rows[-1]['accepted_fraction']:.3f}", flush=True)
@@ -85,6 +120,8 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
               "params": {"offsets": offsets, "reference_policy": reference_policy,
                          "min_baseline_scene_units": min_baseline, "max_references": max_references,
                          "min_parallax_degrees": min_parallax_degrees, "depth_tol": depth_tol, "rgb_tol": rgb_tol,
+                         "memory_dirs": [str(p) for p in memory_dirs],
+                         "memory_conflict_policy": "reject contradicted validated memory; memory not counted as new independent support",
                          "min_support": min_support, "max_conflict_fraction": max_conflict_fraction},
               "accepted_fraction": sum(r["accepted_pixels"] for r in rows) / max(1, holes),
               "unknown_fraction": sum(r["unknown_pixels"] for r in rows) / max(1, holes),
@@ -106,6 +143,8 @@ def main() -> None:
     parser.add_argument("--min_baseline", type=float, default=1., help="minimum separation of query/reference centres and between reference centres, in scene units")
     parser.add_argument("--max_references", type=int, default=4)
     parser.add_argument("--min_parallax_degrees", type=float, default=0.)
+    parser.add_argument("--memory_dirs", type=Path, nargs="*", default=[])
+    parser.add_argument("--memory_validation_dirs", type=Path, nargs="*", default=[])
     args = parser.parse_args()
     result = validate(**vars(args))
     print(f"[validate] accepted {result['accepted_fraction']:.3f}, unknown {result['unknown_fraction']:.3f}")

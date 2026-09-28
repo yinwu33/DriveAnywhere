@@ -32,6 +32,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
+from dashrecon.gen.depth_alignment import apply_scene_scale, estimate_scene_scale  # noqa: E402
 
 MOGE_REVISION = "cb0e8bbd6b1e243589717c78e750b1ba4c093acf"  # Ruicheng/moge-2-vitl-normal (MIT)
 
@@ -82,6 +83,8 @@ def main() -> None:
     parser.add_argument("--backend", choices=["mapanything", "moge"], default="mapanything")
     parser.add_argument("--model_id", required=True, help="facebook/map-anything or Ruicheng/moge-2-vitl-normal")
     parser.add_argument("--min_count", type=int, default=2)
+    parser.add_argument("--alignment_policy", choices=["boundary", "scene_global"], default="boundary")
+    parser.add_argument("--scene_scale", type=float, help="explicit scale reused from an earlier scene_global round")
     parser.add_argument("--max_views", type=int, default=300)
     parser.add_argument("--max_intrinsics_dev", type=float, default=0.5,
                         help="bound on MapAnything's predicted-vs-given intrinsics (val056 yaw 60: focal 27 %% off on the "
@@ -90,6 +93,8 @@ def main() -> None:
     parser.add_argument("--min_ring_px", type=int, default=200)
     parser.add_argument("--min_ref_px", type=int, default=1000)
     args = parser.parse_args()
+    if args.scene_scale is not None and args.alignment_policy != "scene_global":
+        raise ValueError("--scene_scale requires --alignment_policy scene_global")
     commit = git_commit()
     with open(os.path.join(args.views_dir, "cams.json")) as f:
         cams = json.load(f)["cams"]
@@ -107,6 +112,24 @@ def main() -> None:
     else:
         depths, backend_meta = moge_depth(args, paths, k_cv, h, w)
     os.makedirs(os.path.join(args.views_dir, "filled_depth"), exist_ok=True)
+    if args.alignment_policy == "scene_global":
+        references = [np.load(os.path.join(args.views_dir, "depth", f"{k:03d}.npy")).astype(np.float32) for k in range(len(cams))]
+        counts = [np.load(os.path.join(args.views_dir, "count", f"{k:03d}.npy")) for k in range(len(cams))]
+        estimated, alignment = estimate_scene_scale(depths, references, counts, args.min_count, args.min_ref_px)
+        scale = estimated if args.scene_scale is None else args.scene_scale
+        alignment.update(estimated_this_round=estimated, scene_scale=scale,
+                         scale_reused=args.scene_scale is not None, accepted_geometry=False)
+        for k, depth in enumerate(depths):
+            aligned = apply_scene_scale(depth, scale)
+            np.save(os.path.join(args.views_dir, "filled_depth", f"{k:03d}.npy"), aligned.astype(np.float16))
+            alignment["frames"][k].update(valid_fraction=float((aligned > 0).mean()),
+                                          requires_geometric_validation=True)
+        with open(os.path.join(args.views_dir, "depth.json"), "w") as f:
+            json.dump({"model_id": args.model_id, "params": vars(args), "backend_meta": backend_meta,
+                       "alignment": alignment, "frames": alignment["frames"], "dashrecon_commit": commit}, f, indent=2)
+        print(f"[depth_views] explicit scene-global scale {scale:.5f}; {len(cams)} monocular candidate depths; "
+              f"{alignment['reference_pixels']} supporting scale pixels; all novel geometry still unverified", flush=True)
+        return
     stats = []
     for k in range(len(cams)):
         d = depths[k]

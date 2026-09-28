@@ -6,6 +6,49 @@ poses. They are positions along a static scene, not a claim about video time.
 import numpy as np
 
 
+def surrounding_plan(anchors: list[int], pan_views: int, transfer_views: int,
+                     side: int) -> list[dict]:
+    """Three translated half-circle sweeps; +/- branches cover a virtual rig."""
+    if len(anchors) != 3 or anchors != sorted(set(anchors)):
+        raise ValueError("three strictly increasing anchors required")
+    if side not in [-1, 1] or pan_views < 5 or (pan_views - 1) % 4 or transfer_views < 1:
+        raise ValueError("side +/-1, a pan grid including 45-degree cameras, and transfers required")
+    coordinates, angles, segments = [], [], []
+    for group, anchor in enumerate(anchors):
+        lo, hi = (0., side * 180.) if group % 2 == 0 else (side * 180., 0.)
+        coordinates.extend([float(anchor)] * pan_views)
+        angles.extend(np.linspace(lo, hi, pan_views).tolist())
+        segments.extend([f"anchor_{anchor}"] * pan_views)
+        if group < 2:
+            coordinates.extend(np.linspace(anchor, anchors[group + 1], transfer_views + 2)[1:-1].tolist())
+            angles.extend([hi] * transfer_views)
+            segments.extend([f"transfer_{group}"] * transfer_views)
+    return [{"frame": int(round(t)), "pose_frame": float(t), "yaw": float(a),
+             "ramp": float(abs(a) / 180), "segment": s}
+            for t, a, s in zip(coordinates, angles, segments)]
+
+
+def memory_candidate_indices(cams: list[dict], query: dict, radius: int,
+                             count: int, policy: str) -> list[int]:
+    """Rank memory for a repeated position by direction as well as distance."""
+    if radius < 0 or count < 1:
+        raise ValueError("nonnegative frame radius and positive candidate count required")
+    if policy == "frame":
+        nearest = sorted(range(len(cams)), key=lambda j: abs(cams[j]["frame"] - query["frame"]))[:count]
+        return [j for j in nearest if abs(cams[j]["frame"] - query["frame"]) <= radius]
+    if policy != "pose":
+        raise ValueError(f"unknown memory candidate policy: {policy}")
+    target = np.asarray(query["c2w"])
+    eligible = [j for j, c in enumerate(cams) if abs(c["frame"] - query["frame"]) <= radius]
+    poses = np.asarray([cams[j]["c2w"] for j in eligible])
+    if not eligible:
+        return []  # explicitly absent memory, reported by the cache builder
+    distance = np.linalg.norm(poses[:, :3, 3] - target[:3, 3], axis=1)
+    angle = np.degrees(np.arccos(np.clip(poses[:, :3, 2] @ target[:3, 2], -1, 1)))
+    order = np.argsort(angle + 2 * distance, kind="stable")[:count]
+    return [eligible[j] for j in order]
+
+
 def sampling_plan(mode: str, anchors: list[int], yaw: float,
                   sweep_views: list[int], transfer_views: int,
                   ramp_views: int) -> list[dict]:

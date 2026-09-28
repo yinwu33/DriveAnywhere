@@ -107,6 +107,8 @@ def main() -> None:
     parser.add_argument("--labels", nargs="+", help="display labels in --log_dirs order; use gen labels for generated scenes")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--host", default="127.0.0.1", help="local interface to bind; defaults to loopback")
+    parser.add_argument("--initial_frame", type=int, default=0, help="start at this scene frame")
+    parser.add_argument("--initial_yaw", type=float, default=0., help="initial yaw in degrees")
     args = parser.parse_args()
     import nerfview
     import viser
@@ -120,15 +122,17 @@ def main() -> None:
             run.label = label
     for r in runs[1:]:
         assert len(r.frames) == len(runs[0].frames), "runs must cover the same frames"
+    if not 0 <= args.initial_frame < len(runs[0].frames) or not -180 <= args.initial_yaw <= 180:
+        raise ValueError("initial frame/yaw is outside the viewer range")
     state = {"run": runs[0]}
     server = viser.ViserServer(host=args.host, port=args.port, verbose=False)
     viewer = nerfview.Viewer(server=server, render_fn=lambda cs, wh: render(state["run"], cs, wh), mode="rendering")
 
     run_choice = server.gui.add_dropdown("run", options=[r.label for r in runs], initial_value=runs[0].label)
-    frame = server.gui.add_slider("frame", min=0, max=len(runs[0].frames) - 1, step=1, initial_value=0)
+    frame = server.gui.add_slider("frame", min=0, max=len(runs[0].frames) - 1, step=1, initial_value=args.initial_frame)
     move = {"right": server.gui.add_slider("right", min=-4.0, max=4.0, step=0.25, initial_value=0.0),
             "up": server.gui.add_slider("up", min=-1.0, max=4.0, step=0.25, initial_value=0.0),
-            "yaw": server.gui.add_slider("yaw", min=-180.0, max=180.0, step=5.0, initial_value=0.0),
+            "yaw": server.gui.add_slider("yaw", min=-180.0, max=180.0, step=5.0, initial_value=args.initial_yaw),
             "pitch": server.gui.add_slider("pitch", min=-45.0, max=45.0, step=5.0, initial_value=0.0)}
     go = server.gui.add_button("go to frame")
 
