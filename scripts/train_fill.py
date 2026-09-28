@@ -25,6 +25,10 @@ E14 options (docs/EXPERIMENTS.md):
     --unknown_w W      with --validation_dirs: hole pixels without conflicting evidence that were not accepted
                        (status 1 unknown, 2 weak; validate_generated_views.py) get confidence W instead of 0;
                        conflicting pixels stay at 0.
+    --depth_dirs D...  one per views dir: <D>/mesh_depth/<k>.npy (scripts/render_mesh_depth.py) replaces that trajectory's
+                       filled_depth, so all trajectories share one geometry (E17a); pixels without mesh depth get no
+                       depth loss and spawn nothing.
+    --spawn_all        spawn Gaussians from every views dir (all rounds distilled at once, E17a), not only the newest.
     --round_affine     one 3x4 colour transform per views dir (a "virtual traversal" appearance, after MTGS), applied
                        to the render before it is compared with that dir's generated frames; identity at the start
                        (or the previous round's value), L2 to identity weighted --round_affine_reg. Real FRONT frames
@@ -65,7 +69,7 @@ RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
 
 def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None,
-               view_indices: list[int] | None = None, unknown_w: float = 0.0) -> list:
+               view_indices: list[int] | None = None, unknown_w: float = 0.0, depth_dir: str | None = None) -> list:
     """Load generated supervision, optionally restricted to a recorded local window. With a validation dir, the
     confidence is the accepted confidence, plus unknown_w on unknown / weak hole pixels (status 1, 2)."""
     with open(os.path.join(views_dir, "cams.json")) as f:
@@ -83,7 +87,11 @@ def load_views(views_dir: str, device: torch.device, validation_dir: str | None 
         c = cams[k]
         rgb = np.asarray(Image.open(os.path.join(views_dir, "filled", f"{k:03d}.png")).convert("RGB"), dtype=np.float32) / 255.0
         hole = np.asarray(Image.open(os.path.join(views_dir, "mask", f"{k:03d}.png"))) > 127
-        depth = np.load(os.path.join(views_dir, "filled_depth", f"{k:03d}.npy")).astype(np.float32)
+        depth_file = os.path.join(views_dir, "filled_depth", f"{k:03d}.npy") if depth_dir is None \
+            else os.path.join(depth_dir, "mesh_depth", f"{k:03d}.npy")
+        depth = np.load(depth_file).astype(np.float32)
+        if depth.shape != hole.shape:
+            raise ValueError(f"depth {depth_file} does not match the hole mask of {views_dir}, view {k}")
         confidence = np.ones(hole.shape, np.float32)
         if validation_dir is not None:
             confidence = np.load(os.path.join(validation_dir, "confidence", f"{k:03d}.npy")).astype(np.float32)
@@ -156,10 +164,14 @@ def main() -> None:
     parser.add_argument("--view_gate", help="ViewGate for novel views when --init_log_dir has none (E14 round 0)")
     parser.add_argument("--no_refine", action="store_true")
     parser.add_argument("--unknown_w", type=float, default=0.0)
+    parser.add_argument("--depth_dirs", nargs="*", help="one scripts/render_mesh_depth.py output per views dir (E17a)")
+    parser.add_argument("--spawn_all", action="store_true", help="spawn from every views dir, not only the newest")
     parser.add_argument("--round_affine", action="store_true")
     parser.add_argument("--round_affine_reg", type=float, default=1.0)
     parser.add_argument("--round_affine_lr", type=float, default=1e-3)
     args = parser.parse_args()
+    if args.depth_dirs is not None and len(args.depth_dirs) != len(args.views_dirs):
+        raise ValueError("one --depth_dirs entry per --views_dirs required")
     if args.unknown_w > 0 and args.validation_dirs is None:
         raise ValueError("--unknown_w needs --validation_dirs (the status maps)")
     if args.validation_dirs is not None and len(args.validation_dirs) != len(args.views_dirs):
@@ -215,8 +227,10 @@ def main() -> None:
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
     validation_dirs = [None] * len(args.views_dirs) if args.validation_dirs is None else args.validation_dirs
-    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd, args.view_indices, args.unknown_w)]
-    newest = [v for v in views if v["dir"] == args.views_dirs[-1]]
+    depth_dirs = [None] * len(args.views_dirs) if args.depth_dirs is None else args.depth_dirs
+    views = [v for d, vd, dd in zip(args.views_dirs, validation_dirs, depth_dirs)
+             for v in load_views(d, device, vd, args.view_indices, args.unknown_w, dd)]
+    newest = views if args.spawn_all else [v for v in views if v["dir"] == args.views_dirs[-1]]
     bg = state["models"]["Background"]
     new = spawn(newest, args.spawn_stride, args.pixel_stride, args.scale_factor, args.init_opacity, bg["_features_rest"].shape[1:])
     n_before = bg["_means"].shape[0]
