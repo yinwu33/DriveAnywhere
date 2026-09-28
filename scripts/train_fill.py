@@ -19,7 +19,8 @@ E14 options (docs/EXPERIMENTS.md):
     --view_gate PATH   a dashrecon.gen.floaters.ViewGate (scripts/make_view_gate.py) applied to every novel-view render
                        (the generated views here, and everywhere the output is rendered later: it is written to the
                        output config as ``view_gate``); a run trained with one keeps it.
-    --no_refine        no densification / culling / opacity reset during distillation (refine_interval 1e9), so the
+    --no_refine        no densification / culling / opacity reset during distillation (refine_interval 1e9 in
+                       trainer.gaussian_ctrl_general_cfg and, if present, model.Background.ctrl), so the
                        Gaussians the gate covers keep their indices across rounds.
     --unknown_w W      with --validation_dirs: hole pixels without conflicting evidence that were not accepted
                        (status 1 unknown, 2 weak; validate_generated_views.py) get confidence W instead of 0;
@@ -177,14 +178,19 @@ def main() -> None:
     start = int(state["step"])
     cfg.trainer.optim.num_iters = start + args.steps
     cfg.trainer.gaussian_ctrl_general_cfg.reset_alpha_interval = 10**9
+    # drivestudio copies trainer.gaussian_ctrl_general_cfg into model.Background.ctrl when it builds the trainer
+    # (models/trainers/base.py update_gaussian_cfg), so configs saved after training carry both; the class one wins
     if args.no_refine:
-        cfg.model.Background.ctrl.refine_interval = 10**9
+        cfg.trainer.gaussian_ctrl_general_cfg.refine_interval = 10**9
+        if "ctrl" in cfg.model.Background:
+            cfg.model.Background.ctrl.refine_interval = 10**9
     gate_path = view_gate_path(cfg)
     if args.view_gate is not None:
         assert gate_path is None or gate_path == args.view_gate, f"{args.init_log_dir} was trained with view gate {gate_path}"
         gate_path = args.view_gate
     if gate_path is not None:
-        assert cfg.model.Background.ctrl.refine_interval > start + args.steps, "a view gate needs --no_refine (stable indices)"
+        refine = cfg.model.Background.ctrl.refine_interval if "ctrl" in cfg.model.Background else cfg.trainer.gaussian_ctrl_general_cfg.refine_interval
+        assert refine > start + args.steps, "a view gate needs --no_refine (stable indices)"
         cfg.view_gate = gate_path
     cfg.log_dir = args.out_log_dir
     for sub in ("metrics", "videos", "rounds"):

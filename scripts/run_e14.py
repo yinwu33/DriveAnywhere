@@ -19,6 +19,10 @@ exit code and time, and the run stops at the first failure:
 Output: <output_dir>/ view_gate.pt, views/r<k>, validation/r<k>, model/ (the E14 run: checkpoint, config with
 view_gate), r<k>_after/, renders/common/, logs/, config.yaml, meta.json, run_status.json.
 
+--resume continues a run that stopped: the config must be unchanged; stages that succeeded before are skipped when
+their command is identical (their outputs, logs and commit stay as they were), the failed stage and everything after
+it run again with the current commit, recorded per stage and in run_status.json "resumes".
+
 Example (main venv, clean committed checkout):
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_HUB_OFFLINE=1 CUDA_HOME=/usr/local/cuda-12.1 \
         PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH .venvs/main/bin/python -u scripts/run_e14.py \
@@ -42,16 +46,29 @@ from dashrecon.provenance import git_commit  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     commit = git_commit()
     if commit.endswith("-dirty") or subprocess.check_output(["git", "status", "--porcelain"], text=True).strip():
         raise ValueError("start in a clean committed checkout")
     out = Path(cfg["output_dir"])
-    out.mkdir(parents=True, exist_ok=False)
-    (out / "logs").mkdir()
-    OmegaConf.save(OmegaConf.create(cfg), out / "config.yaml")
-    state = {"completed": False, "started": time.time(), "stages": [], "dashrecon_commit": commit}
+    done = {}
+    if args.resume:
+        assert OmegaConf.to_container(OmegaConf.load(out / "config.yaml"), resolve=True) == cfg, "config changed since the run started"
+        state = json.loads((out / "run_status.json").read_text())
+        assert not state["completed"], f"{out} is complete"
+        # a stage entry has no exit_code when the runner itself died while the stage ran
+        done = {e["name"]: e for e in state["stages"] if "exit_code" in e and e["exit_code"] == 0}
+        state["stages"] = list(done.values())
+        if "resumes" not in state:
+            state["resumes"] = []
+        state["resumes"].append({"time": time.time(), "dashrecon_commit": commit, "skipped": sorted(done)})
+    else:
+        out.mkdir(parents=True, exist_ok=False)
+        (out / "logs").mkdir()
+        OmegaConf.save(OmegaConf.create(cfg), out / "config.yaml")
+        state = {"completed": False, "started": time.time(), "stages": [], "dashrecon_commit": commit}
     meta = {"exp": "E14", "dashrecon_commit": commit, "generative": True, "uses_oracle": False,
             "oracle_note": "FRONT-only E5c and its dashrecon products; the evaluation stages read GT side cameras",
             "generator_weights_frozen": True,
@@ -59,12 +76,22 @@ def main() -> None:
             "input_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                              for p in [args.config, Path(cfg["init_log_dir"]) / "config.yaml",
                                        Path(cfg["init_log_dir"]) / "checkpoint_final.pth", Path(cfg["mesh_ply"])]}}
+    if args.resume:
+        old_meta = json.loads((out / "meta.json").read_text())
+        assert old_meta["input_sha256"] == meta["input_sha256"], "inputs changed since the run started"
+        earlier = old_meta["resumed_with_commits"] if "resumed_with_commits" in old_meta else []
+        meta = {**old_meta, "resumed_with_commits": earlier + [commit]}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
 
     def run(name: str, environment: str, arguments: list[str]) -> None:
         """Run one CLI stage; record its command, time and exit code; stop the run if it fails."""
         command = [f".venvs/{environment}/bin/python", "-u", *arguments]
-        entry = {"name": name, "command": command, "started": time.time(), "log": str(out / "logs" / f"{name}.log")}
+        if name in done:
+            assert done[name]["command"] == command, f"{name}: command differs from the successful run"
+            print(f"[E14] SKIP {name} (succeeded before)", flush=True)
+            return
+        entry = {"name": name, "command": command, "started": time.time(), "log": str(out / "logs" / f"{name}.log"),
+                 "dashrecon_commit": commit}
         state["stages"].append(entry)
         (out / "run_status.json").write_text(json.dumps(state, indent=2))
         print(f"[E14] START {name} -> {entry['log']} ({time.strftime('%H:%M')})", flush=True)
