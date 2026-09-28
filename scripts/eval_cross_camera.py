@@ -26,6 +26,10 @@ unseen pixels only. With the reference run itself these are the numbers generati
 --unseen_dir loads them instead of --region_ref, for runs in another world frame (the oracle upper bound U3 uses GT
 poses), so they are scored on the same pixels of the same real images.
 
+--save_renders also writes every evaluated frame's raw render (no colour fit, which would use the reference) and the
+undistorted reference on the same grid, <out_subdir>/renders/<t:03d>_<cam>.png and refs/<t:03d>_<cam>.png, for
+distribution-level metrics (scripts/eval_realism.py, D-E1 in docs/EXPERIMENTS.md).
+
 Outputs in <log_dir>/<out_subdir>/: metrics.json (means per camera and overall, per-frame values), and
 <t:03d>_<cam>.jpg (reference | colour-fitted render | overlap in grey, unseen in red) for --example_frames.
 
@@ -105,6 +109,7 @@ def main() -> None:
     parser.add_argument("--save_unseen", action="store_true", help="write the --region_ref unseen masks")
     parser.add_argument("--unseen_dir", help="unseen masks written by --save_unseen (instead of --region_ref)")
     parser.add_argument("--out_subdir", default="cross_camera")
+    parser.add_argument("--save_renders", action="store_true", help="write raw renders and references (D-E1)")
     args = parser.parse_args()
     commit = git_commit()
     device = torch.device("cuda")
@@ -149,6 +154,9 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     if args.save_unseen:
         os.makedirs(os.path.join(out_dir, "unseen"), exist_ok=True)
+    if args.save_renders:
+        os.makedirs(os.path.join(out_dir, "renders"), exist_ok=False)
+        os.makedirs(os.path.join(out_dir, "refs"), exist_ok=False)
     per_frame = []
     sel = list(range(0, len(frames), args.frame_stride))
     for t in args.example_frames:
@@ -194,6 +202,9 @@ def main() -> None:
                     hole = np.asarray(Image.open(os.path.join(args.unseen_dir, f"{t:03d}_{cam}.png")).resize((w, h), Image.NEAREST)) > 127
                     unseen = hole & ~dyn
                 render = out["rgb"].clamp(0, 1).cpu().numpy()
+                if args.save_renders:
+                    Image.fromarray((render * 255).round().astype(np.uint8)).save(os.path.join(out_dir, "renders", f"{t:03d}_{cam}.png"))
+                    Image.fromarray((ref * 255).round().astype(np.uint8)).save(os.path.join(out_dir, "refs", f"{t:03d}_{cam}.png"))
                 overlap = (out["opacity"][..., 0].cpu().numpy() > args.alpha) & ~dyn
                 row = {"frame": t, "cam": cam_name, "coverage": float(overlap.mean())}
                 if regions:
