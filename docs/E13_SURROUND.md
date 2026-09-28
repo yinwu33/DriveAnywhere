@@ -25,4 +25,10 @@ PATH="$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH" CUDA_HOME=/usr/local/
 
 先 commit，再在干净独立 worktree 启动。已有结果目录会显式停止，不覆盖 E5c/E8/E10/E11/E12。结果保存到 `results/E13/val056/surround_20260928/`：配置、meta、源 checkpoint 哈希、两轮 RGB/深度/几何验收/缓存来源、采样记录、模型快照、共同相机、报告和逐阶段日志。
 
-目前：实现与 19 项合成/采样测试通过，正式 GPU 实验待启动。此处没有把环视质量、后方几何、五场景或可测试仿真资产标为通过。
+目前：实现与 19 项合成/采样测试通过，正式 GPU 实验已在干净独立 worktree 启动（代码 37a774f）。此处没有把环视质量、后方几何、五场景或可测试仿真资产标为通过。
+
+环视八方向和两轮相机采样图：
+
+![虚拟环视相机](../results/E13/val056/surround_20260928/renders/overview/virtual_rig.png)
+
+![两轮采样轨迹](../results/E13/val056/surround_20260928/renders/overview/sampling_plan.png)
