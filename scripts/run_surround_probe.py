@@ -78,6 +78,8 @@ def main() -> None:
             "--max_memory_candidates", str(cfg["max_memory_candidates"])]
         if views_dirs:
             generation += ["--memory_dirs", *map(str, views_dirs), "--validation_dirs", *map(str, validations), "--require_memory"]
+        run(f"r{round_index}_cache_preview", "gen3c", [*generation, "--buffers_only"])
+        shutil.copyfile(views / "cache.json", out / f"r{round_index}_cache_preview.json")
         run(f"r{round_index}_generate", "gen3c", generation)
         depth = ["scripts/depth_views.py", "--views_dir", str(views), "--backend", "moge",
                  "--model_id", "Ruicheng/moge-2-vitl-normal", "--alignment_policy", "scene_global"]
