@@ -81,6 +81,12 @@ def main() -> None:
         meta["versions"] = {name: version(name) for name in ("torch", "numpy", "Pillow", "gsplat", "lpips")}
         meta_file.write_text(json.dumps(meta, indent=2))
         diagnose(f"{arm}_after", fitted, views, validations)
+    sampling = [json.loads((output / f"{arm}_fit" / "sampled_views_r0.json").read_text())
+                for arm in ("real_only_s8", "memory_s8")]
+    state["paired_sampling_identical"] = sampling[0] == sampling[1]
+    if not state["paired_sampling_identical"]:
+        (output / "run_status.json").write_text(json.dumps(state, indent=2))
+        raise ValueError("real/generated view sampling differs between paired arms")
     state["completed"] = True
     (output / "run_status.json").write_text(json.dumps(state, indent=2))
     subprocess.run([sys.executable, "scripts/summarize_e11_probe.py", "--probe_dir", str(output)], check=True)

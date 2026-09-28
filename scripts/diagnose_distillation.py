@@ -22,6 +22,7 @@ from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_a
 from dashrecon.provenance import git_commit
 from dashrecon.eval.distillation import fit_metrics
 from dashrecon.train.guard import assert_non_oracle
+from dashrecon.train.seeds import seed_scene_optimization
 
 
 def sharpness(rgb: np.ndarray, mask: np.ndarray) -> float | None:
@@ -68,8 +69,7 @@ def main() -> None:
     cfg = OmegaConf.load(args.log_dir / "config.yaml")
     assert_non_oracle(cfg)
     started = time.time()
-    torch.manual_seed(0)
-    np.random.seed(0)
+    seed_scene_optimization(0)
     torch.cuda.reset_peak_memory_stats()
     from datasets.driving_dataset import DrivingDataset
     dataset = DrivingDataset(data_cfg=cfg.data)

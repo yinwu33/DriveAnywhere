@@ -922,3 +922,7 @@ E5 的细节：
 核查发现：`dashrecon/gen/views.py::training_observers` 当前颜色支持使用训练相机的**渲染 RGB**，不是 R 节所写的真实 RGB（其模块注释已说明原因）。本次保留输入/掩码避免混入另一变量，记录该差异；它仍可能让几何/渲染共同错误自我支持，应另做消融。
 
 2026-09-28 验证工具准备完成：主环境运行 `python -m pytest -q tests/test_distillation_metrics.py tests/test_generation_consistency.py tests/test_views.py`，13 项通过（日志 `results/_logs/e11-probe-tests.log`）。相关 Python 编译与 `git diff --check` 通过。诊断视频仅为展示缩放；全部指标在原分辨率 PNG 上计算。
+
+运行中修正：上游 `ScenePixelSource.propose_training_image` 用 Python `random.random/choice` 采样真实 FRONT，而旧 `train_fill.py` 仅固定 Torch 与局部 NumPy RNG。第一轮在拟合完成前主动停止，保存 `results/E11/val056/probe_20260928/ABORTED.json`；其拟合不能用于固定种子的两臂对照，E10 固定相机的渲染诊断仍可参考。新增统一种子入口与真实帧采样回归测试，修正后从 E5c 重跑两臂到新的 `_seeded` 目录，不续接未完成 checkpoint。固定随机流不保证 CUDA 浮点归约逐位确定。
+
+种子修正后的 14 项测试通过（`results/_logs/e11-probe-seeded-tests.log`），包含直接调用上游真实帧采样器的重复性检查。训练保存每步真实/生成视角采样序列，runner 必须确认两臂的序列完全相同后才标记完成。

@@ -42,6 +42,7 @@ from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
 from dashrecon.gen.views import backproject, front_image_index, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
+from dashrecon.train.seeds import seed_scene_optimization  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
 
 SH_C0 = 0.28209479177387814
@@ -138,7 +139,7 @@ def main() -> None:
         raise ValueError("validated distillation requires --seen_w 0; real frames anchor observed appearance")
     commit = git_commit()
     device = torch.device("cuda")
-    torch.manual_seed(args.seed)
+    seed_scene_optimization(args.seed)
     rng = np.random.default_rng(args.seed)
 
     cfg = OmegaConf.load(os.path.join(args.init_log_dir, "config.yaml"))
@@ -188,17 +189,20 @@ def main() -> None:
           f"spawned {len(new['_means']):,} Gaussians (voxel {new['voxel']:.4f}) on top of {n_before:,}", flush=True)
 
     running, t_print = {}, time.time()
+    sampled_real, sampled_generated = [], []
     for step in range(start + 1, start + args.steps + 1):
         trainer.set_train()
         trainer.preprocess_per_train_step(step=step)
         trainer.optimizer_zero_grad()
         ii, ci = dataset.train_image_set.next(trainer._get_downscale_factor())
+        sampled_real.append(int(ii["img_idx"].flatten()[0]))
         ii, ci = to_device(ii, device), to_device(ci, device)
         outputs = trainer(ii, ci)
         trainer.update_visibility_filter()
         loss_dict = trainer.compute_losses(outputs=outputs, image_infos=ii, cam_infos=ci)
 
         v = views[int(rng.integers(len(views)))]
+        sampled_generated.append(v["frame"])
         fi, fc = dataset.full_image_set.get_image(front_image_index(dataset, v["frame"] - dataset.start_timestep), 1)
         fi, fc = to_device(fi, device), to_device(fc, device)
         for p in frozen_params:
@@ -239,6 +243,9 @@ def main() -> None:
             running, t_print = {}, time.time()
 
     OmegaConf.save(cfg, os.path.join(args.out_log_dir, "config.yaml"))
+    with open(os.path.join(args.out_log_dir, f"sampled_views_r{args.round}.json"), "w") as f:
+        json.dump({"seed": args.seed, "real_full_image_indices": sampled_real,
+                   "generated_frames": sampled_generated}, f, indent=2)
     trainer.save_checkpoint(log_dir=args.out_log_dir, save_only_model=True, is_final=True)
     shutil.copyfile(os.path.join(args.out_log_dir, "checkpoint_final.pth"), os.path.join(args.out_log_dir, "rounds", f"ckpt_r{args.round}.pth"))
     do_evaluation(step=step, cfg=cfg, trainer=trainer, dataset=dataset, args=argparse.Namespace(enable_wandb=False, render_video_postfix=None),
@@ -257,6 +264,7 @@ def main() -> None:
     with open(meta_path, "w") as f:
         json.dump({"exp": args.exp, "scene_id": args.scene_id, "init": rounds[0]["init_log_dir"], "rounds": rounds,
                    "dashrecon_commit": commit, "torch": torch.__version__, "runtime_s": sum(r["runtime_s"] for r in rounds),
+                   "seed": args.seed, "seeded_random_generators": ["python", "numpy", "torch", "torch_cuda"],
                    "peak_vram_gb": max(r["peak_vram_gb"] for r in rounds), "generative": True, "uses_oracle": False,
                    "validation_dirs": validation_dirs,
                    "oracle_note": "FRONT + dashrecon products and generated RGB-D; generator/depth provenance in each views_dir fill.json/depth.json; checked by dashrecon.train.guard"},
