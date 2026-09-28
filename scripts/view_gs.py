@@ -104,14 +104,20 @@ def render(run: Run, camera_state, img_wh) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--log_dirs", nargs="+", required=True)
+    parser.add_argument("--labels", nargs="+", help="display labels in --log_dirs order; use gen labels for generated scenes")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--host", default="127.0.0.1", help="local interface to bind; defaults to loopback")
     args = parser.parse_args()
     import nerfview
     import viser
 
+    if args.labels is not None and len(args.labels) != len(args.log_dirs):
+        raise ValueError("one --labels entry per --log_dirs required")
     device = torch.device("cuda")
     runs = [Run(d, device) for d in args.log_dirs]
+    if args.labels is not None:
+        for run, label in zip(runs, args.labels):
+            run.label = label
     for r in runs[1:]:
         assert len(r.frames) == len(runs[0].frames), "runs must cover the same frames"
     state = {"run": runs[0]}
