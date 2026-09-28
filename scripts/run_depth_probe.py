@@ -65,7 +65,8 @@ def main() -> None:
     ref = json.loads((args.reference_validation / "validation.json").read_text())
     assert Path(ref["views_dir"]).resolve() == args.views_dir.resolve(), (ref["views_dir"], args.views_dir)
     p = ref["params"]
-    assert p["memory_dirs"] == [], "validation with generation memory is not reproduced here"
+    if "memory_dirs" in p:  # absent in validations written before generation memory existed (E12)
+        assert p["memory_dirs"] == [], "validation with generation memory is not reproduced here"
     params = {"offsets": p["offsets"], "depth_tol": p["depth_tol"], "rgb_tol": p["rgb_tol"],
               "min_support": p["min_support"], "max_conflict_fraction": p["max_conflict_fraction"],
               "reference_policy": p["reference_policy"], "min_baseline": p["min_baseline_scene_units"],
