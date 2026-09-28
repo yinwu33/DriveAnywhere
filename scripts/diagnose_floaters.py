@@ -12,15 +12,22 @@ Per Background Gaussian:
         (dashrecon.gen.floaters).
     saturation: of its view-independent (DC) colour; the E5c config initialises 100k "near randoms" with random colours
         (models/trainers/scene_graph.py init.near_randoms).
+    observation cone (dashrecon.gen.floaters.observation_cone): the weight-averaged direction the training views saw
+        it from and the half-angle covering every view with weight >= --cone_min_weight pixels.
 
 Each --variants entry renders the same checkpoint with parameters changed in memory only: "base" (as trained), or
 '&'-joined terms where "dc" zeroes the SH rest coefficients (no colour extrapolated to unseen directions) and
 <quantity><|><value> terms (quantity support | scale | mesh | needle) select Gaussians that are made transparent when
-all terms hold, e.g. "scale>1", "support<1", "scale>0.3&mesh>1", "dc&support<1". For every variant: the fixed cameras
+all terms hold, e.g. "scale>1", "support<1", "scale>0.3&mesh>1", "dc&support<1". A "gate<margin>" term (degrees)
+instead fades the selected Gaussians (all Gaussians when there is no other term) per camera by
+dashrecon.gen.floaters.cone_gate: kept while the camera sees them within their observation cone + margin, gone
+--gate_fade degrees later, and gone everywhere if no training view saw them (D-A3 in docs/EXPERIMENTS.md), e.g.
+"gate30", "gate15&mesh>0.3". The first variant must be "base". For every variant: the fixed cameras
 (each --frames FRONT camera as trained, CamPose refined, turned by --yaws; 704 x 1280 as
 scripts/render_sweep_comparison.py), the FRONT held-out frames (the run's test frames, PSNR / LPIPS as
 scripts/eval_front_heldout.py) to see what the change costs on observed views, and the share of the base side weight
-it removes. Maps of the base model: log10 support, mesh distance and log10 scale of each Gaussian blended as colour
+it removes (static variants), and the fraction of side pixels it exposes (opacity > 0.5 in base, < 0.5 in the
+variant). Maps of the base model: log10 support, mesh distance and log10 scale of each Gaussian blended as colour
 (turbo; black = nothing rendered).
 
 Outputs in --out_dir (must not exist): <variant>/<k:03d>.png, maps/, <k:03d>_compare.png, comparison.mp4, cameras.json,
@@ -52,7 +59,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashrecon import io  # noqa: E402
-from dashrecon.gen.floaters import needle_ratio  # noqa: E402
+from dashrecon.gen.floaters import cone_gate, needle_ratio, observation_cone  # noqa: E402
 from dashrecon.gen.novel import build_trainer, refined_c2w, to_device  # noqa: E402
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
@@ -63,6 +70,7 @@ HW = (704, 1280)
 SH_C0 = 0.28209479177387814
 TURBO = cv2.applyColorMap(np.arange(256, dtype=np.uint8)[:, None], cv2.COLORMAP_TURBO)[:, 0, ::-1].astype(np.float32) / 255
 TERM = re.compile(r"^(support|scale|mesh|needle)([<>])([0-9.]+)$")
+GATE = re.compile(r"^gate([0-9.]+)$")
 
 
 def rasterize(trainer, gs, cam, colours: torch.Tensor) -> tuple:
@@ -88,12 +96,11 @@ def blend_weight(trainer, gs, cam, mask: torch.Tensor) -> torch.Tensor:
     return colour.grad[:, 0]
 
 
-def training_support(trainer, dataset, device) -> tuple:
-    """(support (N,), views with >= 1 pixel of weight (N,), training camera centres (M,3))."""
+def training_observations(trainer, dataset, device) -> tuple:
+    """(weights (V,N) float16: blending weight of every Gaussian in every FRONT training view over the pixels the
+    photometric loss constrained, training camera centres (V,3))."""
     n = trainer.models["Background"]._means.shape[0]
-    support = torch.zeros(n, device=device)
-    views = torch.zeros(n, device=device)
-    centres = []
+    weights, centres = [], []
     for j in range(len(dataset.train_image_set)):
         ii, ci = dataset.train_image_set.get_image(j, 1)
         ii, ci = to_device(ii, device), to_device(ci, device)
@@ -103,10 +110,10 @@ def training_support(trainer, dataset, device) -> tuple:
             gs = trainer.collect_gaussians(cam=cam, image_ids=img_id)
         assert gs.means.shape[0] == n
         w = blend_weight(trainer, gs, cam, ((ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)).float())
-        support += w
-        views += (w >= 1.0).float()
+        assert float(w.max()) < 65504, "weight overflows float16"
+        weights.append(w.half())
         centres.append(cam.camtoworlds[:3, 3].detach())
-    return support, views, torch.stack(centres)
+    return torch.stack(weights), torch.stack(centres)
 
 
 def to_turbo(values: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
@@ -114,13 +121,15 @@ def to_turbo(values: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
     return torch.from_numpy(TURBO).to(values.device)[idx]
 
 
-def front_heldout(trainer, dataset, device) -> dict:
-    """Mean PSNR / LPIPS over the run's FRONT test frames at training resolution (as eval_front_heldout.py)."""
+def front_heldout(trainer, dataset, device, prepare) -> dict:
+    """Mean PSNR / LPIPS over the run's FRONT test frames at training resolution (as eval_front_heldout.py);
+    ``prepare(centre)`` sets the variant's parameters for a camera at ``centre`` before each render."""
     psnr, lp = [], []
     with torch.no_grad():
         for k in dataset.test_timesteps:
             ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, int(k)), trainer._get_downscale_factor())
             ii, ci = to_device(ii, device), to_device(ci, device)
+            prepare(ci["camera_to_world"][:3, 3])
             out = trainer(ii, ci)
             render = out["rgb"].clamp(0, 1)
             psnr.append(float(-10 * torch.log10(((render - ii["pixels"]) ** 2).mean())))
@@ -129,20 +138,25 @@ def front_heldout(trainer, dataset, device) -> dict:
 
 
 def parse_variant(spec: str, quantities: dict) -> tuple:
-    """"base" -> (None, False); "dc&scale>1" -> (prune mask, dc_only). Unknown terms raise."""
+    """"base" -> (None, False, None); "dc&scale>1" -> (selection, dc_only, None); "gate30&mesh>0.3" -> (selection,
+    False, 30.0). The selection is None when no quantity term is given. Unknown terms raise."""
     if spec == "base":
-        return None, False
-    dc_only, prune = False, None
+        return None, False, None
+    dc_only, select, margin = False, None, None
     for term in spec.split("&"):
         if term == "dc":
             dc_only = True
+            continue
+        g = GATE.match(term)
+        if g is not None:
+            margin = float(g.group(1))
             continue
         m = TERM.match(term)
         assert m is not None, f"bad variant term {term!r} in {spec!r}"
         x, v = quantities[m.group(1)], float(m.group(3))
         sel = x < v if m.group(2) == "<" else x > v
-        prune = sel if prune is None else prune & sel
-    return prune, dc_only
+        select = sel if select is None else select & sel
+    return select, dc_only, margin
 
 
 def pct(x: torch.Tensor) -> dict:
@@ -158,12 +172,15 @@ def main() -> None:
     parser.add_argument("--frames", type=int, nargs="+", required=True)
     parser.add_argument("--yaws", type=float, nargs="+", required=True)
     parser.add_argument("--variants", nargs="+", required=True)
+    parser.add_argument("--cone_min_weight", type=float, required=True, help="pixels of weight for a view to count")
+    parser.add_argument("--gate_fade", type=float, required=True, help="degrees over which a gated Gaussian fades out")
     parser.add_argument("--out_dir", type=Path, required=True)
     args = parser.parse_args()
     commit = git_commit()
     assert not commit.endswith("-dirty"), "commit code before a diagnostic run"
     assert args.mesh_ply.startswith(DASHRECON_ROOT), f"mesh must be a dashrecon product: {args.mesh_ply}"
     assert len(set(args.variants)) == len(args.variants) and "/" not in "".join(args.variants)
+    assert args.variants[0] == "base", "the first variant must be base (exposed pixels are measured against it)"
     args.out_dir.mkdir(parents=True, exist_ok=False)
     started = time.time()
     seed_scene_optimization(0)
@@ -197,7 +214,9 @@ def main() -> None:
         ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, cam["frame"] - dataset.start_timestep), 1)
         return render_at(trainer, to_device(ii, device), to_device(ci, device), cam["c2w"], cam["K"], HW)
 
-    support, views, centres = training_support(trainer, dataset, device)
+    weights, centres = training_observations(trainer, dataset, device)
+    support = weights.float().sum(dim=0)
+    views = (weights >= 1.0).float().sum(dim=0)
     side = torch.zeros_like(support)
     for cam in cameras:
         with torch.no_grad():
@@ -208,36 +227,56 @@ def main() -> None:
         mesh_dist = torch.from_numpy(cKDTree(mesh["vertices"]).query(bg._means.cpu().numpy(), k=1, workers=16)[0]).float().to(device)
         scale = bg.get_scaling.max(dim=1).values
         needle = needle_ratio(bg._means, bg.get_scaling, bg.get_quats, centres)
+        axis, half_angle, observed = observation_cone(bg._means, centres, weights, args.cone_min_weight)
         dc = (SH_C0 * bg._features_dc + 0.5).clamp(0, 1)
         saturation = dc.max(dim=1).values - dc.min(dim=1).values
+    del weights
     quantities = {"support": support, "scale": scale, "mesh": mesh_dist, "needle": needle}
     order = torch.argsort(side, descending=True)
     top = order[: int((torch.cumsum(side[order], 0) < 0.8 * side.sum()).sum()) + 1]
     opacity0, rest0 = bg._opacities.data.clone(), bg._features_rest.data.clone()
 
-    images, rows = {}, {}
+    images, rows, base_opacity = {}, {}, []
     for spec in args.variants:
-        prune, dc_only = parse_variant(spec, quantities)
-        bg._opacities.data.copy_(opacity0)
+        select, dc_only, margin = parse_variant(spec, quantities)
         bg._features_rest.data.copy_(rest0)
-        if prune is not None:
-            bg._opacities.data[prune] = -1e4
         if dc_only:
             bg._features_rest.data.zero_()
+        static = opacity0.clone()
+        if select is not None and margin is None:
+            static[select] = -1e4
+
+        def prepare(centre: torch.Tensor) -> None:
+            if margin is None:
+                bg._opacities.data.copy_(static)
+                return
+            g = cone_gate(bg._means, centre, axis, half_angle, observed, margin, args.gate_fade)
+            if select is not None:
+                g = torch.where(select, g, torch.ones_like(g))
+            p = torch.sigmoid(opacity0[:, 0]) * g
+            bg._opacities.data[:, 0] = torch.logit(p.clamp(1e-12, 1 - 1e-7))
+
         (args.out_dir / spec).mkdir()
-        images[spec], opac = [], []
+        images[spec], opac, exposed = [], [], []
         with torch.no_grad():
             for k, cam in enumerate(cameras):
+                prepare(cam["c2w"][:3, 3])
                 out = render_camera(cam)
                 rgb = (out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8)
                 Image.fromarray(rgb).save(args.out_dir / spec / f"{k:03d}.png")
                 images[spec].append(rgb)
-                opac.append(float(out["opacity"].mean()))
-        rows[spec] = {"pruned": 0 if prune is None else int(prune.sum()), "dc_only": dc_only,
-                      "base_side_weight_removed": 0.0 if prune is None else float(side[prune].sum() / side.sum()),
-                      "pruned_saturation": None if prune is None else pct(saturation[prune]),
-                      "side_mean_opacity": opac, "front_heldout": front_heldout(trainer, dataset, device)}
-        print(f"[floaters] {spec}: pruned {rows[spec]['pruned']:,} (side weight {rows[spec]['base_side_weight_removed']:.3f}), "
+                o = out["opacity"][..., 0]
+                opac.append(float(o.mean()))
+                if spec == "base":
+                    base_opacity.append(o > 0.5)
+                exposed.append(float((base_opacity[k] & (o < 0.5)).float().mean()))
+        prune = select if margin is None else None
+        rows[spec] = {"selected": 0 if select is None else int(select.sum()), "dc_only": dc_only, "gate_margin_deg": margin,
+                      "base_side_weight_removed": None if prune is None else float(side[prune].sum() / side.sum()),
+                      "selected_saturation": None if select is None else pct(saturation[select]),
+                      "side_mean_opacity": opac, "side_exposed_fraction": exposed,
+                      "front_heldout": front_heldout(trainer, dataset, device, prepare)}
+        print(f"[floaters] {spec}: selected {rows[spec]['selected']:,}, exposed {np.mean(exposed):.3f}, "
               f"FRONT held-out {rows[spec]['front_heldout']}", flush=True)
     bg._opacities.data.copy_(opacity0)
     bg._features_rest.data.copy_(rest0)
@@ -277,6 +316,8 @@ def main() -> None:
     metrics = {
         "gaussians": int(len(support)), "gaussians_making_80pct_side_weight": int(len(top)),
         "percentiles_all": {name: pct(x) for name, x in [*quantities.items(), ("views_ge_1px", views), ("saturation", saturation)]},
+        "observation_cone": {"observed_fraction": float(observed.float().mean()), "half_angle_deg_observed": pct(half_angle[observed]),
+                             "min_weight_px": args.cone_min_weight, "gate_fade_deg": args.gate_fade},
         "percentiles_side_top": {name: pct(x[top]) for name, x in [*quantities.items(), ("saturation", saturation)]},
         "side_weight_share": shares, "variants": rows,
         "cameras": [{"frame": c["frame"], "yaw": c["yaw"]} for c in cameras],

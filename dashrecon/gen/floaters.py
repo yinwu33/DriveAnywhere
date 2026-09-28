@@ -24,6 +24,40 @@ def nearest_centre(means: torch.Tensor, centres: torch.Tensor, chunk: int = 2000
     return torch.cat([torch.cdist(means[i:i + chunk], centres).argmin(dim=1) for i in range(0, len(means), chunk)])
 
 
+def unit(v: torch.Tensor) -> torch.Tensor:
+    return v / v.norm(dim=-1, keepdim=True)
+
+
+def observation_cone(means: torch.Tensor, centres: torch.Tensor, weights: torch.Tensor, min_weight: float) -> tuple:
+    """Directions the training views saw each Gaussian from.
+
+    means (N,3); centres (V,3) training camera centres; weights (V,N) blending weight of each Gaussian in each view.
+    Returns (axis (N,3): weight-averaged unit direction from camera to Gaussian, half_angle (N,) degrees: largest
+    angle between the axis and the direction from any view with weight >= min_weight, observed (N,) bool: some view
+    has weight >= min_weight). Unobserved Gaussians get half_angle 0.
+    """
+    acc = torch.zeros_like(means)
+    for c, w in zip(centres, weights):
+        acc += w.float()[:, None] * unit(means - c)
+    observed = (weights >= min_weight).any(dim=0)
+    axis = torch.where(observed[:, None], unit(acc + 1e-12), torch.zeros_like(acc))
+    half = torch.zeros(len(means), device=means.device)
+    for c, w in zip(centres, weights):
+        ang = torch.rad2deg(torch.arccos((unit(means - c) * axis).sum(-1).clamp(-1.0, 1.0)))
+        half = torch.where(w >= min_weight, torch.maximum(half, ang), half)
+    return axis, half, observed
+
+
+def cone_gate(means: torch.Tensor, centre: torch.Tensor, axis: torch.Tensor, half_angle: torch.Tensor,
+              observed: torch.Tensor, margin: float, fade: float) -> torch.Tensor:
+    """Opacity factor (N,) for a camera at ``centre``: 1 while the viewing direction is within half_angle + margin
+    degrees of the observation axis, falling linearly to 0 over the next ``fade`` degrees; 0 if never observed."""
+    ang = torch.rad2deg(torch.arccos((unit(means - centre) * axis).sum(-1).clamp(-1.0, 1.0)))
+    excess = (ang - half_angle).clamp(min=0.0)
+    g = (1.0 - (excess - margin) / fade).clamp(0.0, 1.0)
+    return torch.where(observed, g, torch.zeros_like(g))
+
+
 def needle_ratio(means: torch.Tensor, scales: torch.Tensor, quats: torch.Tensor, centres: torch.Tensor) -> torch.Tensor:
     """Extent along the viewing ray from the nearest centre over the largest extent across it, per Gaussian.
 
