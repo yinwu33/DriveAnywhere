@@ -39,12 +39,16 @@ from dashrecon.gen.novel import refined_c2w, to_device  # noqa: E402
 from dashrecon.gen.views import (ViewMove, front_image_index, hole_mask, memory_observers, moved_c2w, render_at,  # noqa: E402
                                  training_observers)
 from dashrecon.provenance import git_commit  # noqa: E402
+from dashrecon.gen.trajectory import interpolate_camera  # noqa: E402
+from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--log_dir", required=True)
-    parser.add_argument("--move", required=True, help='e.g. "right=1.5,yaw=15" (keys: right, up, forward, yaw, pitch)')
+    trajectory = parser.add_mutually_exclusive_group(required=True)
+    trajectory.add_argument("--move", help='e.g. "right=1.5,yaw=15" (keys: right, up, forward, yaw, pitch)')
+    trajectory.add_argument("--trajectory_file", help="JSON views: frame, pose_frame, yaw, ramp, segment; E12 static-scene sampling")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--frame_stride", type=int, default=1, help="render every n-th frame (2 halves the Wan fill time)")
     parser.add_argument("--ramp_frames", type=int, default=0, help="0 = full move from the first view")
@@ -63,10 +67,13 @@ def main() -> None:
     parser.add_argument("--dilate_px", type=int, default=7)
     args = parser.parse_args()
     commit = git_commit()
-    move = ViewMove.parse(args.move)
+    if commit.endswith("-dirty"):
+        raise ValueError("commit code before rendering experiment inputs")
+    move = ViewMove.parse(args.move) if args.move is not None else None
     device = torch.device("cuda")
 
     cfg = OmegaConf.load(os.path.join(args.log_dir, "config.yaml"))
+    assert_non_oracle(cfg)
     from datasets.driving_dataset import DrivingDataset
 
     dataset = DrivingDataset(data_cfg=cfg.data)
@@ -76,16 +83,44 @@ def main() -> None:
     n_train_obs = len(observers)
     observers += memory_observers(trainer, dataset, args.memory_dirs, args.obs_stride, device)
 
-    for sub in ("rgb", "mask", "depth", "count") + (("src",) if args.src_offsets else ()):
+    if args.trajectory_file is None:
+        plan = [{"frame": int(dataset.start_timestep + k), "pose_frame": float(dataset.start_timestep + k),
+                 "ramp": min(1.0, v / args.ramp_frames) if args.ramp_frames > 0 else 1.0,
+                 "segment": "legacy"}
+                for v, k in enumerate(range(0, dataset.num_img_timesteps, args.frame_stride))]
+    else:
+        with open(args.trajectory_file) as handle:
+            plan = json.load(handle)["views"]
+        if not plan:
+            raise ValueError("empty trajectory")
+        for entry in plan:
+            if not dataset.start_timestep <= entry["pose_frame"] <= dataset.end_timestep - 1:
+                raise ValueError("trajectory pose is outside reconstructed FRONT frames")
+
+    for sub in ("rgb", "mask", "depth", "count", "opacity") + (("src",) if args.src_offsets else ()):
         os.makedirs(os.path.join(args.out_dir, sub), exist_ok=True)
     src_cams = {}
     cams, hole_frac = [], []
     with torch.no_grad():
-        for v, k in enumerate(range(0, dataset.num_img_timesteps, args.frame_stride)):
+        for v, entry in enumerate(plan):
+            k = entry["frame"] - dataset.start_timestep
             ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, k), 1)
             ii, ci = to_device(ii, device), to_device(ci, device)
-            f = min(1.0, v / args.ramp_frames) if args.ramp_frames > 0 else 1.0
-            c2w = moved_c2w(refined_c2w(trainer, ii, ci), ViewMove(**{key: f * val for key, val in vars(move).items()}))
+            f = entry["ramp"]
+            base = refined_c2w(trainer, ii, ci)
+            if args.trajectory_file is None:
+                delta = ViewMove(**{key: f * val for key, val in vars(move).items()})
+            else:
+                t = entry["pose_frame"] - dataset.start_timestep
+                lo, hi = int(np.floor(t)), int(np.ceil(t))
+                if lo != hi:
+                    endpoints = []
+                    for index in (lo, hi):
+                        pi, pc = dataset.full_image_set.get_image(front_image_index(dataset, index), 1)
+                        endpoints.append(refined_c2w(trainer, to_device(pi, device), to_device(pc, device)).cpu().numpy())
+                    base = torch.tensor(interpolate_camera(*endpoints, t - lo), dtype=base.dtype, device=device)
+                delta = ViewMove(yaw=entry["yaw"])
+            c2w = moved_c2w(base, delta)
             h0, w0 = int(ci["height"]), int(ci["width"])
             h, w = (h0, w0) if args.render_hw is None else tuple(args.render_hw)
             kk = ci["intrinsics"].clone()
@@ -100,9 +135,10 @@ def main() -> None:
             Image.fromarray(rgb).save(os.path.join(args.out_dir, "rgb", f"{v:03d}.png"))
             Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(args.out_dir, "mask", f"{v:03d}.png"))
             np.save(os.path.join(args.out_dir, "depth", f"{v:03d}.npy"), depth.cpu().numpy().astype(np.float16))
+            np.save(os.path.join(args.out_dir, "opacity", f"{v:03d}.npy"), out["opacity"].cpu().numpy().astype(np.float16))
             np.save(os.path.join(args.out_dir, "count", f"{v:03d}.npy"), count.astype(np.float16))
             cams.append({"frame": int(dataset.start_timestep + k), "c2w": c2w.cpu().numpy().tolist(), "K": kk.cpu().numpy().tolist(), "ramp": f,
-                         "hw": [h, w], "src": []})
+                         "hw": [h, w], "src": [], "pose_frame": entry["pose_frame"], "segment": entry["segment"], "yaw": delta.yaw})
             for d in args.src_offsets:
                 ks = max(k - d, 0)
                 if ks not in src_cams:
@@ -116,7 +152,7 @@ def main() -> None:
                 cams[-1]["src"].append(src_cams[ks])
             hole_frac.append(float(hole.mean()))
     with open(os.path.join(args.out_dir, "cams.json"), "w") as f:
-        json.dump({"log_dir": args.log_dir, "move": vars(move), "params": vars(args), "cams": cams, "hole_frac": hole_frac,
+        json.dump({"log_dir": args.log_dir, "move": vars(move) if move is not None else None, "params": vars(args), "cams": cams, "hole_frac": hole_frac,
                    "observers": len(observers), "train_observers": n_train_obs, "dashrecon_commit": commit}, f)
     print(f"[render_views] {args.log_dir} {args.move}: {len(cams)} views, hole fraction mean {np.mean(hole_frac):.3f} "
           f"max {np.max(hole_frac):.3f} -> {args.out_dir}", flush=True)

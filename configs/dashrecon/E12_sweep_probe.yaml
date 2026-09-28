@@ -1,0 +1,23 @@
+scene_id: val056
+init_log_dir: results/E5c/val056
+output_dir: results/E12/val056/probe_20260928
+anchors: [96, 104, 112]
+yaw_max: 60.0
+sweep_views: [36, 36, 37]
+transfer_views: 6
+drive_ramp_views: 20
+render_hw: [704, 1280]
+src_offsets: [0, 6, 15]
+generation_steps: 35
+generation_seed: 1
+optimization_steps: 3000
+optimization_seed: 0
+training_view_indices: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120]
+diagnostic_indices: [10, 20, 30, 50, 60, 70, 90, 100, 110, 120]
+min_baseline_scene_units: 1.0
+min_parallax_degrees: 0.5
+max_references: 4
+depth_tolerance: 0.10
+rgb_tolerance: 0.12
+min_support: 2
+max_conflict_fraction: 0.25

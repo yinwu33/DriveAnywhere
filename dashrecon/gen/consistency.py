@@ -21,7 +21,7 @@ class RGBDView:
 
 
 def reprojection_evidence(query: RGBDView, reference: RGBDView, depth_tol: float,
-                          rgb_tol: float) -> tuple[np.ndarray, np.ndarray]:
+                          rgb_tol: float, min_parallax_degrees: float = 0.) -> tuple[np.ndarray, np.ndarray]:
     """Return agreeing and conflicting pixels; all other query pixels are unknown.
 
 Reference depths closer than query points indicate occlusion, hence no evidence.
@@ -29,6 +29,8 @@ Query points in reference free space or with inconsistent colours are conflicts.
 """
     if not 0 < depth_tol < 1 or not 0 < rgb_tol <= 1:
         raise ValueError("depth_tol and rgb_tol must be in (0, 1), (0, 1]")
+    if not 0 <= min_parallax_degrees < 90:
+        raise ValueError("parallax must be in [0, 90) degrees")
     h, w = query.depth.shape
     rh, rw = reference.depth.shape
     y, x = np.mgrid[:h, :w]
@@ -47,6 +49,12 @@ Query points in reference free space or with inconsistent colours are conflicts.
     vi = np.rint(np.where(inside, v, 0)).astype(np.int64)
     ref_depth = reference.depth[vi, ui]
     usable = inside & reference.valid[vi, ui] & np.isfinite(ref_depth) & (ref_depth > 0)
+    if min_parallax_degrees > 0:
+        a = world - query.c2w[:3, 3]
+        b = world - reference.c2w[:3, 3]
+        product = np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1)
+        cosine = np.sum(a * b, axis=-1) / np.maximum(product, 1e-12)
+        usable &= cosine < np.cos(np.radians(min_parallax_degrees))
     delta = (rz - ref_depth) / np.maximum(ref_depth, 1e-4)
     tested = usable & (delta <= depth_tol)  # further points are occluded
     error = np.abs(query.rgb - reference.rgb[vi, ui]).mean(-1)

@@ -189,7 +189,7 @@ def main() -> None:
           f"spawned {len(new['_means']):,} Gaussians (voxel {new['voxel']:.4f}) on top of {n_before:,}", flush=True)
 
     running, t_print = {}, time.time()
-    sampled_real, sampled_generated = [], []
+    sampled_real, sampled_generated, sampled_pool_indices = [], [], []
     for step in range(start + 1, start + args.steps + 1):
         trainer.set_train()
         trainer.preprocess_per_train_step(step=step)
@@ -201,7 +201,9 @@ def main() -> None:
         trainer.update_visibility_filter()
         loss_dict = trainer.compute_losses(outputs=outputs, image_infos=ii, cam_infos=ci)
 
-        v = views[int(rng.integers(len(views)))]
+        pool_index = int(rng.integers(len(views)))
+        sampled_pool_indices.append(pool_index)
+        v = views[pool_index]
         sampled_generated.append(v["frame"])
         fi, fc = dataset.full_image_set.get_image(front_image_index(dataset, v["frame"] - dataset.start_timestep), 1)
         fi, fc = to_device(fi, device), to_device(fc, device)
@@ -245,7 +247,7 @@ def main() -> None:
     OmegaConf.save(cfg, os.path.join(args.out_log_dir, "config.yaml"))
     with open(os.path.join(args.out_log_dir, f"sampled_views_r{args.round}.json"), "w") as f:
         json.dump({"seed": args.seed, "real_full_image_indices": sampled_real,
-                   "generated_frames": sampled_generated}, f, indent=2)
+                   "generated_frames": sampled_generated, "generated_pool_indices": sampled_pool_indices}, f, indent=2)
     trainer.save_checkpoint(log_dir=args.out_log_dir, save_only_model=True, is_final=True)
     shutil.copyfile(os.path.join(args.out_log_dir, "checkpoint_final.pth"), os.path.join(args.out_log_dir, "rounds", f"ckpt_r{args.round}.pth"))
     do_evaluation(step=step, cfg=cfg, trainer=trainer, dataset=dataset, args=argparse.Namespace(enable_wandb=False, render_video_postfix=None),

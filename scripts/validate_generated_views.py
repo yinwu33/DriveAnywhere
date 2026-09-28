@@ -18,10 +18,13 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashrecon.gen.consistency import RGBDView, accepted_confidence, reprojection_evidence
 from dashrecon.provenance import git_commit
+from dashrecon.gen.trajectory import translated_references
 
 
 def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: float,
-             rgb_tol: float, min_support: int, max_conflict_fraction: float) -> dict:
+             rgb_tol: float, min_support: int, max_conflict_fraction: float,
+             reference_policy: str = "offsets", min_baseline: float = 1.,
+             max_references: int = 4, min_parallax_degrees: float = 0.) -> dict:
     """Create full-resolution evidence and record per-frame acceptance statistics."""
     if views_dir.resolve() == out_dir.resolve():
         raise ValueError("validation must have its own output directory")
@@ -49,13 +52,16 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
         support = np.zeros(query.depth.shape, np.uint16)
         conflict = np.zeros_like(support)
         used = []
-        for offset in offsets:
-            j = k + offset
-            if not 0 <= j < len(cams):
-                continue
+        if reference_policy == "translated":
+            references = translated_references(cams, k, min_baseline, max_references)
+        elif reference_policy == "offsets":
+            references = [k + d for d in offsets if 0 <= k + d < len(cams)]
+        else:
+            raise ValueError(f"unknown reference policy: {reference_policy}")
+        for j in references:
             if np.allclose(cams[k]["c2w"], cams[j]["c2w"], atol=1e-6):
                 continue  # duplicate cameras are not independent geometric support
-            agree, disagree = reprojection_evidence(query, load(j), depth_tol, rgb_tol)
+            agree, disagree = reprojection_evidence(query, load(j), depth_tol, rgb_tol, min_parallax_degrees)
             support += agree
             conflict += disagree
             used.append(j)
@@ -76,7 +82,9 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
             print(f"[validate] {k}/{len(cams)} accepted {rows[-1]['accepted_fraction']:.3f}", flush=True)
     holes = sum(r["hole_pixels"] for r in rows)
     result = {"views_dir": str(views_dir.resolve()), "kind": "generated_self_consistency_not_ground_truth",
-              "params": {"offsets": offsets, "depth_tol": depth_tol, "rgb_tol": rgb_tol,
+              "params": {"offsets": offsets, "reference_policy": reference_policy,
+                         "min_baseline_scene_units": min_baseline, "max_references": max_references,
+                         "min_parallax_degrees": min_parallax_degrees, "depth_tol": depth_tol, "rgb_tol": rgb_tol,
                          "min_support": min_support, "max_conflict_fraction": max_conflict_fraction},
               "accepted_fraction": sum(r["accepted_pixels"] for r in rows) / max(1, holes),
               "unknown_fraction": sum(r["unknown_pixels"] for r in rows) / max(1, holes),
@@ -94,6 +102,10 @@ def main() -> None:
     parser.add_argument("--rgb_tol", type=float, default=0.12)
     parser.add_argument("--min_support", type=int, default=2)
     parser.add_argument("--max_conflict_fraction", type=float, default=0.25)
+    parser.add_argument("--reference_policy", choices=["offsets", "translated"], default="offsets")
+    parser.add_argument("--min_baseline", type=float, default=1., help="minimum separation of query/reference centres and between reference centres, in scene units")
+    parser.add_argument("--max_references", type=int, default=4)
+    parser.add_argument("--min_parallax_degrees", type=float, default=0.)
     args = parser.parse_args()
     result = validate(**vars(args))
     print(f"[validate] accepted {result['accepted_fraction']:.3f}, unknown {result['unknown_fraction']:.3f}")
