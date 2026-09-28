@@ -1,0 +1,32 @@
+# arxiv_id	short_name	title (verified against the arXiv API, 2026-09-28)
+2508.19204	LSD-3D	LSD-3D: Large-Scale 3D Driving Scene Generation with Geometry Grounding
+2503.01774	Difix3D+	Difix3D+: Improving 3D Reconstructions with Single-Step Diffusion Models
+2503.03751	GEN3C	GEN3C: 3D-Informed World-Consistent Video Generation with Precise Camera Control
+2503.20314	Wan	Wan: Open and Advanced Large-Scale Video Generative Models
+2503.07598	VACE	VACE: All-in-One Video Creation and Editing
+2503.11647	ReCamMaster	ReCamMaster: Camera-Controlled Generative Rendering from A Single Video
+2509.13414	MapAnything	MapAnything: Universal Feed-Forward Metric 3D Reconstruction
+2507.02546	MoGe-2	MoGe-2: Accurate Monocular Geometry with Metric Scale and Sharp Details
+2408.16760	OmniRe	OmniRe: Omni Urban Scene Reconstruction
+2401.01339	StreetGaussians	Street Gaussians: Modeling Dynamic Urban Scenes with Gaussian Splatting
+2407.20219	GLOMAP	Global Structure-from-Motion Revisited
+2305.19590	NKSR	Neural Kernel Surface Reconstruction
+2503.12552	MTGS	MTGS: Multi-Traversal Gaussian Splatting
+2411.19548	ReconDreamer	ReconDreamer: Crafting World Models for Driving Scene Reconstruction via Online Restoration
+2503.18438	ReconDreamer++	ReconDreamer++: Harmonizing Generative and Reconstructive Models for Driving Scene Representation
+2410.13571	DriveDreamer4D	DriveDreamer4D: World Models Are Effective Data Machines for 4D Driving Scene Representation
+2412.01717	DriveX	Driving View Synthesis on Free-form Trajectories with Generative Prior
+2410.18079	FreeVS	FreeVS: Generative View Synthesis on Free Driving Trajectory
+2412.13188	StreetCrafter	StreetCrafter: Street View Synthesis with Controllable Video Diffusion Models
+2403.20079	SGD	SGD: Street View Synthesis with Gaussian Splatting and Diffusion Prior
+2511.21113	FaithFusion	FaithFusion: Harmonizing Reconstruction and Generation via Pixel-wise Information Gain
+2506.22800	RGE-GS	RGE-GS: Reward-Guided Expansive Driving Scene Reconstruction via Diffusion Priors
+2409.02048	ViewCrafter	ViewCrafter: Taming Video Diffusion Models for High-fidelity Novel View Synthesis
+2507.12646	CogNVS	Reconstruct, Inpaint, Test-Time Finetune: Dynamic Novel-view Synthesis from Monocular Videos
+2506.09042	Cosmos-Drive-Dreams	Cosmos-Drive-Dreams: Scalable Synthetic Driving Data Generation with World Foundation Models
+2501.17978	VoD-3DGS	VoD-3DGS: View-opacity-Dependent 3D Gaussian Splatting
+2403.17888	2DGS	2D Gaussian Splatting for Geometrically Accurate Radiance Fields
+2406.06521	PGSR	PGSR: Planar-based Gaussian Splatting for Efficient and High-Fidelity Surface Reconstruction
+2407.02598	AutoSplat	AutoSplat: Constrained Gaussian Splatting for Autonomous Driving Scene Reconstruction
+2407.08447	WildGaussians	WildGaussians: 3D Gaussian Splatting in the Wild
+2412.12507	3DGUT	3DGUT: Enabling Distorted Cameras and Secondary Rays in Gaussian Splatting

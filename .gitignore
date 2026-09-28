@@ -196,3 +196,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 local_scripts
+# literature PDFs (docs/papers/fetch.sh downloads them; each keeps its own arXiv license)
+docs/papers/*.pdf
+!docs/papers/fetch.sh

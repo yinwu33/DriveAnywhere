@@ -85,6 +85,8 @@
 │   ├── DECISIONS.md          # 设计决策与"代码与本文件不一致"的记录
 │   ├── DEPENDENCIES.md       # Phase 0 的依赖确认结果
 │   ├── OPEN_QUESTIONS.md     # 待确认问题
+│   ├── EXPERIMENTS.md        # 实验登记表：每个实验的方案与结果（长期追踪）
+│   ├── papers/               # 参考论文：paper.md（可借鉴点 ↔ 对应实验）、papers.tsv、fetch.sh；PDF 不入 git
 │   └── UPSTREAM_PATCHES.md   # 对上游的每一处改动
 ├── envs/                     # uv 环境脚本：setup_{main,waymo,mapanything}.sh、main-requirements.txt
 ├── dashrecon/
@@ -802,3 +804,4 @@ python scripts/view_gs.py --log_dirs results/E5c/val056 results/E8/val056 result
 
 - 2026-09-28：E12 行驶与三个固定位置扫视的等预算诊断完成（§12，DECISIONS U1）；19 项测试通过，两个查看器恢复，结果与限制见 docs/E12_SWEEP_RESULTS.md。未将完整 Phase 9 质量标为通过。
 - 2026-09-28：接用户左右 90° 负面反馈，固定相机复查 E11/E12；75 张 RGB/深度核对，完整自由视角质量明确失败。修正旧“用户认可 E11”状态描述，仅完成失败诊断（§12，DECISIONS U2）。
+- 2026-09-28：用户要求长期追踪实验与文献：新增 `docs/EXPERIMENTS.md`（每个实验先写方案、后写结果）和 `docs/papers/`（31 篇论文，`paper.md` 记录可借鉴点与对应实验）；§4 目录结构已更新。
