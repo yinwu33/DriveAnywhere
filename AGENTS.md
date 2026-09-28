@@ -625,6 +625,7 @@ done
 - **在线（Claude Artifact，私有）**：https://claude.ai/artifact/VzZJhgdJapeiyjFPWHuPVM 。更新方式：在 Claude Code 中用 Artifact 工具发布 `data/dashrecon/viewer/review/index.html`，把 `config.js` 和 `scenes/*.js`（包括 `*.masks.js`、`*.fusion.js`、`*.mesh.js` 和 `training/*.jpg`）作为 supporting files，并传入上面的 URL，这样链接保持不变。
 
 - **完整高斯场景（交互式，需要端口转发）**：`scripts/view_gs.py` 加载训练好的 run，渲染全部 Background 高斯（按视角计算颜色）加天空，比网页的 8 万个底色高斯完整。
+  查看器默认仅绑定 `127.0.0.1`。本次 E11 局部对照使用 8081，入口与模型列表见 `docs/E11_PROBE_RESULTS.md` 的“查看可视化”。
   ```bash
   PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
       .venvs/main/bin/python scripts/view_gs.py --log_dirs results/E5/val056 results/E6/val056 --port 8080

@@ -1,6 +1,6 @@
 """Interactive viewer for trained runs: drivestudio's viser + nerfview viewer, loading checkpoints after training.
 
-Serves a web page on --port of this machine. From another machine forward the port first, e.g.
+Serves a web page on --port, bound to 127.0.0.1 by default. From another machine forward the port first, e.g.
     ssh -L 8080:localhost:8080 <user>@<this host>
 then open http://localhost:8080 in a browser.
 
@@ -105,6 +105,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--log_dirs", nargs="+", required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--host", default="127.0.0.1", help="local interface to bind; defaults to loopback")
     args = parser.parse_args()
     import nerfview
     import viser
@@ -114,7 +115,7 @@ def main() -> None:
     for r in runs[1:]:
         assert len(r.frames) == len(runs[0].frames), "runs must cover the same frames"
     state = {"run": runs[0]}
-    server = viser.ViserServer(port=args.port, verbose=False)
+    server = viser.ViserServer(host=args.host, port=args.port, verbose=False)
     viewer = nerfview.Viewer(server=server, render_fn=lambda cs, wh: render(state["run"], cs, wh), mode="rendering")
 
     run_choice = server.gui.add_dropdown("run", options=[r.label for r in runs], initial_value=runs[0].label)
