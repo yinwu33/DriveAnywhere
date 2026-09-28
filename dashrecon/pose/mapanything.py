@@ -8,7 +8,8 @@ API confirmed against facebookresearch/map-anything @ 3d10cf7 (v1.1.4):
       (1920x1280 -> 518x345 -> crop to 518x336); ``preprocess_inputs`` moves the intrinsics with the image;
     - ``MapAnything.infer`` returns per view ``intrinsics`` (pixel centres at integer coordinates,
       see ``recover_pinhole_intrinsics_from_ray_directions``), ``camera_poses`` (OpenCV cam2world,
-      world = first view, or the input world when poses are given), ``depth_z``, ``conf``, ``mask`` and
+      world = the frame of view 0, also when poses are given: model.py "in the frame of the reference view 0";
+      checked on val056 E13 generated views, DECISIONS W), ``depth_z``, ``conf``, ``mask`` and
       ``metric_scaling_factor``. Given poses condition the prediction but are not reproduced exactly.
 """
 import time

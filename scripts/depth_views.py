@@ -57,16 +57,17 @@ def mapanything_depth(args, paths: list, k_cv: np.ndarray, poses: np.ndarray, h:
         d[inside] = res.depth[k][vi[inside], ui[inside]]
         depths.append(d)
     # the given poses only condition MapAnything (dashrecon/pose/mapanything.py); its depth is consistent with the
-    # poses it returns, in its own metric units, so record how far those are from the given ones (same world frame)
+    # poses it returns, in its own metric units and in the frame of view 0 (mapanything/models/mapanything/model.py
+    # "in the frame of the reference view 0"), so compare both relative to view 0
     np.save(os.path.join(args.views_dir, "mapanything_poses_c2w.npy"), res.poses_c2w)
-    tg = poses[:, :3, 3] - poses[:, :3, 3].mean(0)
-    tp = res.poses_c2w[:, :3, 3] - res.poses_c2w[:, :3, 3].mean(0)
-    s = float((tp * tg).sum() / (tg * tg).sum())
-    rel = np.einsum("nji,njk->nik", poses[:, :3, :3], res.poses_c2w[:, :3, :3])
+    given = np.linalg.inv(poses[0])[None] @ poses
+    pred = np.linalg.inv(res.poses_c2w[0])[None] @ res.poses_c2w
+    s = float((pred[:, :3, 3] * given[:, :3, 3]).sum() / (given[:, :3, 3] ** 2).sum())
+    rel = np.einsum("nji,njk->nik", given[:, :3, :3], pred[:, :3, :3])
     rot_deg = np.degrees(np.arccos(np.clip((np.trace(rel, axis1=1, axis2=2) - 1) / 2, -1.0, 1.0)))
-    agreement = {"centre_scale_pred_over_given": s,
-                 "centre_rms_residual_given_units": float(np.sqrt(((tp / s - tg) ** 2).sum(1).mean())),
-                 "given_centre_rms_spread": float(np.sqrt((tg ** 2).sum(1).mean())),
+    agreement = {"frame": "relative to view 0", "centre_scale_pred_over_given": s,
+                 "centre_rms_residual_given_units": float(np.sqrt(((pred[:, :3, 3] / s - given[:, :3, 3]) ** 2).sum(1).mean())),
+                 "given_centre_rms_distance_from_view0": float(np.sqrt((given[:, :3, 3] ** 2).sum(1).mean())),
                  "rotation_error_deg_median": float(np.median(rot_deg)), "rotation_error_deg_max": float(rot_deg.max())}
     return depths, {**res.meta, "given_pose_agreement": agreement}
 
