@@ -6,6 +6,9 @@
 All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFormer sky masks, FRONT only.
     E4c, E5c  as E4, E5 on the self-calibrated camera (DECISIONS D13): undistorted FRONT images, shared
               GLOMAP intrinsics, GLOMAP poses scaled to MapAnything depth, masks of the undistorted images.
+    E5f  E5c + drivestudio's flatten (shortest axis L1) and max_s_square (largest axis squared) Background
+         regularisers, MTGS-style, against the large off-mesh Gaussians behind the side-view junk (DECISIONS W1,
+         docs/EXPERIMENTS.md E5f); weights untuned.
 
 Checks GT isolation on the merged config (dashrecon.train.guard) before training, then runs
 tools/train.py:main. Output: <output_root>/<exp>/<scene_id>/ (drivestudio log dir: config.yaml, checkpoints,
@@ -38,7 +41,9 @@ PIPELINES = {
     "glomap": ("pose-glomap_depth-mapanything", "mask-gsam2_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
-EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap"}
+EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
+               "E5f": "glomap"}
+E5F_REG = ["model.Background.reg.flatten.w=1.0", "model.Background.reg.max_s_square_reg.w=0.05"]
 
 
 def experiment_opts(exp: str, scene_id: str) -> list[str]:
@@ -65,6 +70,8 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
+    if exp == "E5f":
+        opts += E5F_REG
     return opts
 
 
