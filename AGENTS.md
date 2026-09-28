@@ -433,7 +433,7 @@ data/dashrecon/<scene_id>/<backend_tag>/
 - [ ] Phase 9 修正任务 2：生成几何验收、来源/置信度与拒收机制（首轮初检与置信度蒸馏局部诊断已完成，完整质量待验收；DECISIONS T2）。
 - [x] Phase 9 修正任务 3：直接生成 / 3D 拟合 / 未见视角分离诊断（2026-09-28：val056 三个标准步数 E10 角度、E11 两臂各 3000 步局部拟合完成，采样序列一致；质量仍不足，结论与限制见 docs/E11_PROBE_RESULTS.md、DECISIONS T2；完整画质和多场景尚未通过）。
 - [x] Phase 9 修正任务 3 补充：E12 行驶与关键位置扫视的等预算对照（2026-09-28：两组各 121 帧标准 35 步生成、3000 步优化及共同 30 相机对照完成；采样随机流相同，扫视未显示明确优势，完整场景质量仍不足；见 docs/E12_SWEEP_RESULTS.md、DECISIONS U1）。
-- [ ] Phase 9 修正任务 3 补充：E11/E12 左右 90° 失败复查（用户明确否定完整质量；核对局部 +60° 覆盖，固定相机五模型诊断待运行；见 docs/SIDEVIEW_FAILURE_ANALYSIS.md、DECISIONS U2）。
+- [x] Phase 9 修正任务 3 补充：E11/E12 左右 90° 失败复查（2026-09-28：三个位置 × 五个偏航 × 五模型，75 张 RGB/深度完成；用户反馈与目测均确认自由视角质量失败，+60° 也不足；见 docs/SIDEVIEW_FAILURE_ANALYSIS.md、DECISIONS U2。只完成诊断，完整场景仍未验收）。
 - [ ] Phase 9 修正任务 4：完整现成模型基线可运行性核查与实验。
 - [ ] Phase 9 修正任务 5：固定协议评测与多场景扩展（短轨迹验收后）。
 
@@ -799,3 +799,4 @@ python scripts/view_gs.py --log_dirs results/E5c/val056 results/E8/val056 result
 - 2026-09-28：记录 Cosmos/Alpa 方案分析，完成 val056 生成/3D 拟合/未见视角局部分离诊断；修复真实帧采样种子，14 项测试通过，两臂各 3000 步采样一致。仅任务 3 此次诊断完成，完整场景质量仍未通过（DECISIONS T2，docs/E11_PROBE_RESULTS.md）。
 
 - 2026-09-28：E12 行驶与三个固定位置扫视的等预算诊断完成（§12，DECISIONS U1）；19 项测试通过，两个查看器恢复，结果与限制见 docs/E12_SWEEP_RESULTS.md。未将完整 Phase 9 质量标为通过。
+- 2026-09-28：接用户左右 90° 负面反馈，固定相机复查 E11/E12；75 张 RGB/深度核对，完整自由视角质量明确失败。修正旧“用户认可 E11”状态描述，仅完成失败诊断（§12，DECISIONS U2）。
