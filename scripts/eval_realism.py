@@ -62,7 +62,7 @@ class Segmenter:
 def js_divergence(p: np.ndarray, q: np.ndarray) -> float:
     p, q = p / p.sum(), q / q.sum()
     m = 0.5 * (p + q)
-    kl = lambda a, b: float(np.sum(np.where(a > 0, a * np.log2(a / np.where(b > 0, b, 1)), 0.0)))
+    kl = lambda a, b: float(np.sum(a[a > 0] * np.log2(a[a > 0] / b[a > 0])))  # b > 0 wherever a > 0 (b is the mixture)
     return 0.5 * kl(p, m) + 0.5 * kl(q, m)
 
 
