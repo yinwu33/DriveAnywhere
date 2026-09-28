@@ -916,3 +916,9 @@ E5 的细节：
 状态修正：E11 磁盘上的 8 步生成/深度/几何检查已完成（commit `7c4dc54`，run_status.json）。real-only/memory 自洽验收比例 12.6768%/22.0166%，未知比例 27.2236%/13.7532%，历史生成记忆平均覆盖仅 0.3599%。这些是有旧产物污染可能的实现诊断，不是正确率或最终画质改善证据。3D 拟合及分离诊断尚待本次验证。
 
 复现：工作区存在用户未跟踪的 `tmpidea.md`，不修改、不提交。长实验使用提交后的独立干净 worktree，通过链接读取数据和环境、写入结果，保留用户工作区原状。
+
+诊断实现：`run_e11_probe.py` 固定生成视角 40–64（25 个视角）作局部监督，两臂各 3000 步、seed=0，从 E5c 出发。`diagnose_distillation.py` 保存原始空洞/通过区/共同通过区的 RGB 误差、拉普拉斯方差与相关性，保存未监督 +5° 与横移 +0.5 场景单位的图像及往返视频。共同掩码必须对应完全相同相机与空洞；无支持区域返回未知。往返只作固定场景重现检查，不当成独立几何证据。E10 的三个角度先用标准 35 步生成结果检查，E11 的 8 步结果仅用于缓存接线/拟合诊断。
+
+核查发现：`dashrecon/gen/views.py::training_observers` 当前颜色支持使用训练相机的**渲染 RGB**，不是 R 节所写的真实 RGB（其模块注释已说明原因）。本次保留输入/掩码避免混入另一变量，记录该差异；它仍可能让几何/渲染共同错误自我支持，应另做消融。
+
+2026-09-28 验证工具准备完成：主环境运行 `python -m pytest -q tests/test_distillation_metrics.py tests/test_generation_consistency.py tests/test_views.py`，13 项通过（日志 `results/_logs/e11-probe-tests.log`）。相关 Python 编译与 `git diff --check` 通过。诊断视频仅为展示缩放；全部指标在原分辨率 PNG 上计算。

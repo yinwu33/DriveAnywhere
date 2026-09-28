@@ -48,7 +48,9 @@ SH_C0 = 0.28209479177387814
 RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
 
-def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None) -> list:
+def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None,
+               view_indices: list[int] | None = None) -> list:
+    """Load generated supervision, optionally restricted to a recorded local window."""
     with open(os.path.join(views_dir, "cams.json")) as f:
         cams = json.load(f)["cams"]
     if validation_dir is not None:
@@ -57,7 +59,11 @@ def load_views(views_dir: str, device: torch.device, validation_dir: str | None 
         if os.path.realpath(validation["views_dir"]) != os.path.realpath(views_dir):
             raise ValueError(f"validation directory does not belong to {views_dir}")
     views = []
-    for k, c in enumerate(cams):
+    indices = list(range(len(cams))) if view_indices is None else view_indices
+    if not indices or len(indices) != len(set(indices)) or any(k < 0 or k >= len(cams) for k in indices):
+        raise ValueError("view_indices must be distinct valid generated view indices")
+    for k in indices:
+        c = cams[k]
         rgb = np.asarray(Image.open(os.path.join(views_dir, "filled", f"{k:03d}.png")).convert("RGB"), dtype=np.float32) / 255.0
         hole = np.asarray(Image.open(os.path.join(views_dir, "mask", f"{k:03d}.png"))) > 127
         depth = np.load(os.path.join(views_dir, "filled_depth", f"{k:03d}.npy")).astype(np.float32)
@@ -112,6 +118,7 @@ def main() -> None:
     parser.add_argument("--round", type=int, required=True)
     parser.add_argument("--views_dirs", nargs="+", required=True, help="all rounds so far, newest last (spawning uses the newest)")
     parser.add_argument("--validation_dirs", nargs="*", help="one validation directory per views_dir; confidence gates spawning and losses")
+    parser.add_argument("--view_indices", type=int, nargs="+", help="local generated view window, applied to each views_dir; real FRONT supervision is unchanged")
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--warmup_steps", type=int, default=300)
     parser.add_argument("--spawn_stride", type=int, default=3)
@@ -164,7 +171,7 @@ def main() -> None:
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
     validation_dirs = [None] * len(args.views_dirs) if args.validation_dirs is None else args.validation_dirs
-    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd)]
+    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd, args.view_indices)]
     newest = [v for v in views if v["dir"] == args.views_dirs[-1]]
     bg = state["models"]["Background"]
     new = spawn(newest, args.spawn_stride, args.pixel_stride, args.scale_factor, args.init_opacity, bg["_features_rest"].shape[1:])
