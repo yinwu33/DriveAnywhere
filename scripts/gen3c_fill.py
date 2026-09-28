@@ -20,6 +20,8 @@ feeds a scripts/render_views.py directory rendered at GEN3C's 704 x 1280 with a 
 Pipeline construction and the call follow cosmos_predict1/diffusion/inference/gen3c_dynamic.py @ db2ffe1 with all
 offloading, no guardrail, no prompt encoder (the repository's low-memory settings, ~43 GB peak; the prompt is then
 unused) and its defaults (35 steps, guidance 1, seed 1); --fps is passed as the frame-rate conditioning.
+--prompt TEXT enables the T5-11B prompt encoder (checkpoints/google-t5/t5-11b, offloaded after encoding) and conditions
+every chunk on TEXT (D-C1 in docs/EXPERIMENTS.md); without it the pipeline is exactly the prompt-free one above.
 
 GEN3C regenerates the whole frame; the output is written unchanged as filled/<k:03d>.png so depth_views.py and
 train_fill.py run as after fill_views.py (train_fill weights the hole pixels 1 and the rest --seen_w). Also written:
@@ -75,6 +77,7 @@ def main() -> None:
     parser.add_argument("--require_memory", action="store_true", help="fail if no validated memory reaches the cache")
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
+    parser.add_argument("--prompt", help="scene description; enables the T5 prompt encoder (default: no prompt encoder)")
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
@@ -184,7 +187,7 @@ def main() -> None:
         inference_type="video2world", checkpoint_dir="checkpoints", checkpoint_name="Gen3C-Cosmos-7B",
         prompt_upsampler_dir="Pixtral-12B", enable_prompt_upsampler=False, offload_network=True, offload_tokenizer=True,
         offload_text_encoder_model=True, offload_prompt_upsampler=True, offload_guardrail_models=True,
-        disable_guardrail=True, disable_prompt_encoder=True, guidance=args.guidance, num_steps=args.num_steps,
+        disable_guardrail=True, disable_prompt_encoder=args.prompt is None, guidance=args.guidance, num_steps=args.num_steps,
         height=H, width=W, fps=args.fps, num_video_frames=CHUNK, seed=args.seed)
     assert pipeline.model.chunk_size == CHUNK, pipeline.model.chunk_size
     torch.cuda.reset_peak_memory_stats()
@@ -195,7 +198,8 @@ def main() -> None:
         t0 = time.time()
         imgs = torch.from_numpy(warp[idx]).permute(0, 1, 4, 2, 3)[None].to(device)   # B, F, N, C, H, W
         masks = torch.from_numpy(valid[idx])[None, :, :, None].to(device)            # B, F, N, 1, H, W
-        video, _ = pipeline.generate(prompt="", image_path=cond, rendered_warp_images=imgs, rendered_warp_masks=masks)
+        video, _ = pipeline.generate(prompt="" if args.prompt is None else args.prompt, image_path=cond,
+                                     rendered_warp_images=imgs, rendered_warp_masks=masks)
         out.extend(list(video) if start == 0 else list(video[1:]))
         cond = torch.from_numpy(video[-1].astype(np.float32) / 127.5 - 1.0).permute(2, 0, 1)[None, :, None].to(device)
         chunks.append({"views": [start, start + CHUNK - 1], "seconds": time.time() - t0})

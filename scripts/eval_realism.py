@@ -106,6 +106,8 @@ def main() -> None:
         results[label] = {}
         for group, cams in GROUPS.items():
             sel = [n for n in names if cam_of[n] in cams]
+            if not sel:
+                continue  # e.g. generated frames compared with one camera only (D-C1)
             kid = KernelInceptionDistance(subset_size=min(100, len(sel))).to(device)
             fid = FrechetInceptionDistance().to(device)
             for batch in range(0, len(sel), 32):

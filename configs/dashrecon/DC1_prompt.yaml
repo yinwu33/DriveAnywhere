@@ -1,0 +1,24 @@
+# D-C1 (docs/EXPERIMENTS.md): does a scene prompt (and CFG) make GEN3C invent less? Same inputs as E14 round 0.
+output_dir: results/_diagnostics/DC1/val056
+base_views: results/E14/val056/views/r0          # cache inputs, hole mask (E14's refined one) and cameras, linked
+base_validation: results/E14/val056/validation/r0
+refs_dir: results/E5c/val056/realism/refs        # D-E1 references (FRONT_RIGHT looks about where yaw 45 looks)
+cam: 2
+# hand-written from what the val056 FRONT frames show (no GT, no other camera)
+prompt: "A sunny suburban street in a dry desert city: single-story houses with tan stucco walls and tiled roofs, low block walls, desert landscaping with gravel, shrubs, palm and mesquite trees, concrete sidewalks and curbs, clear blue sky. Photorealistic dashcam video."
+arms:
+  prompt_g1: 1.0
+  prompt_g3: 3.0
+generation_steps: 35
+generation_seed: 1
+memory_radius: 16
+max_memory_candidates: 6
+depth_model_id: facebook/map-anything
+min_baseline_scene_units: 1.0
+min_parallax_degrees: 0.5
+max_references: 4
+depth_tolerance: 0.10
+rgb_tolerance: 0.12
+min_support: 2
+max_conflict_fraction: 0.25
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024

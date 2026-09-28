@@ -1,4 +1,5 @@
-"""E14 (docs/EXPERIMENTS.md): view-gated turning completion of one scene, from E5c.
+"""E14 / E15 (docs/EXPERIMENTS.md): view-gated turning completion of one scene, from the config's init run
+(E14: E5c, E15: E5f); the experiment id, init label and comparison runs come from the config.
 
 Stages, each a CLI in its own venv, logged to <output_dir>/logs/<stage>.log; run_status.json records every command,
 exit code and time, and the run stops at the first failure:
@@ -69,7 +70,8 @@ def main() -> None:
         (out / "logs").mkdir()
         OmegaConf.save(OmegaConf.create(cfg), out / "config.yaml")
         state = {"completed": False, "started": time.time(), "stages": [], "dashrecon_commit": commit}
-    meta = {"exp": "E14", "dashrecon_commit": commit, "generative": True, "uses_oracle": False,
+    exp = cfg["exp"]
+    meta = {"exp": exp, "dashrecon_commit": commit, "generative": True, "uses_oracle": False,
             "oracle_note": "FRONT-only E5c and its dashrecon products; the evaluation stages read GT side cameras",
             "generator_weights_frozen": True,
             "versions": {name: version(name) for name in ["torch", "numpy", "scipy", "Pillow", "gsplat", "lpips"]},
@@ -88,20 +90,20 @@ def main() -> None:
         command = [f".venvs/{environment}/bin/python", "-u", *arguments]
         if name in done:
             assert done[name]["command"] == command, f"{name}: command differs from the successful run"
-            print(f"[E14] SKIP {name} (succeeded before)", flush=True)
+            print(f"[{exp}] SKIP {name} (succeeded before)", flush=True)
             return
         entry = {"name": name, "command": command, "started": time.time(), "log": str(out / "logs" / f"{name}.log"),
                  "dashrecon_commit": commit}
         state["stages"].append(entry)
         (out / "run_status.json").write_text(json.dumps(state, indent=2))
-        print(f"[E14] START {name} -> {entry['log']} ({time.strftime('%H:%M')})", flush=True)
+        print(f"[{exp}] START {name} -> {entry['log']} ({time.strftime('%H:%M')})", flush=True)
         with open(entry["log"], "w") as handle:
             process = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, check=False)
         entry.update(exit_code=process.returncode, elapsed_s=time.time() - entry["started"])
         (out / "run_status.json").write_text(json.dumps(state, indent=2))
         if process.returncode != 0:
             raise RuntimeError(f"{name} failed with exit {process.returncode}: {entry['log']}")
-        print(f"[E14] DONE {name} {entry['elapsed_s'] / 60:.1f} min", flush=True)
+        print(f"[{exp}] DONE {name} {entry['elapsed_s'] / 60:.1f} min", flush=True)
 
     gate = str(out / "view_gate.pt")
     run("gate", "main", ["scripts/make_view_gate.py", "--log_dir", cfg["init_log_dir"], "--mesh_ply", cfg["mesh_ply"],
@@ -141,7 +143,7 @@ def main() -> None:
         run(f"r{k}_validate", "main", verify)
         views_dirs.append(views)
         validations.append(validation)
-        train = ["scripts/train_fill.py", "--scene_id", cfg["scene_id"], "--exp", "E14", "--init_log_dir", source,
+        train = ["scripts/train_fill.py", "--scene_id", cfg["scene_id"], "--exp", exp, "--init_log_dir", source,
                  "--out_log_dir", model, "--round", str(k), "--views_dirs", *views_dirs, "--validation_dirs", *validations,
                  "--seen_w", "0", "--steps", str(cfg["optimization_steps"]), "--seed", str(cfg["optimization_seed"]),
                  "--spawn_stride", str(cfg["spawn_stride"]), "--pixel_stride", str(cfg["pixel_stride"]),
@@ -158,14 +160,14 @@ def main() -> None:
         "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",
         "--unseen_dir", cfg["unseen_dir"], "--out_subdir", "cross_camera_p9"])
     run("common_rig", "main", ["scripts/render_sweep_comparison.py", "--init_log_dir", cfg["init_log_dir"],
-        "--log_dirs", *cfg["compare_log_dirs"], model, "--labels", "E5c", *cfg["compare_labels"], "E14_gen",
+        "--log_dirs", *cfg["compare_log_dirs"], model, "--labels", cfg["init_label"], *cfg["compare_labels"], f"{exp}_gen",
         "--frames", *map(str, cfg["rig_frames"]), "--yaws", *map(str, cfg["rig_yaws"]),
         "--rights", *map(str, cfg["rig_rights_scene_units"]), "--out_dir", str(out / "renders" / "common")])
     state.update(completed=True, runtime_s=time.time() - state["started"])
     (out / "run_status.json").write_text(json.dumps(state, indent=2))
     meta["runtime_s"] = state["runtime_s"]
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    print(f"[E14] complete -> {out} ({state['runtime_s'] / 3600:.2f} h)", flush=True)
+    print(f"[{exp}] complete -> {out} ({state['runtime_s'] / 3600:.2f} h)", flush=True)
 
 
 if __name__ == "__main__":
