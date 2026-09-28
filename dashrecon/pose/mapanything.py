@@ -31,7 +31,8 @@ class MapAnythingBackend(PoseBackend):
 
     name = "mapanything"
 
-    def __init__(self, model_id: str, max_views: int, resolution_set: int, max_intrinsics_dev: float = 0.05) -> None:
+    def __init__(self, model_id: str, max_views: int, resolution_set: int, max_intrinsics_dev: float = 0.05,
+                 poses_metric: bool = False) -> None:
         """
         Args:
             model_id: Hugging Face model id, e.g. ``facebook/map-anything-apache``.
@@ -41,12 +42,15 @@ class MapAnythingBackend(PoseBackend):
             max_intrinsics_dev: largest relative focal / principal-point deviation of the predicted rays from given
                 intrinsics before estimate() refuses (0.05 for camera estimation; scripts/depth_views.py passes a
                 larger bound for generated frames, whose depth it re-scales per hole anyway).
+            poses_metric: flag given poses as metric (``is_metric_scale``), so the model keeps their translation
+                scale instead of predicting its own; False (the default) for SfM poses of unknown scale.
         """
         from mapanything.models import MapAnything
 
         self.model_id = model_id
         self.max_intrinsics_dev = max_intrinsics_dev
         self.max_views = max_views
+        self.poses_metric = poses_metric
         self.resolution_set = resolution_set
         self.device = torch.device("cuda")
         self.model = MapAnything.from_pretrained(model_id).to(self.device).eval()
@@ -76,7 +80,7 @@ class MapAnythingBackend(PoseBackend):
             v = {"img": np.asarray(Image.open(p).convert("RGB")), "intrinsics": torch.from_numpy(intrinsics).float()}
             if poses_c2w is not None:
                 v["camera_poses"] = torch.from_numpy(poses_c2w[i]).float()
-                v["is_metric_scale"] = torch.tensor([False])
+                v["is_metric_scale"] = torch.tensor([self.poses_metric])
             views.append(v)
         return preprocess_inputs(views, resolution_set=self.resolution_set)
 
@@ -139,7 +143,7 @@ class MapAnythingBackend(PoseBackend):
                 "torch": torch.__version__,
                 "infer_params": {**INFER_PARAMS, "resolution_set": self.resolution_set},
                 "inputs": ["images"] + (["intrinsics"] if intrinsics is not None else [])
-                          + (["camera_poses (non-metric)"] if poses_c2w is not None else []),
+                          + ([f"camera_poses ({'metric' if self.poses_metric else 'non-metric'})"] if poses_c2w is not None else []),
                 "num_views": len(image_paths),
                 "runtime_s": runtime,
                 "peak_vram_gb": peak_gb,

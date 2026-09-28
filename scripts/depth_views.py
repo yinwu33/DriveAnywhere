@@ -41,7 +41,7 @@ def mapanything_depth(args, paths: list, k_cv: np.ndarray, poses: np.ndarray, h:
     """MapAnything with the trajectory's intrinsics and poses; depth nearest-upsampled to the full grid."""
     from dashrecon.pose.mapanything import MapAnythingBackend
 
-    backend = MapAnythingBackend(args.model_id, args.max_views, 518, args.max_intrinsics_dev)
+    backend = MapAnythingBackend(args.model_id, args.max_views, 518, args.max_intrinsics_dev, args.poses_metric)
     res = backend.estimate(paths, intrinsics=k_cv, poses_c2w=poses)
     grid = res.depth_grid
     assert grid["image_hw"] == [h, w], (grid["image_hw"], h, w)
@@ -105,6 +105,9 @@ def main() -> None:
     parser.add_argument("--ring_px", type=int, default=20)
     parser.add_argument("--min_ring_px", type=int, default=200)
     parser.add_argument("--min_ref_px", type=int, default=1000)
+    parser.add_argument("--poses_metric", action="store_true",
+                        help="MapAnything: flag the trajectory's poses as metric so its depth keeps their translation scale "
+                             "(D-B2: at yaw 90 the non-metric flag let it shrink the motion to 0.16 of the given one)")
     args = parser.parse_args()
     if args.scene_scale is not None and args.alignment_policy != "scene_global":
         raise ValueError("--scene_scale requires --alignment_policy scene_global")

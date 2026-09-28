@@ -1,0 +1,14 @@
+# D-B2 (docs/EXPERIMENTS.md): MapAnything with the trajectory poses flagged metric, on E14's generated frames.
+output_dir: results/_diagnostics/DB2/val056
+source_dir: results/E14/val056
+cases:            # round -> earlier rounds used as generation memory in its validation (as E14 did)
+  0: []
+  2: [0, 1]
+depth_model_id: facebook/map-anything
+min_baseline_scene_units: 1.0
+min_parallax_degrees: 0.5
+max_references: 4
+depth_tolerance: 0.10
+rgb_tolerance: 0.12
+min_support: 2
+max_conflict_fraction: 0.25
