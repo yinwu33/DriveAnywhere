@@ -2,7 +2,7 @@
 
 本目录收集对 DashRecon（单目前视视频 → 可自由视角渲染的静态街景）有参考价值的论文（用户要求，2026-09-28）。
 
-- **PDF**：放在本目录，文件名是 `<arXiv 编号>_<简称>.pdf`。PDF 不入 git，原因是体积（31 篇约 605 MB），且每篇有各自的 arXiv 许可。用 `bash docs/papers/fetch.sh` 按 `papers.tsv` 重新下载。
+- **PDF**：放在本目录，文件名是 `<arXiv 编号>_<简称>.pdf`。PDF 不入 git，原因是体积（45 篇约 876 MB），且每篇有各自的 arXiv 许可。用 `bash docs/papers/fetch.sh` 按 `papers.tsv` 重新下载。
 - **核对**：编号和标题都在 2026-09-28 用 arXiv API 核对过。下面的描述只依据论文摘要或正文，以及本项目已经记录的实测结果（注明出处）。
 - **维护**：新实验参考了新论文时，在同一次提交里补条目并更新"按实验查"。
 - **状态**：
@@ -31,6 +31,12 @@
 | 候选（Phase 9 修正任务 4） | [CogNVS](#cognvs) | "可见像素靠重建、隐藏像素靠视频补全" + 测试时微调 |
 | 候选（E14 之后） | [FaithFusion](#faithfusion)、[RGE-GS](#rge-gs)、[DriveX](#drivex)、[ReconDreamer++](#recondreamer-1) | 像素级不确定性加权；筛选一致的生成内容；伪真值随模型逐步更新；地面几何冻结、只优化外观 |
 | 候选（Mapillary，§14） | [MTGS](#mtgs)、[3DGUT](#3dgut)、[WildGaussians](#wildgaussians) | 多次经过融合；畸变与卷帘快门；外观嵌入 |
+| 计划 D-E1（评测升级） | [MEt3R](#met3r)、[OneSceneEval](#onesceneeval)、[ReconDreamer](#recondreamer) | 不依赖真值的多视角一致性；基于 COLMAP 的一致性；NTA-IoU / NTL-IoU |
+| 计划 E16（现成基线） | [Lyra](#lyra) | GEN3C + 3DGS 解码器，从单目视频直接生成 3DGS |
+| 计划 E17（先几何后外观） | [InfiniCube](#infinicube)、[InfiniVerse](#infiniverse)、[SEM-ROVER](#sem-rover)、[LSD-3D](#lsd-3d)、[Lyra 2.0](#lyra-20) | 体素、占据或网格代理保证一致性，生成器只负责外观；历史帧检索 |
+| 计划 E18（测试时适配） | [CogNVS](#cognvs)、[World from Motion](#world-from-motion) | 在本场景视频上自监督微调补全模型 |
+| 计划 D-D1（蒸馏改进） | [DriveX](#drivex)、[FaithFusion](#faithfusion)、[FreeFix](#freefix) | 伪真值渐进更新；逐像素置信度 |
+| 需要云 GPU | [Cosmos-Predict2.5 / Transfer2.5](#cosmos-predict25)、[Lyra 2.0](#lyra-20)、[Voyager](#voyager) | 显存或架构超出本机 A6000 |
 
 ## 条目
 
@@ -270,3 +276,104 @@
   - U3 在原轨迹上变差的一个候选原因是多相机的曝光时刻和卷帘快门没有建模（DECISIONS Q）。要得到"多相机一致"的上界，需要这类建模。
   - 目前 E5c 是在去畸变后的图像上重建（D13）。
 - **状态**：候选（Mapillary 阶段）。
+
+### 候选（E14 之后的计划，2026-09-28 加入，见 [PLAN_AFTER_E14.md](../PLAN_AFTER_E14.md)）
+
+#### Lyra
+*Lyra: Generative 3D Scene Reconstruction via Video Diffusion Model Self-Distillation*，arXiv [2509.19296](https://arxiv.org/abs/2509.19296)（2025-09，ICLR 2026），`2509.19296_Lyra.pdf`
+- **做了什么**：给视频扩散模型的 RGB 解码器旁边加一个 3DGS 解码器，用 RGB 解码的结果监督它；训练数据完全由视频模型自己生成，不需要多视角数据。推理时从文本或单张图像生成 3D 场景，也支持从单目视频生成动态 3D。底层是 GEN3C。
+- **可行性**（官方仓库）：代码 Apache 2.0，权重是 NVIDIA Open Model License；只在 H100 / A100 上测过，完全卸载时显存峰值约 43 GB；视频输入需要用 ViPE 预先提取深度、内参和位姿。
+- **对应**：计划 E16，作为"单目视频 → 可渲染 3D、允许想象"的现成基线（Phase 9 修正任务 4）。
+- **状态**：候选。
+
+#### Lyra 2.0
+*Lyra 2.0: Explorable Generative 3D Worlds*，arXiv [2604.13036](https://arxiv.org/abs/2604.13036)（2026-04），`2604.13036_Lyra-2.0.pdf`
+- **做了什么**：针对长轨迹生成的两种退化：一是空间遗忘（回到看过的地方时要重新编），二是时间漂移（自回归误差累积）。
+  - 对策一：维护每帧的 3D 几何，但只用于检索相关的历史帧、建立与目标视角的稠密对应；外观完全交给生成先验。
+  - 对策二：训练时加入模型自己生成的历史，让模型适应它自己的误差。
+  - 基于 Wan2.1-14B；用 Depth Anything v3 前馈预测每像素的 3DGS 属性。
+  - 在 GB200 上每 80 帧约 194 秒，蒸馏版约 15 秒。
+- **可借鉴**：按可见性从所有真实帧和生成帧中检索缓存来源（我们的 GEN3C 只有 2 个缓存）；用前馈模型预测每像素 3DGS 属性，代替各向同性的新高斯。
+- **对应**：计划 E17 的历史帧检索；模型本身需要更大的 GPU。
+- **状态**：候选（思路）。
+
+#### Voyager
+*Voyager: Long-Range and World-Consistent Video Diffusion for Explorable 3D Scene Generation*，arXiv [2506.04225](https://arxiv.org/abs/2506.04225)（2025-06，ACM TOG），`2506.04225_Voyager.pdf`
+- **做了什么**：从单张图像和相机路径联合生成对齐的 RGB 与深度视频，用可扩展的世界缓存（点云，带剔除）保持一致；自回归地扩展场景，不需要 SfM / MVS。
+- **可行性**（官方仓库）：540p 至少需要 60 GB 显存，推荐 80 GB；输入是单张图像加预设的相机动作，不能以已有的点云或重建作为条件。
+- **可借鉴**：直接生成 RGB-D，省掉单独估深度这一步（D-B1 说明深度一致性是关键）。本机跑不了。
+- **状态**：不适用（本机），思路参考。
+
+#### InfiniCube
+*InfiniCube: Unbounded and Controllable Dynamic 3D Driving Scene Generation with World-Guided Video Models*，arXiv [2412.03934](https://arxiv.org/abs/2412.03934)（2024-12，ICCV 2025），`2412.03934_InfiniCube.pdf`
+- **做了什么**：三步。先用以 HD 地图为条件的稀疏体素生成模型生成无界的体素世界；再用一组贴像素的引导缓冲，把视频模型"钉"在体素世界上生成一致的外观；最后用体素和像素两个分支，前馈地把视频提升为动态 3D 高斯。
+- **可借鉴**："先几何、后外观"。几何在 3D 里统一，视频模型只负责外观，一致性由几何保证。它需要 HD 地图，我们可以用想象网格代替。
+- **对应**：计划 E17。
+- **状态**：候选（思路）。
+
+#### InfiniVerse
+*InfiniVerse: Occupancy Guided Unbounded Scene Generation for Autonomous Driving*，arXiv [2606.31109](https://arxiv.org/abs/2606.31109)（2026-06），`2606.31109_InfiniVerse.pdf`
+- **做了什么**：从单帧（多视角）重建 3D 占据栅格，沿任意轨迹自回归地扩展；视频扩散模型把粗占据栅格转成真实的视频；生成的视频再投影回去修正占据栅格（"草图—细化"），在视觉和空间之间相互增强。在 Waymo 和 nuScenes 上评测。
+- **可借鉴**：生成结果回写并修正几何、再生成的闭环，对应 E17 第 4 步。
+- **状态**：候选（思路）。
+
+#### SEM-ROVER
+*SEM-ROVER: Semantic Voxel-Guided Diffusion for Large-Scale Driving Scene Generation*，arXiv [2604.06113](https://arxiv.org/abs/2604.06113)（2026-04），`2604.06113_SEM-ROVER.pdf`
+- **做了什么**：用 Σ-Voxfield（每个占据体素存固定数量的带颜色表面采样）表示场景，以语义为条件的扩散模型在局部体素邻域上生成，通过重叠区域的渐进外扩扩展到大场景，再用延迟渲染得到照片级图像，不需要逐场景优化。
+- **可借鉴**：直接在 3D 里生成，从根本上避免多视角不一致；按语义条件生成，与我们的路面和天空分割可以衔接。需要训练。
+- **状态**：候选（参考）。
+
+#### World from Motion
+*World from Motion: Generative Dynamic Gaussian Reconstruction from Monocular Video*，arXiv [2607.01202](https://arxiv.org/abs/2607.01202)（2026-07，NVIDIA），`2607.01202_WorldFromMotion.pdf`
+- **做了什么**：以沿输入和目标相机轨迹、逐像素对齐的渲染（外观、几何、3D 运动）为条件，让视频模型修正初始重建的伪影、补全缺失区域；测试时把生成内容（包括新看到的区域和运动）蒸馏回一个一致的动态 3DGS。训练数据是带模拟单目重建伪影的多视角视频对。
+- **和我们的关系**：与 Phase 9 的做法最接近的已发表方法（重建 → 条件生成 → 蒸馏回单个 3DGS），区别是它为这个任务训练了专门的模型。项目页暂未见代码或权重。
+- **可借鉴**：以"渲染的几何 + 外观"为条件，而不只是 RGB warp；用模拟的重建伪影构造训练数据（如果将来做 E18 这类适配）。
+- **状态**：候选（参考）。
+
+#### FreeFix
+*FreeFix: Boosting 3D Gaussian Splatting via Fine-Tuning-Free Diffusion Models*，arXiv [2601.20857](https://arxiv.org/abs/2601.20857)（2026-01），`2601.20857_FreeFix.pdf`
+- **做了什么**：不微调，用预训练图像扩散模型增强外推视角的渲染；2D / 3D 交替细化；逐像素置信度掩码只改不确定的区域。报告的一致性和效果与需要微调的方法相当或更好。
+- **可借鉴**：计划 D-D1，免训练的逐像素置信度细化，可与 E14 的验收权重结合。
+- **状态**：候选。
+
+#### Instant NuRec
+*Instant NuRec: Feed-Forward 3D Gaussian Reconstruction for Driving Scene Simulation*，arXiv [2607.14203](https://arxiv.org/abs/2607.14203)（2026-07，NVIDIA），`2607.14203_InstantNuRec.pdf`
+- **做了什么**：前馈模型，把标定过的多相机短驾驶片段一次前向变成可仿真的 3DGS 世界：静态和动态两层、天空立方体贴图、每个相机的 ISP 校正，原生支持 3DGUT 的非针孔相机。10–20 秒的场景约 1.5 秒重建完，在 Waymo 上比最强基线高 2.01 dB；与 NuRec 和 AlpaSim 集成。
+- **可借鉴**：输出的分层结构（静态 / 动态 / 天空 / ISP）适合做可测试资产，将来和 AlpaSim 集成时参考。需要标定过的多相机，单个 FRONT 用不了。
+- **状态**：不适用（当前）。
+
+#### Cosmos-Predict2.5
+*World Simulation with Video Foundation Models for Physical AI*，arXiv [2511.00062](https://arxiv.org/abs/2511.00062)（2025-11，NVIDIA），`2511.00062_Cosmos-Predict2.5.pdf`
+- **做了什么**：
+  - Cosmos-Predict2.5：基于 flow，把 Text2World、Image2World、Video2World 统一在一个模型里，用 Cosmos-Reason1 做文本对齐，在 2 亿条视频上训练，有 2B 和 14B 两个版本。
+  - Cosmos-Transfer2.5：ControlNet 式的 Sim2Real / Real2Real 转换，比 Transfer1 小 3.5 倍、保真度更高。
+  - 代码和权重以 NVIDIA Open Model License 发布（2025-10）。
+- **可行性**（官方文档）：
+  - Predict2.5 支持 Ampere 及更新的架构，但基础模型没有 3D 缓存或相机控制；驾驶多视角版 `auto/multiview` 需要 7 个相机的输入。
+  - Transfer2.5-2B 以深度、分割、边缘、模糊为控制，单卡需要 65.4 GB 显存，且要求 Hopper 或更新的架构，本机 A6000 不满足。
+- **可借鉴**：用我们渲染的深度和语义作为 Transfer2.5 的控制，生成符合几何的真实外观。需要云 GPU，要用户决定。
+- **状态**：不适用（本机）。
+
+#### MEt3R
+*MEt3R: Measuring Multi-View Consistency in Generated Images*，arXiv [2501.06336](https://arxiv.org/abs/2501.06336)（2025-01），`2501.06336_MEt3R.pdf`
+- **做了什么**：不需要真值的多视角一致性指标。用 DUSt3R 对一对图像做稠密重建，把一张 warp 到另一张，再比较特征，对视角相关的效果不敏感。
+- **对应**：计划 D-E1。对"允许想象"的侧视补全，衡量同一地点从不同视角看是否一致，比逐像素和真实侧相机比较更贴近目标。
+- **状态**：候选。
+
+#### OneSceneEval
+*Can These Views Be One Scene? Evaluating Multiview 3D Consistency when 3D Foundation Models Hallucinate*，arXiv [2605.18754](https://arxiv.org/abs/2605.18754)（2026-05），`2605.18754_OneSceneEval.pdf`
+- **做了什么**：指出 VGGT、MASt3R、DUSt3R、Fast3R 会对无关场景、重复图像甚至噪声"幻觉"出稠密几何和跨视角支持，所以 MEt3R 这类神经指标可能给坏结果打高分。提出更稳健的神经指标变体，以及基于 COLMAP（匹配、注册、稠密支持、重建失败）的一致性指标，与人工评判的相关性最高提升 4 倍。
+- **对应**：计划 D-E1。一致性指标用它的 COLMAP 版本作主指标，MEt3R 作辅助。这与我们在几何验收里"不能把缺乏证据记为通过"的原则一致。
+- **状态**：候选。
+
+#### GLADOS
+*Mind the Gap: Geometrically Accurate Generative Reconstruction from Disjoint Views*，arXiv [2605.07550](https://arxiv.org/abs/2605.07550)（2026-05），`2605.07550_GLADOS.pdf`
+- **做了什么**：针对视角之间完全不重叠的情形。先用基础模型生成中间视角把不相交的输入连起来，再用全局对齐建立粗几何支架、吸收生成过程的局部矛盾，然后迭代扩展上下文、补全缺失区域并优化一致性。
+- **可借鉴**："粗几何支架吸收生成矛盾"的思路对应 E17；将来 Mapillary 多段视频之间几乎不重叠时也相关。
+- **状态**：候选（参考）。
+
+#### FocusGS
+*Targeted Structure Completion for Sparse-View 3D Reconstruction in Autonomous Driving*，arXiv [2607.04661](https://arxiv.org/abs/2607.04661)（2026-07），`2607.04661_FocusGS.pdf`
+- **做了什么**：不做全局的体素化补全，而是先求出"几何歧义流形"，定位容易被遮挡、几何不确定的局部区域，只在这些区域里实例化并优化高斯。
+- **可借鉴**：只在几何歧义区域补全、确定区域不动，与我们"已观测区域不被生成改写"一致。它的歧义区域定位可以替代我们手工的空洞判断。
+- **状态**：候选（参考）。

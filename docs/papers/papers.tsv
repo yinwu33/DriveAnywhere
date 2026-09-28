@@ -30,3 +30,17 @@
 2407.02598	AutoSplat	AutoSplat: Constrained Gaussian Splatting for Autonomous Driving Scene Reconstruction
 2407.08447	WildGaussians	WildGaussians: 3D Gaussian Splatting in the Wild
 2412.12507	3DGUT	3DGUT: Enabling Distorted Cameras and Secondary Rays in Gaussian Splatting
+2509.19296	Lyra	Lyra: Generative 3D Scene Reconstruction via Video Diffusion Model Self-Distillation
+2604.13036	Lyra-2.0	Lyra 2.0: Explorable Generative 3D Worlds
+2506.04225	Voyager	Voyager: Long-Range and World-Consistent Video Diffusion for Explorable 3D Scene Generation
+2412.03934	InfiniCube	InfiniCube: Unbounded and Controllable Dynamic 3D Driving Scene Generation with World-Guided Video Models
+2606.31109	InfiniVerse	InfiniVerse: Occupancy Guided Unbounded Scene Generation for Autonomous Driving
+2604.06113	SEM-ROVER	SEM-ROVER: Semantic Voxel-Guided Diffusion for Large-Scale Driving Scene Generation
+2607.01202	WorldFromMotion	World from Motion: Generative Dynamic Gaussian Reconstruction from Monocular Video
+2601.20857	FreeFix	FreeFix: Boosting 3D Gaussian Splatting via Fine-Tuning-Free Diffusion Models
+2607.14203	InstantNuRec	Instant NuRec: Feed-Forward 3D Gaussian Reconstruction for Driving Scene Simulation
+2511.00062	Cosmos-Predict2.5	World Simulation with Video Foundation Models for Physical AI
+2501.06336	MEt3R	MEt3R: Measuring Multi-View Consistency in Generated Images
+2605.18754	OneSceneEval	Can These Views Be One Scene? Evaluating Multiview 3D Consistency when 3D Foundation Models Hallucinate
+2605.07550	GLADOS	Mind the Gap: Geometrically Accurate Generative Reconstruction from Disjoint Views
+2607.04661	FocusGS	Targeted Structure Completion for Sparse-View 3D Reconstruction in Autonomous Driving
