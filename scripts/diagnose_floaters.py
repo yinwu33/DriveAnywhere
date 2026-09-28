@@ -59,7 +59,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashrecon import io  # noqa: E402
-from dashrecon.gen.floaters import cone_gate, needle_ratio, observation_cone  # noqa: E402
+from dashrecon.gen.floaters import (blend_weight, cone_gate, needle_ratio, observation_cone, rasterize,  # noqa: E402
+                                     training_observations)
 from dashrecon.gen.novel import build_trainer, refined_c2w, to_device  # noqa: E402
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
@@ -71,49 +72,6 @@ SH_C0 = 0.28209479177387814
 TURBO = cv2.applyColorMap(np.arange(256, dtype=np.uint8)[:, None], cv2.COLORMAP_TURBO)[:, 0, ::-1].astype(np.float32) / 255
 TERM = re.compile(r"^(support|scale|mesh|needle)([<>])([0-9.]+)$")
 GATE = re.compile(r"^gate([0-9.]+)$")
-
-
-def rasterize(trainer, gs, cam, colours: torch.Tensor) -> tuple:
-    """gsplat rasterization of arbitrary per-Gaussian colours with the trainer's render settings (base.py
-    render_gaussians); returns (image [H,W,C], alpha [H,W])."""
-    from gsplat.rendering import rasterization
-
-    rc = trainer.render_cfg
-    assert "radius_clip" not in rc, "radius_clip set: pass it as the trainer does"
-    img, alpha, _ = rasterization(
-        means=gs.means, quats=gs.quats, scales=gs.scales, opacities=gs.opacities.squeeze(), colors=colours,
-        viewmats=torch.linalg.inv(cam.camtoworlds)[None], Ks=cam.Ks[None], width=cam.W, height=cam.H,
-        packed=rc.packed, near_plane=rc.near_plane, far_plane=rc.far_plane, render_mode="RGB",
-        rasterize_mode="antialiased" if rc.antialiased else "classic")
-    return img[0], alpha[0, ..., 0]
-
-
-def blend_weight(trainer, gs, cam, mask: torch.Tensor) -> torch.Tensor:
-    """Per-Gaussian blending weight summed over the pixels of ``mask`` [H,W] (gradient of the masked image sum)."""
-    colour = torch.zeros(gs.means.shape[0], 1, device=mask.device, requires_grad=True)
-    img, _ = rasterize(trainer, gs, cam, colour)
-    (img[..., 0] * mask).sum().backward()
-    return colour.grad[:, 0]
-
-
-def training_observations(trainer, dataset, device) -> tuple:
-    """(weights (V,N) float16: blending weight of every Gaussian in every FRONT training view over the pixels the
-    photometric loss constrained, training camera centres (V,3))."""
-    n = trainer.models["Background"]._means.shape[0]
-    weights, centres = [], []
-    for j in range(len(dataset.train_image_set)):
-        ii, ci = dataset.train_image_set.get_image(j, 1)
-        ii, ci = to_device(ii, device), to_device(ci, device)
-        img_id = ii["img_idx"].flatten()[0]
-        with torch.no_grad():
-            cam = trainer.process_camera(camera_infos=ci, image_ids=img_id, novel_view=False)
-            gs = trainer.collect_gaussians(cam=cam, image_ids=img_id)
-        assert gs.means.shape[0] == n
-        w = blend_weight(trainer, gs, cam, ((ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)).float())
-        assert float(w.max()) < 65504, "weight overflows float16"
-        weights.append(w.half())
-        centres.append(cam.camtoworlds[:3, 3].detach())
-    return torch.stack(weights), torch.stack(centres)
 
 
 def to_turbo(values: torch.Tensor, lo: float, hi: float) -> torch.Tensor:

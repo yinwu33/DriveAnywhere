@@ -15,6 +15,20 @@ Continues --init_log_dir (E5c for the first round, then E8 itself) with the fill
    Opacity reset off, densification off (stage 2 is past stop_split_at), learning rates warm up over
    --warmup_steps (the checkpoint has no optimizer state), as in scripts/train_fixer.py.
 
+E14 options (docs/EXPERIMENTS.md):
+    --view_gate PATH   a dashrecon.gen.floaters.ViewGate (scripts/make_view_gate.py) applied to every novel-view render
+                       (the generated views here, and everywhere the output is rendered later: it is written to the
+                       output config as ``view_gate``); a run trained with one keeps it.
+    --no_refine        no densification / culling / opacity reset during distillation (refine_interval 1e9), so the
+                       Gaussians the gate covers keep their indices across rounds.
+    --unknown_w W      with --validation_dirs: hole pixels without conflicting evidence that were not accepted
+                       (status 1 unknown, 2 weak; validate_generated_views.py) get confidence W instead of 0;
+                       conflicting pixels stay at 0.
+    --round_affine     one 3x4 colour transform per views dir (a "virtual traversal" appearance, after MTGS), applied
+                       to the render before it is compared with that dir's generated frames; identity at the start
+                       (or the previous round's value), L2 to identity weighted --round_affine_reg. Real FRONT frames
+                       keep the run's own Affine model.
+
 Output: <out_log_dir>/ config.yaml, checkpoint_final.pth (also rounds/ckpt_r<round>.pth), metrics/ (this round's;
 earlier rounds' in rounds/metrics_r<k>/), videos/,
 metrics.json, meta.json (generative: true, per round: views, spawned Gaussians, runtime), fill_params_r<round>.json.
@@ -38,7 +52,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
+from dashrecon.gen.novel import attach_view_gate, build_trainer, to_device, view_gate_path  # noqa: E402
 from dashrecon.gen.views import backproject, front_image_index, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
@@ -50,8 +64,9 @@ RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
 
 def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None,
-               view_indices: list[int] | None = None) -> list:
-    """Load generated supervision, optionally restricted to a recorded local window."""
+               view_indices: list[int] | None = None, unknown_w: float = 0.0) -> list:
+    """Load generated supervision, optionally restricted to a recorded local window. With a validation dir, the
+    confidence is the accepted confidence, plus unknown_w on unknown / weak hole pixels (status 1, 2)."""
     with open(os.path.join(views_dir, "cams.json")) as f:
         cams = json.load(f)["cams"]
     if validation_dir is not None:
@@ -73,6 +88,11 @@ def load_views(views_dir: str, device: torch.device, validation_dir: str | None 
             confidence = np.load(os.path.join(validation_dir, "confidence", f"{k:03d}.npy")).astype(np.float32)
             if confidence.shape != hole.shape or not np.isfinite(confidence).all() or not ((confidence >= 0) & (confidence <= 1)).all():
                 raise ValueError(f"invalid generation confidence in {views_dir}, view {k}")
+            if unknown_w > 0:
+                status = np.asarray(Image.open(os.path.join(validation_dir, "status", f"{k:03d}.png")))
+                if status.shape != hole.shape or not np.array_equal(status > 0, hole):
+                    raise ValueError(f"validation status does not match the hole mask in {views_dir}, view {k}")
+                confidence = np.where((status == 1) | (status == 2), np.float32(unknown_w), confidence)
         views.append({"confidence": torch.from_numpy(confidence).to(device), "k": k, "frame": c["frame"], "dir": views_dir,
                       "c2w": torch.tensor(c["c2w"], dtype=torch.float32, device=device),
                       "K": torch.tensor(c["K"], dtype=torch.float32, device=device),
@@ -132,7 +152,15 @@ def main() -> None:
     parser.add_argument("--depth_w", type=float, default=0.1)
     parser.add_argument("--print_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--view_gate", help="ViewGate for novel views when --init_log_dir has none (E14 round 0)")
+    parser.add_argument("--no_refine", action="store_true")
+    parser.add_argument("--unknown_w", type=float, default=0.0)
+    parser.add_argument("--round_affine", action="store_true")
+    parser.add_argument("--round_affine_reg", type=float, default=1.0)
+    parser.add_argument("--round_affine_lr", type=float, default=1e-3)
     args = parser.parse_args()
+    if args.unknown_w > 0 and args.validation_dirs is None:
+        raise ValueError("--unknown_w needs --validation_dirs (the status maps)")
     if args.validation_dirs is not None and len(args.validation_dirs) != len(args.views_dirs):
         raise ValueError("one --validation_dirs entry per --views_dirs required")
     if args.validation_dirs is not None and args.seen_w != 0:
@@ -149,6 +177,15 @@ def main() -> None:
     start = int(state["step"])
     cfg.trainer.optim.num_iters = start + args.steps
     cfg.trainer.gaussian_ctrl_general_cfg.reset_alpha_interval = 10**9
+    if args.no_refine:
+        cfg.model.Background.ctrl.refine_interval = 10**9
+    gate_path = view_gate_path(cfg)
+    if args.view_gate is not None:
+        assert gate_path is None or gate_path == args.view_gate, f"{args.init_log_dir} was trained with view gate {gate_path}"
+        gate_path = args.view_gate
+    if gate_path is not None:
+        assert cfg.model.Background.ctrl.refine_interval > start + args.steps, "a view gate needs --no_refine (stable indices)"
+        cfg.view_gate = gate_path
     cfg.log_dir = args.out_log_dir
     for sub in ("metrics", "videos", "rounds"):
         os.makedirs(os.path.join(args.out_log_dir, sub), exist_ok=True)
@@ -172,7 +209,7 @@ def main() -> None:
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
     validation_dirs = [None] * len(args.views_dirs) if args.validation_dirs is None else args.validation_dirs
-    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd, args.view_indices)]
+    views = [v for d, vd in zip(args.views_dirs, validation_dirs) for v in load_views(d, device, vd, args.view_indices, args.unknown_w)]
     newest = [v for v in views if v["dir"] == args.views_dirs[-1]]
     bg = state["models"]["Background"]
     new = spawn(newest, args.spawn_stride, args.pixel_stride, args.scale_factor, args.init_opacity, bg["_features_rest"].shape[1:])
@@ -181,6 +218,18 @@ def main() -> None:
         bg[key] = torch.cat([bg[key], new[key].to(bg[key].dtype).cpu()], dim=0)
     trainer.load_state_dict(state, load_only_model=True, strict=True)
     assert trainer.step == start, (trainer.step, start)
+    if gate_path is not None:
+        attach_view_gate(trainer, gate_path)
+    eye = torch.eye(3, 4, device=device)
+    affines = None
+    if args.round_affine:
+        init = {}
+        if args.round > 0:
+            prev = torch.load(os.path.join(args.out_log_dir, f"round_affine_r{args.round - 1}.pt"), map_location=device)
+            init = prev["affines"]
+        affines = torch.nn.Parameter(torch.stack([init[d].to(device) if d in init else eye.clone() for d in args.views_dirs]))
+        affine_opt = torch.optim.Adam([affines], lr=args.round_affine_lr)
+        dir_index = {d: i for i, d in enumerate(args.views_dirs)}
     trainer.initialize_optimizer()
     base_lr = {g["name"]: g["lr"] for g in trainer.optimizer.param_groups}
     lpips_vgg = lpips.LPIPS(net="vgg", verbose=False).to(device).eval().requires_grad_(False)
@@ -214,6 +263,10 @@ def main() -> None:
             p.requires_grad_(True)
         trainer.update_visibility_filter()  # postprocess_per_train_step reads the last render's radii and gradients
         rgb, target = nv["rgb"], v["rgb"].float()
+        if affines is not None:
+            a = affines[dir_index[v["dir"]]]
+            rgb = rgb @ a[:, :3].T + a[:, 3]
+            loss_dict["round_affine_reg"] = args.round_affine_reg * ((a - eye) ** 2).sum()
         hole = v["hole"].float()[..., None]
         confidence = v["confidence"][..., None]
         accepted = hole * confidence
@@ -233,7 +286,13 @@ def main() -> None:
         for g in trainer.optimizer.param_groups:
             sched = trainer.lr_schedulers.get(g["name"])
             g["lr"] = ramp * (sched(step) if sched is not None else base_lr[g["name"]])
+        if affines is not None:
+            affine_opt.zero_grad()
+            scale = trainer.grad_scaler.get_scale()
         trainer.backward(loss_dict)
+        if affines is not None:
+            affines.grad /= scale
+            affine_opt.step()
         trainer.postprocess_per_train_step(step=step)
 
         for k, val in {**{k: val.item() for k, val in loss_dict.items()}, "fill_l1": l1.item(), "fill_lpips": lp.item()}.items():
@@ -249,6 +308,11 @@ def main() -> None:
         json.dump({"seed": args.seed, "real_full_image_indices": sampled_real,
                    "generated_frames": sampled_generated, "generated_pool_indices": sampled_pool_indices}, f, indent=2)
     trainer.save_checkpoint(log_dir=args.out_log_dir, save_only_model=True, is_final=True)
+    if affines is not None:
+        final = {d: affines[i].detach().cpu() for d, i in dir_index.items()}
+        torch.save({"affines": final}, os.path.join(args.out_log_dir, f"round_affine_r{args.round}.pt"))
+        with open(os.path.join(args.out_log_dir, f"round_affine_r{args.round}.json"), "w") as f:
+            json.dump({d: a.tolist() for d, a in final.items()}, f, indent=2)
     shutil.copyfile(os.path.join(args.out_log_dir, "checkpoint_final.pth"), os.path.join(args.out_log_dir, "rounds", f"ckpt_r{args.round}.pth"))
     do_evaluation(step=step, cfg=cfg, trainer=trainer, dataset=dataset, args=argparse.Namespace(enable_wandb=False, render_video_postfix=None),
                   render_keys=RENDER_KEYS)

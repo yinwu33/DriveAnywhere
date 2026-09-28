@@ -49,7 +49,7 @@ from PIL import Image
 from skimage.metrics import structural_similarity
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dashrecon.gen.novel import build_trainer, to_device  # noqa: E402
+from dashrecon.gen.novel import attach_view_gate, build_trainer, to_device, view_gate_path  # noqa: E402
 from dashrecon.gen.views import front_image_index, hole_mask, training_observers  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import get_scene  # noqa: E402
@@ -118,12 +118,16 @@ def main() -> None:
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
     trainer.resume_from_checkpoint(ckpt_path=os.path.join(args.log_dir, "checkpoint_final.pth"), load_only_model=True)
+    if view_gate_path(cfg) is not None:
+        attach_view_gate(trainer, view_gate_path(cfg))
     trainer.set_eval()
     if args.region_ref is not None:
         ref_cfg = OmegaConf.load(os.path.join(args.region_ref, "config.yaml"))
         assert OmegaConf.to_container(ref_cfg.data) == OmegaConf.to_container(cfg.data), f"{args.region_ref} has other data than {args.log_dir}"
         ref_trainer = build_trainer(ref_cfg, dataset, device)
         ref_trainer.resume_from_checkpoint(ckpt_path=os.path.join(args.region_ref, "checkpoint_final.pth"), load_only_model=True)
+        if view_gate_path(ref_cfg) is not None:
+            attach_view_gate(ref_trainer, view_gate_path(ref_cfg))
         observers = training_observers(ref_trainer, dataset, OBS_STRIDE, device)
     scene_idx = int(cfg.data.scene_idx)
     gt_dir = os.path.join(args.gt_root, f"{scene_idx:03d}")

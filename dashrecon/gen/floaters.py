@@ -5,7 +5,12 @@ support: the blending weight (alpha * transmittance) a Gaussian gets in the trai
     whatever it shows from an unseen direction (its initial random colour, say) is unconstrained.
 needle ratio: a Gaussian's extent along the ray from the nearest training camera over its largest extent across
     that ray. A large ratio looks small from FRONT but long from the side.
+observation cone / ViewGate (D-A3, E14 in docs/EXPERIMENTS.md): the directions the training views saw a Gaussian
+    from; rendering a novel view, Gaussians seen from far outside their cone fade out, so the FRONT-only "screen"
+    of large off-surface Gaussians (D-A2) becomes a hole there instead of junk.
 """
+from dataclasses import dataclass
+
 import torch
 
 
@@ -72,3 +77,91 @@ def needle_ratio(means: torch.Tensor, scales: torch.Tensor, quats: torch.Tensor,
     proj = torch.eye(3, device=means.device, dtype=means.dtype) - d[:, :, None] * d[:, None, :]
     across = torch.linalg.eigvalsh(proj @ cov @ proj)[:, -1].sqrt()
     return along / across
+
+
+def rasterize(trainer, gs, cam, colours: torch.Tensor) -> tuple:
+    """gsplat rasterization of arbitrary per-Gaussian colours with the trainer's render settings (models/trainers/
+    base.py render_gaussians); returns (image [H,W,C], alpha [H,W])."""
+    from gsplat.rendering import rasterization
+
+    rc = trainer.render_cfg
+    assert "radius_clip" not in rc, "radius_clip set: pass it as the trainer does"
+    img, alpha, _ = rasterization(
+        means=gs.means, quats=gs.quats, scales=gs.scales, opacities=gs.opacities.squeeze(), colors=colours,
+        viewmats=torch.linalg.inv(cam.camtoworlds)[None], Ks=cam.Ks[None], width=cam.W, height=cam.H,
+        packed=rc.packed, near_plane=rc.near_plane, far_plane=rc.far_plane, render_mode="RGB",
+        rasterize_mode="antialiased" if rc.antialiased else "classic")
+    return img[0], alpha[0, ..., 0]
+
+
+def blend_weight(trainer, gs, cam, mask: torch.Tensor) -> torch.Tensor:
+    """Per-Gaussian blending weight summed over the pixels of ``mask`` [H,W]: rasterize a zero one-channel colour and
+    backpropagate the masked image sum (d sum / d c_i = sum of the Gaussian's alpha * transmittance)."""
+    colour = torch.zeros(gs.means.shape[0], 1, device=mask.device, requires_grad=True)
+    img, _ = rasterize(trainer, gs, cam, colour)
+    (img[..., 0] * mask).sum().backward()
+    return colour.grad[:, 0]
+
+
+def training_observations(trainer, dataset, device) -> tuple:
+    """(weights (V,N) float16: blending weight of every Background Gaussian in every FRONT training view over the
+    pixels the photometric loss constrained (outside the dynamic and sky masks), training camera centres (V,3))."""
+    from dashrecon.gen.novel import to_device
+
+    n = trainer.models["Background"]._means.shape[0]
+    weights, centres = [], []
+    for j in range(len(dataset.train_image_set)):
+        ii, ci = dataset.train_image_set.get_image(j, 1)
+        ii, ci = to_device(ii, device), to_device(ci, device)
+        img_id = ii["img_idx"].flatten()[0]
+        with torch.no_grad():
+            cam = trainer.process_camera(camera_infos=ci, image_ids=img_id, novel_view=False)
+            gs = trainer.collect_gaussians(cam=cam, image_ids=img_id)
+        assert gs.means.shape[0] == n
+        w = blend_weight(trainer, gs, cam, ((ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)).float())
+        assert float(w.max()) < 65504, "weight overflows float16"
+        weights.append(w.half())
+        centres.append(cam.camtoworlds[:3, 3].detach())
+    return torch.stack(weights), torch.stack(centres)
+
+
+@dataclass
+class ViewGate:
+    """Observation-cone gate of the first ``n`` Background Gaussians of a model (those present when it was made;
+    Gaussians added later are never gated). Only ``selected`` Gaussians are gated."""
+
+    axis: torch.Tensor
+    half_angle: torch.Tensor
+    observed: torch.Tensor
+    selected: torch.Tensor
+    margin: float
+    fade: float
+
+    @property
+    def n(self) -> int:
+        return int(self.axis.shape[0])
+
+    def factors(self, means: torch.Tensor, centre: torch.Tensor) -> torch.Tensor:
+        """(n,) opacity factors of the first n Gaussians for a camera at ``centre``."""
+        g = cone_gate(means[:self.n], centre, self.axis, self.half_angle, self.observed, self.margin, self.fade)
+        return torch.where(self.selected, g, torch.ones_like(g))
+
+    def apply(self, gs, centre: torch.Tensor):
+        """The dataclass_gs ``gs`` (Background only) with the gated opacities; gradients flow through."""
+        from models.gaussians.basics import dataclass_gs
+
+        assert gs._means.shape[0] >= self.n, (gs._means.shape[0], self.n)
+        f = self.factors(gs._means.detach(), centre.detach())
+        opac = torch.cat([gs._opacities[:self.n] * f[:, None], gs._opacities[self.n:]], dim=0)
+        return dataclass_gs(_means=gs._means, _scales=gs._scales, _quats=gs._quats, _rgbs=gs._rgbs, _opacities=opac,
+                            detach_keys=gs.detach_keys, extras=gs.extras)
+
+    def save(self, path: str, meta: dict) -> None:
+        torch.save({"axis": self.axis.cpu(), "half_angle": self.half_angle.cpu(), "observed": self.observed.cpu(),
+                    "selected": self.selected.cpu(), "margin": self.margin, "fade": self.fade, "meta": meta}, path)
+
+    @staticmethod
+    def load(path: str, device: torch.device) -> "ViewGate":
+        d = torch.load(path, map_location=device)
+        return ViewGate(axis=d["axis"], half_angle=d["half_angle"], observed=d["observed"], selected=d["selected"],
+                        margin=float(d["margin"]), fade=float(d["fade"]))

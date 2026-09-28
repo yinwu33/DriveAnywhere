@@ -29,7 +29,7 @@ import torch
 from omegaconf import OmegaConf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dashrecon.gen.novel import build_trainer  # noqa: E402
+from dashrecon.gen.novel import attach_view_gate, build_trainer, view_gate_path  # noqa: E402
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w  # noqa: E402
 
 
@@ -63,6 +63,8 @@ class Run:
         dataset = DrivingDataset(data_cfg=cfg.data)
         self.trainer = build_trainer(cfg, dataset, device)
         self.trainer.resume_from_checkpoint(ckpt_path=os.path.join(log_dir, "checkpoint_final.pth"), load_only_model=True)
+        if view_gate_path(cfg) is not None:
+            attach_view_gate(self.trainer, view_gate_path(cfg))
         self.trainer.set_eval()
         full = dataset.full_image_set
         self.c2w, self.vfov = [], []
@@ -88,8 +90,12 @@ def render(run: Run, camera_state, img_wh) -> np.ndarray:
     k = torch.from_numpy(camera_state.get_K(img_wh)).float().to(device)
     cam = dataclass_camera(camtoworlds=c2w, camtoworlds_gt=c2w, Ks=k, H=h, W=w)
     gs = trainer.models["Background"].get_gaussians(cam)
+    opacities = gs["_opacities"].squeeze(-1)
+    if trainer.view_gate is not None:  # E14: the viewer's cameras are all novel views
+        n = trainer.view_gate.n
+        opacities = torch.cat([opacities[:n] * trainer.view_gate.factors(gs["_means"], c2w[:3, 3]), opacities[n:]])
     colors, alphas, _ = rasterization(
-        means=gs["_means"], quats=gs["_quats"], scales=gs["_scales"], opacities=gs["_opacities"].squeeze(),
+        means=gs["_means"], quats=gs["_quats"], scales=gs["_scales"], opacities=opacities,
         colors=gs["_rgbs"], viewmats=torch.linalg.inv(c2w)[None], Ks=k[None], width=w, height=h,
         packed=trainer.render_cfg.packed, rasterize_mode="antialiased" if trainer.render_cfg.antialiased else "classic",
         near_plane=trainer.render_cfg.near_plane, far_plane=trainer.render_cfg.far_plane,

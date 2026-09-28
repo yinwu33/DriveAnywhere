@@ -54,3 +54,22 @@ def test_observation_cone_and_gate():
     centre = means[0] - 10.0 * (rot @ axis[0])
     g_mid = cone_gate(means[:1], centre, axis[:1], half[:1], observed[:1], margin=15.0, fade=15.0)
     assert abs(float(g_mid[0]) - 0.5) < 1e-3, float(g_mid[0])
+
+
+def test_view_gate_apply_and_roundtrip(tmp_path):
+    from dashrecon.gen.floaters import ViewGate
+    from models.gaussians.basics import dataclass_gs
+
+    # two gated Gaussians seen from -x, one of them not selected; a third Gaussian added later is never gated
+    gate = ViewGate(axis=torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), half_angle=torch.tensor([5.0, 5.0]),
+                    observed=torch.tensor([True, True]), selected=torch.tensor([True, False]), margin=15.0, fade=15.0)
+    means = torch.tensor([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 2.0, 0.0]])
+    gs = dataclass_gs(_opacities=torch.full((3, 1), 0.8), _means=means, _rgbs=torch.zeros(3, 3),
+                      _scales=torch.ones(3, 3), _quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]] * 3), detach_keys=[])
+    side = gate.apply(gs, torch.tensor([0.0, -10.0, 0.0]))  # 90 degrees off the axis for the first Gaussian
+    assert side._opacities[:, 0].tolist() == [0.0, 0.800000011920929, 0.800000011920929]
+    front = gate.apply(gs, torch.tensor([-10.0, 0.0, 0.0]))
+    assert torch.allclose(front._opacities, gs._opacities)
+    gate.save(str(tmp_path / "g.pt"), {"note": "test"})
+    back = ViewGate.load(str(tmp_path / "g.pt"), torch.device("cpu"))
+    assert back.n == 2 and back.margin == 15.0 and torch.equal(back.selected, gate.selected)

@@ -31,6 +31,9 @@ class DashreconTrainer(MultiTrainer):
         self.mesh_cfg = self.losses_dict.mesh if "mesh" in self.losses_dict else None
         self._last_cam = None
         self._last_gs = None
+        self._last_novel = False
+        # dashrecon.gen.floaters.ViewGate applied to novel views only (E14); set by dashrecon.gen.novel.attach_view_gate
+        self.view_gate = None
         if self.mesh_cfg is not None:
             import nvdiffrast.torch as dr
 
@@ -45,13 +48,16 @@ class DashreconTrainer(MultiTrainer):
             self.glctx = dr.RasterizeCudaContext()
             self._dr = dr
 
-    def process_camera(self, *args, **kwargs):
-        cam = super().process_camera(*args, **kwargs)
+    def process_camera(self, camera_infos, image_ids, novel_view: bool = False):
+        cam = super().process_camera(camera_infos=camera_infos, image_ids=image_ids, novel_view=novel_view)
         self._last_cam = cam
+        self._last_novel = novel_view
         return cam
 
-    def collect_gaussians(self, *args, **kwargs):
-        gs = super().collect_gaussians(*args, **kwargs)
+    def collect_gaussians(self, cam, image_ids):
+        gs = super().collect_gaussians(cam=cam, image_ids=image_ids)
+        if self.view_gate is not None and self._last_novel:
+            gs = self.view_gate.apply(gs, cam.camtoworlds[:3, 3])
         self._last_gs = gs
         return gs
 

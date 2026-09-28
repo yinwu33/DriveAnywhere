@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dashrecon.gen.novel import build_trainer, refined_c2w, to_device
+from dashrecon.gen.novel import attach_view_gate, build_trainer, refined_c2w, to_device, view_gate_path
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_at
 from dashrecon.provenance import git_commit
 from dashrecon.train.guard import assert_non_oracle
@@ -92,6 +92,8 @@ def main() -> None:
         assert_non_oracle(config)
         trainer = build_trainer(config, dataset, device)
         trainer.resume_from_checkpoint(ckpt_path=str(log_dir / "checkpoint_final.pth"), load_only_model=True)
+        if view_gate_path(config) is not None:
+            attach_view_gate(trainer, view_gate_path(config))
         trainer.set_eval()
         directory = args.out_dir / label
         directory.mkdir()

@@ -1,7 +1,9 @@
 """Validate generated RGB-D against nearby generated views (self-consistency only).
 
-Writes confidence/<k>.npy, support/<k>.png and validation.json, leaving inputs
-untouched. Only original hole pixels can become generation memory. No overlap is
+Writes confidence/<k>.npy, support/<k>.png, status/<k>.png and validation.json,
+leaving inputs untouched. status codes (uint8): 0 not a hole, 1 unknown (no
+evidence at all), 2 weak (agreeing evidence below --min_support, no conflict),
+3 conflict (not accepted, some conflicting evidence), 4 accepted. Only original hole pixels can become generation memory. No overlap is
 unknown; two agreeing views and no material conflicts are required by default.
 Run in any project venv with numpy, Pillow, OpenCV; no GPU or GT needed.
 """
@@ -33,7 +35,7 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
     if not offsets or any(d == 0 for d in offsets) or len(set(offsets)) != len(offsets):
         raise ValueError("offsets must be distinct and exclude self (0)")
     out_dir.mkdir(parents=True, exist_ok=False)
-    for sub in ("confidence", "support"):
+    for sub in ("confidence", "support", "status"):
         (out_dir / sub).mkdir()
     cams = json.loads((views_dir / "cams.json").read_text())["cams"]
     memory_dirs = [] if memory_dirs is None else memory_dirs
@@ -110,6 +112,14 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
         panel[hole & ((conflict + memory_conflict) > 0)] = (220, 60, 50)
         panel[conf > 0] = (40, 190, 110)
         Image.fromarray(panel).save(out_dir / "support" / f"{k:03d}.png")
+        conflicting = (conflict + memory_conflict) > 0
+        agreeing = (support + memory_support) > 0
+        status = np.zeros(hole.shape, np.uint8)
+        status[hole & ~agreeing & ~conflicting] = 1
+        status[hole & agreeing & ~conflicting] = 2
+        status[hole & conflicting] = 3
+        status[conf > 0] = 4
+        Image.fromarray(status).save(out_dir / "status" / f"{k:03d}.png")
         rows.append({"k": k, "frame": cams[k]["frame"], "references": used,
                      "memory_references": memory_used,
                      "memory_supported_pixels": int((hole & (memory_support > 0)).sum()),
@@ -117,6 +127,7 @@ def validate(views_dir: Path, out_dir: Path, offsets: list[int], depth_tol: floa
                      "hole_pixels": int(hole.sum()), "accepted_pixels": int((conf > 0).sum()),
                      "conflict_pixels": int((hole & (conflict > 0)).sum()),
                      "unknown_pixels": int((hole & ((support + conflict + memory_support + memory_conflict) == 0)).sum()),
+                     "weak_pixels": int((status == 2).sum()),
                      "accepted_fraction": float((conf > 0).sum() / max(1, hole.sum()))})
         if k % 10 == 0:
             print(f"[validate] {k}/{len(cams)} accepted {rows[-1]['accepted_fraction']:.3f}", flush=True)

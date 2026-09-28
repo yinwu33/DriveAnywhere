@@ -18,6 +18,23 @@ def build_trainer(cfg, dataset, device: torch.device):
     )
 
 
+def view_gate_path(cfg):
+    """The view gate a run was trained with (config key ``view_gate``, written by scripts/train_fill.py --view_gate),
+    or None for runs without one."""
+    return cfg.view_gate if "view_gate" in cfg else None
+
+
+def attach_view_gate(trainer, path: str) -> None:
+    """Load a dashrecon.gen.floaters.ViewGate and make the trainer apply it to every novel view it renders."""
+    from dashrecon.gen.floaters import ViewGate
+
+    assert set(trainer.gaussian_classes.keys()) == {"Background"}, trainer.gaussian_classes
+    gate = ViewGate.load(path, trainer.device)
+    n = trainer.models["Background"]._means.shape[0]
+    assert gate.n <= n, f"gate covers {gate.n} Gaussians, the model has {n}"
+    trainer.view_gate = gate
+
+
 def to_device(infos: Dict, device: torch.device) -> Dict:
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in infos.items()}
 

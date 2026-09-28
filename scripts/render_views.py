@@ -34,7 +34,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dashrecon.gen.novel import build_trainer  # noqa: E402
+from dashrecon.gen.novel import attach_view_gate, build_trainer, view_gate_path  # noqa: E402
 from dashrecon.gen.novel import refined_c2w, to_device  # noqa: E402
 from dashrecon.gen.views import (ViewMove, front_image_index, hole_mask, memory_observers, moved_c2w, render_at,  # noqa: E402
                                  training_observers)
@@ -65,6 +65,8 @@ def main() -> None:
     parser.add_argument("--open_px", type=int, default=9)
     parser.add_argument("--min_area", type=int, default=3000)
     parser.add_argument("--dilate_px", type=int, default=7)
+    parser.add_argument("--view_gate", help="dashrecon.gen.floaters.ViewGate for novel views (scripts/make_view_gate.py) "
+                        "when --log_dir has none in its config; a run trained with one uses it anyway")
     args = parser.parse_args()
     commit = git_commit()
     if commit.endswith("-dirty"):
@@ -79,6 +81,12 @@ def main() -> None:
     dataset = DrivingDataset(data_cfg=cfg.data)
     trainer = build_trainer(cfg, dataset, device)
     trainer.resume_from_checkpoint(ckpt_path=os.path.join(args.log_dir, "checkpoint_final.pth"), load_only_model=True)
+    gate = view_gate_path(cfg)
+    if args.view_gate is not None:
+        assert gate is None or gate == args.view_gate, f"{args.log_dir} was trained with view gate {gate}, not {args.view_gate}"
+        gate = args.view_gate
+    if gate is not None:
+        attach_view_gate(trainer, gate)
     observers = training_observers(trainer, dataset, args.obs_stride, device)
     n_train_obs = len(observers)
     observers += memory_observers(trainer, dataset, args.memory_dirs, args.obs_stride, device)
@@ -152,7 +160,7 @@ def main() -> None:
                 cams[-1]["src"].append(src_cams[ks])
             hole_frac.append(float(hole.mean()))
     with open(os.path.join(args.out_dir, "cams.json"), "w") as f:
-        json.dump({"log_dir": args.log_dir, "move": vars(move) if move is not None else None, "params": vars(args), "cams": cams, "hole_frac": hole_frac,
+        json.dump({"log_dir": args.log_dir, "move": vars(move) if move is not None else None, "params": vars(args), "view_gate": gate, "cams": cams, "hole_frac": hole_frac,
                    "observers": len(observers), "train_observers": n_train_obs, "dashrecon_commit": commit}, f)
     print(f"[render_views] {args.log_dir} {args.move}: {len(cams)} views, hole fraction mean {np.mean(hole_frac):.3f} "
           f"max {np.max(hole_frac):.3f} -> {args.out_dir}", flush=True)

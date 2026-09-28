@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dashrecon.gen.novel import build_trainer, to_device
+from dashrecon.gen.novel import attach_view_gate, build_trainer, to_device, view_gate_path
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_at
 from dashrecon.provenance import git_commit
 from dashrecon.eval.distillation import fit_metrics
@@ -76,6 +76,8 @@ def main() -> None:
     device = torch.device("cuda")
     trainer = build_trainer(cfg, dataset, device)
     trainer.resume_from_checkpoint(ckpt_path=str(args.log_dir / "checkpoint_final.pth"), load_only_model=True)
+    if view_gate_path(cfg) is not None:
+        attach_view_gate(trainer, view_gate_path(cfg))
     trainer.set_eval()
     rows = []
     writer = imageio.get_writer(str(args.out_dir / "comparison.mp4"), mode="I", fps=5, macro_block_size=1)
