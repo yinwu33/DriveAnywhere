@@ -2,6 +2,8 @@
 
 日期：2026-09-28。Phase 9 修正任务 3 的补充诊断，决策见 [DECISIONS U](DECISIONS.md)。主实验代码 `81882ed391b33fa6fbd7e5864f5ba81e6cfd2c6b`，干净独立 worktree 运行；生成网络冻结，单张 RTX A6000 48GB。
 
+**最新质量判断（用户左右 90° 检查）：E11、E12 drive / sweep 均不满足自由视角目标。** E12 只局部拟合 0→+60°，左右 90° 未补全；已覆盖的 +60° 也明显失败。不能用局部 PSNR 改善代表场景可用，固定相机复查见 [SIDEVIEW_FAILURE_ANALYSIS.md](SIDEVIEW_FAILURE_ANALYSIS.md)。
+
 ## 为什么做这个对照
 
 用户提出每个位置都扫 0–60°。本次先验证三个关键位置的方案：frame 96、104、112，估计相机中心总跨度约 7.70 个场景单位。没有验证米制尺度，不能把这个数字当作真实米。
@@ -71,7 +73,7 @@ E5c 的历史 FRONT 指标为 31.391 / 0.910 / 0.1005，两组没有明显退化
 
 [完整实验报告](../results/E12/val056/probe_20260928/REPORT.md)。结果根目录 `results/E12/val056/probe_20260928/` 保存配置、meta、指标、相机、源图/掩码哈希、采样流、生成/深度/几何验收、checkpoint、原图、视频及逐阶段日志。
 
-交互查看器：本机 http://127.0.0.1:8081；远程先执行 `ssh -L 8081:127.0.0.1:8081 <SSH主机>`。在 run 切换 E12 drive (gen) 与 E12 sweep (gen)，可从 frame=104、yaw=30/60、right=0/0.5 开始，另检查 frame=96/112。E5c 和用户认可的 E11 两臂一并保留；原 8080 服务恢复。交互查看器相机/曝光处理略有不同，精确比较以报告 PNG 为准。
+交互查看器：本机 http://127.0.0.1:8081；远程先执行 `ssh -L 8081:127.0.0.1:8081 <SSH主机>`。在 run 切换 E12 drive (gen) 与 E12 sweep (gen)，可从 frame=104、yaw=30/60、right=0/0.5 开始，另检查 frame=96/112。E5c 和历史 E11 两臂一并保留；用户最新反馈明确否定 E11/E12 的左右 90° 质量。原 8080 服务恢复。交互查看器相机/曝光处理略有不同，精确比较以报告 PNG 为准。
 
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_HOME=/usr/local/cuda-12.1 \
