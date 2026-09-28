@@ -15,8 +15,9 @@ from dashrecon.provenance import git_commit
 LAYOUT = [[-45., 0., 45.], [-90., None, 90.], [-135., 180., 135.]]
 
 
-def contact(images: dict[float, Image.Image], label: str, frame: int) -> Image.Image:
+def contact(images: dict[float, Image.Image], label: str, frame: int, generative: bool) -> Image.Image:
     """Arrange the eight virtual directions spatially, with the rig at the centre."""
+    provenance = 'Completion: generated' if generative else 'Baseline: FRONT-only'
     width, height, caption = 384, 211, 24
     canvas = Image.new('RGB', (width * 3, (height + caption) * 3), '#171b20')
     draw = ImageDraw.Draw(canvas)
@@ -24,7 +25,7 @@ def contact(images: dict[float, Image.Image], label: str, frame: int) -> Image.I
         for col, yaw in enumerate(angles):
             x, y = col * width, row * (height + caption)
             if yaw is None:
-                draw.text((x + 20, y + 50), f'{label}\nframe {frame}\nFRONT-only reconstruction\nAll completion: generated\nYaw 0 = front, 180 = back', fill='white')
+                draw.text((x + 20, y + 50), f'{label}\nframe {frame}\nFRONT-only inputs\n{provenance}\nYaw 0 = front, 180 = back', fill='white')
             else:
                 canvas.paste(images[yaw].resize((width, height), Image.Resampling.LANCZOS), (x, y + caption))
                 draw.text((x + 6, y + 6), f'yaw {yaw:+g} deg', fill='white')
@@ -41,7 +42,7 @@ def sampling(out: Path, cfg: dict) -> None:
     for side, label in [(1, 'Round 0: right/back'), (-1, 'Round 1: left/back')]:
         plan = surrounding_plan(cfg['anchors'], cfg['pan_views'], cfg['transfer_views'], side)
         axes[0].plot([v['yaw'] for v in plan], label=label)
-        axes[1].plot([v['pose_frame'] for v in plan], label=label)
+        axes[1].plot([v['pose_frame'] for v in plan], label=label, linestyle='-' if side == 1 else '--')
     axes[0].set_ylabel('Yaw (degrees)')
     axes[0].set_yticks([-180, -135, -90, -45, 0, 45, 90, 135, 180])
     axes[0].legend()
@@ -80,7 +81,7 @@ def results(root: Path, out: Path, cfg: dict) -> None:
                 if len(selected) != 1:
                     raise ValueError(f'exactly one common camera required: {frame}, {yaw}')
                 images[yaw] = Image.open(common / model / f'{selected[0]:03d}.png').convert('RGB')
-            contact(images, model, frame).save(out / f'{model}_frame{frame}.png')
+            contact(images, model, frame, model != 'E5c').save(out / f'{model}_frame{frame}.png')
         images = {}
         for yaw in [a for row in LAYOUT for a in row if a is not None]:
             r = 1 if yaw < 0 else 0
@@ -88,7 +89,7 @@ def results(root: Path, out: Path, cfg: dict) -> None:
             if len(selected) != 1:
                 raise ValueError(f'exactly one generated camera required: {frame}, {yaw}')
             images[yaw] = Image.open(root / 'views' / f'r{r}' / 'filled' / f'{selected[0]:03d}.png').convert('RGB')
-        contact(images, 'Direct generation (two clips)', frame).save(out / f'direct_generation_frame{frame}.png')
+        contact(images, 'Direct generation (two clips)', frame, True).save(out / f'direct_generation_frame{frame}.png')
 
 
 def main() -> None:
