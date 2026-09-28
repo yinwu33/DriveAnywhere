@@ -21,6 +21,7 @@ def main() -> None:
     args = parser.parse_args()
     root = args.probe_dir
     state, meta = read(root / 'run_status.json'), read(root / 'meta.json')
+    cfg = OmegaConf.to_container(OmegaConf.load(root / 'config.yaml'), resolve=True)
     if not state['completed'] or any(s['exit_code'] != 0 for s in state['stages']):
         raise ValueError('completed stages required')
     for source, expected in meta['input_sha256'].items():
@@ -30,6 +31,7 @@ def main() -> None:
         raise ValueError('unexpected input/model provenance')
     audit = {'experiment_commit': meta['dashrecon_commit'],
              'analysis_script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+             'round_code_commits': meta['round_code_commits'],
              'kind': 'saved artifact integrity and generated self-consistency; no GT scoring',
              'input_hashes_verified': True, 'rounds': [], 'directions': []}
     scales = []
@@ -84,10 +86,19 @@ def main() -> None:
             if int((conf > 0).sum()) != row['accepted_pixels']:
                 raise ValueError('confidence/report mismatch')
         scales.append(depth['alignment']['scene_scale'])
+        selected = [report['frames'][k] for k in cfg['training_view_indices']]
+        selected_holes = sum(row['hole_pixels'] for row in selected)
+        if selected_holes == 0:
+            raise ValueError('surrounding training pool has no holes to evaluate')
+        selected_accepted = sum(row['accepted_pixels'] for row in selected)
         audit['rounds'].append({'round': r, 'artifacts': sizes, 'confidence_arrays': 121,
             'static_real_candidate_coverage_before_seed_override': float(np.mean([f['real_coverage'] for f in cache['frames']])),
             'first_conditioning_frame_full_front': True,
             'actual_memory_cache_mean': cache['memory_coverage'],
+            'training_targets_this_round': len(selected),
+            'accepted_hole_pixels_in_training_targets': selected_accepted,
+            'accepted_fraction_in_training_targets': selected_accepted / selected_holes,
+            'accepted_pixels_outside_training_targets': sum(row['accepted_pixels'] for row in report['frames']) - selected_accepted,
             'views_with_memory': sum(f['memory_pixels'] > 0 for f in cache['frames']),
             'skipped_heldout_source_frames': cache['skipped_heldout_source_frames'],
             'scene_scale': scales[-1], 'scale_reused': depth['alignment']['scale_reused']})
