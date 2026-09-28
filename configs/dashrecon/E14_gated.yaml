@@ -19,6 +19,10 @@ generation_steps: 35
 generation_seed: 1
 memory_radius: 16
 max_memory_candidates: 6
+# holes after generation: generated sky (SegFormer-B5 Cityscapes, Phase 4 backend) stays sky
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+seg_input_hw: [768, 1344]
+sky_alpha: 0.5
 # depth of the generated frames (D-B1): MapAnything jointly over each round's frames, scene-global scale per round
 depth_model_id: facebook/map-anything
 # validation (as E13)
