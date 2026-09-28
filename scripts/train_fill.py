@@ -4,7 +4,7 @@ Continues --init_log_dir (E5c for the first round, then E8 itself) with the fill
 (--views_dirs, each from render_views.py + fill_views.py + depth_views.py; keeping earlier rounds is the 3D memory).
 
 1. Spawn: in every --spawn_stride-th frame of the newest views dir, hole pixels (every --pixel_stride-th) are
-   back-projected with the aligned MapAnything depth and become new Gaussians: colour from the filled frame,
+   back-projected with the aligned estimated depth and become new Gaussians: colour from the filled frame,
    isotropic scale = pixel footprint x --scale_factor, opacity --init_opacity; one per voxel of half the median
    footprint.
 2. Distil for --steps steps: every step keeps all losses of the init run on one real training frame and adds one
