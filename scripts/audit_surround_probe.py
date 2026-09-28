@@ -75,8 +75,11 @@ def main() -> None:
                 raise ValueError(f'missing/extra {sub} arrays')
             for p in paths:
                 array = np.load(p)
-                if array.shape != (704, 1280) or not np.isfinite(array).all() or (array < 0).any():
+                expected_shape = (704, 1280, 1) if sub == 'opacity' else (704, 1280)
+                if array.shape != expected_shape or not np.isfinite(array).all() or (array < 0).any():
                     raise ValueError(f'invalid saved array: {p}')
+                if sub == 'opacity' and (array > 1).any():
+                    raise ValueError(f'opacity outside [0, 1]: {p}')
             sizes[sub] = len(paths)
         for k, row in enumerate(report['frames']):
             conf = np.load(validation / 'confidence' / f'{k:03d}.npy')
