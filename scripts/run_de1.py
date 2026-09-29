@@ -1,5 +1,6 @@
-"""D-E1 (docs/EXPERIMENTS.md): side-camera renders of every listed model (eval_cross_camera.py --save_renders, which
-also rescores the unseen region at --frame_stride) and their distribution-level realism (eval_realism.py).
+"""D-E1 (docs/EXPERIMENTS.md): side-camera renders of every listed model (eval_cross_camera.py --save_renders; no
+unseen-region rescoring, whose saved E5c masks exist only every 5th frame) and their distribution-level realism
+(eval_realism.py).
 EVALUATION: reads GT side images. Stages via dashrecon.stage_runner; output in <output_dir> (summary.json) and in each
 model's <log_dir>/<out_subdir>.
 
@@ -33,7 +34,7 @@ def main() -> None:
     for label, log_dir in cfg["runs"].items():
         runner.run(f"render_{label}", "main", ["scripts/eval_cross_camera.py", "--log_dir", log_dir, "--gt_root", cfg["gt_root"],
                    "--frame_stride", str(cfg["frame_stride"]), "--alpha", "0.5", "--example_frames", "--cams", "1", "2", "3", "4",
-                   "--unseen_dir", cfg["unseen_dir"], "--out_subdir", cfg["out_subdir"], "--save_renders"])
+                   "--out_subdir", cfg["out_subdir"], "--save_renders"])
     runner.run("realism", "main", ["scripts/eval_realism.py", "--runs",
                *[f"{label}={log_dir}/{cfg['out_subdir']}" for label, log_dir in cfg["runs"].items()],
                "--seg_model_id", cfg["seg_model_id"], "--out", str(out / "summary.json")])

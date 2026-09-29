@@ -1,9 +1,8 @@
 # D-E1 (docs/EXPERIMENTS.md): distribution-level realism of side-camera renders for every model so far (reads GT).
-output_dir: results/_diagnostics/DE1/val056
+output_dir: results/_diagnostics/DE1/val056_v2   # v1 failed: unseen masks only every 5th frame
 gt_root: data/waymo/processed/validation
-unseen_dir: results/E5c/val056/cross_camera_p9/unseen
 frame_stride: 2
-out_subdir: realism
+out_subdir: realism2               # v1 left partial realism/ dirs
 seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
 runs:
   E5c: results/E5c/val056
