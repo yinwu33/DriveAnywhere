@@ -854,11 +854,23 @@ attribute vec3 iCenter;
 attribute vec4 iColor;
 attribute vec3 iCovA;
 attribute vec3 iCovB;
+attribute vec4 iGate;
 uniform vec2 focal;
 uniform vec2 viewport;
+uniform vec3 camPos;
+uniform vec3 gateMF;
 varying vec4 vColor;
 varying vec2 vPos;
 void main() {
+  // view gate of Phase 9 runs (dashrecon.gen.floaters.cone_gate): iGate = observation axis, cone half-angle (degrees);
+  // w < 0 means not gated; gateMF = margin, fade (degrees), double-sided flag
+  float gate = 1.0;
+  if (iGate.w >= 0.0) {
+    float ang = degrees(acos(clamp(dot(normalize(iCenter - camPos), iGate.xyz), -1.0, 1.0)));
+    if (gateMF.z > 0.5) ang = min(ang, 180.0 - ang);
+    gate = clamp(1.0 - (max(ang - iGate.w, 0.0) - gateMF.x) / gateMF.y, 0.0, 1.0);
+  }
+  if (gate <= 0.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   vec4 cam = modelViewMatrix * vec4(iCenter, 1.0);
   float z = -cam.z;
   vec4 clip = projectionMatrix * cam;
@@ -884,7 +896,7 @@ void main() {
   vec2 major = min(sqrt(2.0 * l1), 1024.0) * v1;
   vec2 minor = min(sqrt(2.0 * l2), 1024.0) * vec2(v1.y, -v1.x);
   vec2 offPix = position.x * major + position.y * minor;
-  vColor = iColor;
+  vColor = vec4(iColor.rgb, iColor.a * gate);
   vPos = position.xy;
   gl_Position = vec4(ndc + vec2(2.0 * offPix.x / viewport.x, -2.0 * offPix.y / viewport.y), 0.0, 1.0);
 }`;
@@ -913,6 +925,16 @@ function buildSplats(d) {
   const scl = new Uint16Array(b64bytes(d.scl).buffer);
   const rot = new Int8Array(b64bytes(d.rot).buffer);
   const center = new Float32Array(n * 3), covA = new Float32Array(n * 3), covB = new Float32Array(n * 3);
+  // view gate (Phase 9 runs): axis + half-angle per splat, w = -1 for splats the gate does not touch
+  const gate = new Float32Array(n * 4).fill(-1);
+  if (d.gate) {
+    const ax = new Int8Array(b64bytes(d.gate.ax).buffer), par = b64bytes(d.gate.par);
+    for (let i = 0; i < n; i++) {
+      if (!par[2 * i + 1]) continue;
+      const x = ax[3 * i], y = ax[3 * i + 1], z = ax[3 * i + 2], l = Math.hypot(x, y, z) || 1;
+      gate[4 * i] = x / l; gate[4 * i + 1] = y / l; gate[4 * i + 2] = z / l; gate[4 * i + 3] = par[2 * i];
+    }
+  }
   for (let i = 0; i < n; i++) {
     for (let a = 0; a < 3; a++) center[3 * i + a] = d.lo[a] + (q[3 * i + a] / 65535) * (d.hi[a] - d.lo[a]);
     let w = rot[4 * i] / 127, x = rot[4 * i + 1] / 127, y = rot[4 * i + 2] / 127, z = rot[4 * i + 3] / 127;
@@ -934,6 +956,7 @@ function buildSplats(d) {
     iColor: new THREE.InstancedBufferAttribute(new Uint8Array(n * 4), 4, true),
     iCovA: new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3),
     iCovB: new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3),
+    iGate: new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4),
   };
   for (const [k, a] of Object.entries(attrs)) { a.setUsage(THREE.DynamicDrawUsage); g.setAttribute(k, a); }
   g.instanceCount = n;
@@ -942,7 +965,9 @@ function buildSplats(d) {
     blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
     blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
     blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
-    uniforms: { focal: { value: new THREE.Vector2(1, 1) }, viewport: { value: new THREE.Vector2(1, 1) } },
+    uniforms: { focal: { value: new THREE.Vector2(1, 1) }, viewport: { value: new THREE.Vector2(1, 1) },
+                camPos: { value: new THREE.Vector3() },
+                gateMF: { value: d.gate ? new THREE.Vector3(d.gate.margin, d.gate.fade, d.gate.double_sided ? 1 : 0) : new THREE.Vector3(0, 1, 0) } },
   });
   const mesh = new THREE.Mesh(g, mat);
   mesh.frustumCulled = false;
@@ -951,7 +976,7 @@ function buildSplats(d) {
   const idx = Array.from({ length: Math.min(n, 20000) }, (_, k) => Math.floor(k * n / Math.min(n, 20000)));
   const pct = (a, p) => { const v = idx.map(i => center[3 * i + a]).sort((x, y) => x - y); return v[Math.floor(p * (v.length - 1))]; };
   box.min.set(pct(0, 0.02), pct(1, 0.02), pct(2, 0.02)); box.max.set(pct(0, 0.98), pct(1, 0.98), pct(2, 0.98));
-  return { mesh, attrs, center, col, covA, covB, n, n_total: d.n_total, exp: d.exp, box,
+  return { mesh, attrs, center, col, covA, covB, gate, gated: d.gate ? d.gate.gated_kept : 0, n, n_total: d.n_total, exp: d.exp, box,
            depth: new Float32Array(n), order: new Uint32Array(n), counts: new Uint32Array(65536), lastView: null };
 }
 
@@ -974,8 +999,10 @@ function sortSplats(sp) {
   const order = sp.order;
   for (let i = n - 1; i >= 0; i--) order[--counts[65535 - Math.floor((d[i] - dmin) * scale)]] = i;
   const ac = sp.attrs.iCenter.array, ak = sp.attrs.iColor.array, aa = sp.attrs.iCovA.array, ab = sp.attrs.iCovB.array;
+  const ag = sp.attrs.iGate.array, g = sp.gate;
   for (let k = 0; k < n; k++) {
     const i = order[k];
+    ag[4 * k] = g[4 * i]; ag[4 * k + 1] = g[4 * i + 1]; ag[4 * k + 2] = g[4 * i + 2]; ag[4 * k + 3] = g[4 * i + 3];
     ac[3 * k] = c[3 * i]; ac[3 * k + 1] = c[3 * i + 1]; ac[3 * k + 2] = c[3 * i + 2];
     aa[3 * k] = sp.covA[3 * i]; aa[3 * k + 1] = sp.covA[3 * i + 1]; aa[3 * k + 2] = sp.covA[3 * i + 2];
     ab[3 * k] = sp.covB[3 * i]; ab[3 * k + 1] = sp.covB[3 * i + 1]; ab[3 * k + 2] = sp.covB[3 * i + 2];
@@ -1069,7 +1096,8 @@ function refreshScene() {
     extra.innerHTML = "";
   }
   if (splatOn) extra.innerHTML = `<span>${expName(s.splat.exp)} Gaussians: ${s.splat.n.toLocaleString("en-US")} of ${s.splat.n_total.toLocaleString("en-US")} (most opaque × largest) · base colour only, no sky model` +
-    (SPLATS.generative[s.splat.exp] ? " · trained with SDXL targets on shifted views, so it contains generated content" : "") + "</span>";
+    (SPLATS.generative[s.splat.exp] ? " · contains generated content" : "") +
+    (s.splat.gated ? ` · view gate on ${s.splat.gated.toLocaleString("en-US")} splats (hidden when seen from outside their training views)` : "") + "</span>";
   if (meshOn) extra.innerHTML += ` <span>showing ${window.MESH[currentId].nf.toLocaleString("en-US")} of ${MESH.scenes[currentId].stats.faces.toLocaleString("en-US")} faces</span>`;
   if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
   extra.hidden = extra.innerHTML === "";
@@ -1099,6 +1127,7 @@ function render() {
     camera.updateMatrixWorld();
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();  // renderer.render updates it only later
     sp.mesh.material.uniforms.viewport.value.set(size.x, size.y);
+    sp.mesh.material.uniforms.camPos.value.copy(camera.position);  // splats sit in world coordinates (no mesh transform)
     sp.mesh.material.uniforms.focal.value.set(camera.projectionMatrix.elements[0] * size.x / 2, camera.projectionMatrix.elements[5] * size.y / 2);
     sortSplats(sp);
   }
