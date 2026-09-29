@@ -157,6 +157,8 @@ E14 结束后看四样：侧视未观测区域的指标（对比 E10 的 LPIPS 0
 
 用户睡觉期间（2026-09-28 深夜到 09-29 早晨）按 §6 的顺序跑完了 E14，并做了一组诊断。每项的方案和数字都在 [EXPERIMENTS.md](EXPERIMENTS.md)，这里只写结论和对计划的修改。
 
+可视化（Claude Artifact，私有）：https://claude.ai/artifact/2UqDLxF493XkYC67vrn6DG ：侧相机真实感图表与对照表、四个侧相机的同帧对比、D-E2 三个阶段、D-C2 缓存处理、D-C1 提示、第 104 帧环视、E20 进度。图片取自各实验的 `realism2/`、`views/`、`renders/common/` 和 `r0_after/`。
+
 ### 7.1 结果
 
 | 实验 | 问的是什么 | 结论 |
