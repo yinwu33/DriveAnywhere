@@ -8,10 +8,11 @@ exit code and time, and the run stops at the first failure:
     r<k>_render        render_views.py: the current model (E5c, then E14) along every frame_stride-th FRONT frame,
                        turned by moves[k] over ramp_frames views; hole masks with the earlier rounds as 3D memory
     r<k>_cache_preview / r<k>_generate   gen3c_fill.py (consistent cache: real FRONT warps first, then validated
-                       generated memory of earlier rounds)
+                       generated memory of earlier rounds; + generation_extra_args; the preview only if cache_preview)
     r<k>_holes         refine_holes.py: the sky of the generated frames decides what low-opacity pixels are (with the
                        gate, the side of the road renders empty and would otherwise count as sky)
-    r<k>_depth         depth_views.py: MapAnything jointly over the round's frames, scene-global scale (D-B1)
+    r<k>_depth         depth_views.py: MapAnything jointly over the round's frames, scene-global scale (D-B1);
+                       + depth_extra_args
     r<k>_validate      validate_generated_views.py (translated references, as E13)
     r<k>_train         train_fill.py --view_gate --no_refine --unknown_w --round_affine
     r<k>_after         diagnose_distillation.py on the round's own views
@@ -127,12 +128,14 @@ def main() -> None:
                       "--max_memory_candidates", str(cfg["max_memory_candidates"])]
         if views_dirs:
             generation += ["--memory_dirs", *views_dirs, "--validation_dirs", *validations]
-        run(f"r{k}_cache_preview", "gen3c", [*generation, "--buffers_only"])
+        generation += cfg["generation_extra_args"]
+        if cfg["cache_preview"]:
+            run(f"r{k}_cache_preview", "gen3c", [*generation, "--buffers_only"])
         run(f"r{k}_generate", "gen3c", generation)
         run(f"r{k}_holes", "masks", ["scripts/refine_holes.py", "--views_dir", views, "--seg_model_id", cfg["seg_model_id"],
             "--seg_input_hw", *map(str, cfg["seg_input_hw"]), "--sky_alpha", str(cfg["sky_alpha"])])
         run(f"r{k}_depth", "mapanything", ["scripts/depth_views.py", "--views_dir", views, "--backend", "mapanything",
-            "--model_id", cfg["depth_model_id"], "--alignment_policy", "scene_global"])
+            "--model_id", cfg["depth_model_id"], "--alignment_policy", "scene_global", *cfg["depth_extra_args"]])
         verify = ["scripts/validate_generated_views.py", "--views_dir", views, "--out_dir", validation,
                   "--reference_policy", "translated", "--min_baseline", str(cfg["min_baseline_scene_units"]),
                   "--min_parallax_degrees", str(cfg["min_parallax_degrees"]), "--max_references", str(cfg["max_references"]),

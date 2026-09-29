@@ -21,12 +21,15 @@ generation_steps: 35
 generation_seed: 1
 memory_radius: 16
 max_memory_candidates: 6
+generation_extra_args: []   # appended to gen3c_fill.py (e.g. --prompt, --guidance, --speckle; D-C1, D-C2)
+cache_preview: true         # gen3c_fill.py --buffers_only first (the generation writes buffers.mp4 as well)
 # holes after generation: generated sky (SegFormer-B5 Cityscapes, Phase 4 backend) stays sky
 seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
 seg_input_hw: [768, 1344]
 sky_alpha: 0.5
 # depth of the generated frames (D-B1): MapAnything jointly over each round's frames, scene-global scale per round
 depth_model_id: facebook/map-anything
+depth_extra_args: []        # appended to depth_views.py (e.g. --poses_metric; D-B2)
 # validation (as E13)
 min_baseline_scene_units: 1.0
 min_parallax_degrees: 0.5
