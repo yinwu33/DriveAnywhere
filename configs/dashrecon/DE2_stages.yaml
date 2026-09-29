@@ -1,0 +1,11 @@
+# D-E2 (docs/EXPERIMENTS.md): realism of E14's side views before generation, as generated, and after distillation.
+source_dir: results/E14/val056
+final_log_dir: results/E14/val056/model
+output_dir: results/_diagnostics/DE2/val056
+refs_dir: results/E5c/val056/realism2/refs     # D-E1 v2 references (every 2nd frame, undistorted, render grid)
+rounds:      # E14 round -> real camera looking about the same way
+  0: 2       # yaw +45: FRONT_RIGHT
+  1: 1       # yaw -45: FRONT_LEFT
+  2: 4       # yaw +90: SIDE_RIGHT
+  3: 3       # yaw -90: SIDE_LEFT
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
