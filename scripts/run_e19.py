@@ -1,4 +1,5 @@
 """E19 (docs/EXPERIMENTS.md): NVIDIA Fixer progressive distillation on the turning views of a Phase 9 run.
+E27 uses the same runner with method: sky (scripts/fit_sky.py instead of train_fixer.py; config keys views_dirs, steps).
 
 train_fixer.py continues --init_log_dir (E20: +-45 degree completion from E5f) with Fixer-restored targets at the
 config's yaws (no sideways move), then the evaluation every Phase 9 run gets: FRONT held-out, the four side cameras
@@ -42,11 +43,18 @@ def main() -> None:
         init = str(out / "init")
         runner.run("init_gate", "main", ["scripts/virtual_run.py", "--log_dir", cfg["init_log_dir"], "--gate", cfg["init_gate"],
                    "--out_dir", init])
-    runner.run("train", "main", ["scripts/train_fixer.py", "--scene_id", cfg["scene_id"], "--output_root", cfg["output_root"],
-               "--init_log_dir", init, "--out_log_dir", model, "--exp", cfg["exp"],
-               "--yaw_choices", *map(str, cfg["yaw_choices"]), "--off_lo_start", "0", "--off_hi_start", "0",
-               "--off_lo_end", "0", "--off_hi_end", "0", "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"]),
-               *cfg["train_extra_args"]])
+    if cfg["method"] == "fixer":
+        runner.run("train", "main", ["scripts/train_fixer.py", "--scene_id", cfg["scene_id"], "--output_root", cfg["output_root"],
+                   "--init_log_dir", init, "--out_log_dir", model, "--exp", cfg["exp"],
+                   "--yaw_choices", *map(str, cfg["yaw_choices"]), "--off_lo_start", "0", "--off_hi_start", "0",
+                   "--off_lo_end", "0", "--off_hi_end", "0", "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"]),
+                   *cfg["train_extra_args"]])
+    elif cfg["method"] == "sky":
+        runner.run("fit_sky", "main", ["scripts/fit_sky.py", "--log_dir", init, "--out_log_dir", model, "--exp", cfg["exp"],
+                   "--views_dirs", *cfg["views_dirs"], "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"]),
+                   *cfg["train_extra_args"]])
+    else:
+        raise ValueError(f"unknown method {cfg['method']}")
     runner.run("eval_front", "main", ["scripts/eval_front_heldout.py", "--log_dir", model, "--example_frames", "50", "100", "150"])
     runner.run("eval_cross_camera", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
                "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",

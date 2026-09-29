@@ -7,6 +7,7 @@ init_gate: results/E20/val056/view_gate.pt   # the gate E20 computed for E5f's G
 output_dir: results/E21/val056
 yaw_choices: [45, -45, 90, -90]   # pool views turned to one of these (+- 3 degree jitter), no sideways move
 steps: 6000                      # E7's defaults otherwise: refresh every 250 steps, Fixer timestep 250, gen_w 0.5, lpips_w 0.2
+method: fixer                    # scripts/train_fixer.py
 seed: 0
 train_extra_args: []             # appended to train_fixer.py
 # evaluation
