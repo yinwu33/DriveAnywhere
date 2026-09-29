@@ -141,8 +141,8 @@ def main() -> None:
         loss.backward()
         sky.base.grad[frozen] = 0.0
         opt.step()
-        with torch.no_grad():
-            sky.base.clamp_(0.0, 1.0)
+        with torch.no_grad():  # frozen texels keep their trained values, which can lie outside [0, 1]
+            sky.base[~frozen] = sky.base[~frozen].clamp(0.0, 1.0)
         if step % 500 == 0 or step == args.steps - 1:
             history.append({"step": step, "gen_l1": gen_loss.item(), "anchor_l1": anchor_loss.item(), "tv": tv.item()})
             print(f"[fit_sky] step {step}: generated L1 {gen_loss.item():.4f}  anchor L1 {anchor_loss.item():.4f}  tv {tv.item():.5f}", flush=True)
