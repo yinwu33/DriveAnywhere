@@ -31,12 +31,19 @@ class SegformerSkyRoadBackend(MaskBackend):
             assert self.model.config.id2label[cid] == kind, (cid, self.model.config.id2label[cid])
 
     @torch.no_grad()
-    def predict(self, image: Image.Image) -> tuple[dict[str, np.ndarray], dict]:
+    def labels(self, image: Image.Image) -> np.ndarray:
+        """Cityscapes class id of every pixel (H, W), at the image's own size."""
         w, h = image.size
         inputs = self.proc(images=image, size={"height": self.input_hw[0], "width": self.input_hw[1]},
                            return_tensors="pt").to(self.device)
-        seg = self.proc.post_process_semantic_segmentation(self.model(**inputs), target_sizes=[(h, w)])[0]
-        seg = seg.cpu().numpy()
+        return self.proc.post_process_semantic_segmentation(self.model(**inputs), target_sizes=[(h, w)])[0].cpu().numpy()
+
+    def class_id(self, name: str) -> int:
+        """Id of a Cityscapes class name in the loaded model's config (KeyError if the model has no such class)."""
+        return int(self.model.config.label2id[name])
+
+    def predict(self, image: Image.Image) -> tuple[dict[str, np.ndarray], dict]:
+        seg = self.labels(image)
         return {kind: seg == cid for kind, cid in CLASS_IDS.items()}, {}
 
     def meta(self) -> dict:

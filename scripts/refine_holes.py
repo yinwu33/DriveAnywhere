@@ -7,7 +7,9 @@ low opacity there, so the houses and trees that belong in those pixels would be 
 (the Phase 4 backend, sky = class 10) on each filled frame, and
     hole = (render hole | rendered opacity < --sky_alpha) & ~generated sky.
 Pixels the generator painted as sky stay with the Sky model; everything else it painted where the render was empty or
-unobserved becomes a hole to distil.
+unobserved becomes a hole to distil. --exclude_classes (Cityscapes names, e.g. car person) also removes what the
+generator painted as those classes: the static scene masks real vehicles and people (Phase 4), and an imagined car
+that drives along with the camera (D-C2) must not be distilled either.
 
 In --views_dir: the render's mask/ moves to mask_render/ (it must not exist yet), the new holes go to mask/, the
 generated sky to sky_gen/, and holes.json records per-frame fractions, parameters and the commit.
@@ -37,6 +39,7 @@ def main() -> None:
     parser.add_argument("--seg_model_id", required=True)
     parser.add_argument("--seg_input_hw", type=int, nargs=2, required=True)
     parser.add_argument("--sky_alpha", type=float, required=True)
+    parser.add_argument("--exclude_classes", nargs="*", default=[], help="Cityscapes class names removed from the holes")
     args = parser.parse_args()
     commit = git_commit()
     assert not commit.endswith("-dirty"), "commit code before refining experiment inputs"
@@ -48,24 +51,31 @@ def main() -> None:
     os.makedirs(os.path.join(vd, "mask"))
     os.makedirs(os.path.join(vd, "sky_gen"))
     backend = SegformerSkyRoadBackend(args.seg_model_id, tuple(args.seg_input_hw))
+    sky_id = backend.class_id("sky")
+    excluded_ids = [backend.class_id(name) for name in args.exclude_classes]
     t0, rows = time.time(), []
     for k in range(n):
         filled = Image.open(os.path.join(vd, "filled", f"{k:03d}.png")).convert("RGB")
-        sky = backend.predict(filled)[0]["sky"]
+        labels = backend.labels(filled)
+        sky = labels == sky_id
+        excluded = np.isin(labels, excluded_ids)
         opacity = np.load(os.path.join(vd, "opacity", f"{k:03d}.npy"))[..., 0]
         old = np.asarray(Image.open(os.path.join(vd, "mask_render", f"{k:03d}.png"))) > 127
         assert sky.shape == opacity.shape == old.shape, (sky.shape, opacity.shape, old.shape)
-        hole = (old | (opacity < args.sky_alpha)) & ~sky
+        candidate = (old | (opacity < args.sky_alpha)) & ~sky
+        hole = candidate & ~excluded
         Image.fromarray((hole * 255).astype(np.uint8)).save(os.path.join(vd, "mask", f"{k:03d}.png"))
         Image.fromarray((sky * 255).astype(np.uint8)).save(os.path.join(vd, "sky_gen", f"{k:03d}.png"))
         rows.append({"k": k, "render_hole": float(old.mean()), "hole": float(hole.mean()), "generated_sky": float(sky.mean()),
-                     "render_hole_now_sky": float((old & sky).mean()), "low_opacity_added": float((hole & ~old).mean())})
+                     "render_hole_now_sky": float((old & sky).mean()), "low_opacity_added": float((hole & ~old).mean()),
+                     "excluded_classes": float((candidate & excluded).mean())})
     summary = {key: float(np.mean([r[key] for r in rows])) for key in rows[0] if key != "k"}
     with open(os.path.join(vd, "holes.json"), "w") as f:
         json.dump({"params": vars(args), "segmentation": backend.meta(), "mean": summary, "frames": rows,
                    "runtime_s": time.time() - t0, "dashrecon_commit": commit}, f, indent=2)
     print(f"[refine_holes] {vd}: hole {summary['render_hole']:.3f} -> {summary['hole']:.3f} "
-          f"(+{summary['low_opacity_added']:.3f} low opacity, -{summary['render_hole_now_sky']:.3f} generated sky)", flush=True)
+          f"(+{summary['low_opacity_added']:.3f} low opacity, -{summary['render_hole_now_sky']:.3f} generated sky, "
+          f"-{summary['excluded_classes']:.3f} {args.exclude_classes})", flush=True)
 
 
 if __name__ == "__main__":

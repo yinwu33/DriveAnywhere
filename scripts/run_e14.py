@@ -10,7 +10,7 @@ exit code and time, and the run stops at the first failure:
     r<k>_cache_preview / r<k>_generate   gen3c_fill.py (consistent cache: real FRONT warps first, then validated
                        generated memory of earlier rounds; + generation_extra_args; the preview only if cache_preview)
     r<k>_holes         refine_holes.py: the sky of the generated frames decides what low-opacity pixels are (with the
-                       gate, the side of the road renders empty and would otherwise count as sky)
+                       gate, the side of the road renders empty and would otherwise count as sky); + holes_extra_args
     r<k>_depth         depth_views.py: MapAnything jointly over the round's frames, scene-global scale (D-B1);
                        + depth_extra_args
     r<k>_validate      validate_generated_views.py (translated references, as E13)
@@ -133,7 +133,7 @@ def main() -> None:
             run(f"r{k}_cache_preview", "gen3c", [*generation, "--buffers_only"])
         run(f"r{k}_generate", "gen3c", generation)
         run(f"r{k}_holes", "masks", ["scripts/refine_holes.py", "--views_dir", views, "--seg_model_id", cfg["seg_model_id"],
-            "--seg_input_hw", *map(str, cfg["seg_input_hw"]), "--sky_alpha", str(cfg["sky_alpha"])])
+            "--seg_input_hw", *map(str, cfg["seg_input_hw"]), "--sky_alpha", str(cfg["sky_alpha"]), *cfg["holes_extra_args"]])
         run(f"r{k}_depth", "mapanything", ["scripts/depth_views.py", "--views_dir", views, "--backend", "mapanything",
             "--model_id", cfg["depth_model_id"], "--alignment_policy", "scene_global", *cfg["depth_extra_args"]])
         verify = ["scripts/validate_generated_views.py", "--views_dir", views, "--out_dir", validation,
