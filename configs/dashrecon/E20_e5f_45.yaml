@@ -11,6 +11,9 @@ gate_mesh_distance: 0.3
 gate_margin_deg: 15
 gate_fade_deg: 15
 gate_cone_min_weight: 0.5
+gate: null                  # computed from init_log_dir (stage "gate")
+prior_views_dirs: []        # earlier runs' generated views as GEN3C / validation memory
+prior_validation_dirs: []
 # target views: the whole drive, every 2nd frame, turned to the round's yaw over the first 20 views (as E10)
 moves: ["yaw=45", "yaw=-45"]
 frame_stride: 2

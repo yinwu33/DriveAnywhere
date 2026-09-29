@@ -1,20 +1,21 @@
-# E14 (docs/EXPERIMENTS.md): view-gated turning completion with joint MapAnything depth and per-round appearance.
-exp: E14
-init_label: E5c
+# E28 (docs/EXPERIMENTS.md): E20 continued with GEN3C rounds at +-135 degrees (looking back to the sides), E20's
+# +-45 degree generated views as GEN3C / validation memory; E28f then runs E23's Fixer pass on the result.
+exp: E28
+init_label: E20
 scene_id: val056
-init_log_dir: results/E5c/val056
-output_dir: results/E14/val056
+init_log_dir: results/E20/val056/model
+output_dir: results/E28/val056
 # view gate (D-A3)
 mesh_ply: data/dashrecon/val056/pose-glomap_depth-mapanything__mask-gsam2_sky-segformer_img-glomap/mesh_nksr.ply
 gate_mesh_distance: 0.3
 gate_margin_deg: 15
 gate_fade_deg: 15
 gate_cone_min_weight: 0.5
-gate: null                  # computed from init_log_dir (stage "gate")
-prior_views_dirs: []        # earlier runs' generated views as GEN3C / validation memory
-prior_validation_dirs: []
+gate: results/E20/val056/view_gate.pt   # E20's own gate
+prior_views_dirs: [results/E20/val056/views/r0, results/E20/val056/views/r1]   # E20's +-45 generated views as memory
+prior_validation_dirs: [results/E20/val056/validation/r0, results/E20/val056/validation/r1]
 # target views: the whole drive, every 2nd frame, turned to the round's yaw over the first 20 views (as E10)
-moves: ["yaw=45", "yaw=-45", "yaw=90", "yaw=-90"]
+moves: ["yaw=135", "yaw=-135"]
 frame_stride: 2
 ramp_frames: 20
 render_hw: [704, 1280]
@@ -24,16 +25,16 @@ generation_steps: 35
 generation_seed: 1
 memory_radius: 16
 max_memory_candidates: 6
-generation_extra_args: []   # appended to gen3c_fill.py (e.g. --prompt, --guidance, --speckle; D-C1, D-C2)
-cache_preview: true         # gen3c_fill.py --buffers_only first (the generation writes buffers.mp4 as well)
+generation_extra_args: [--speckle, drop, --speckle_window, "15", --speckle_density, "0.5"]   # D-C2
+cache_preview: false        # the generation writes buffers.mp4 too
 # holes after generation: generated sky (SegFormer-B5 Cityscapes, Phase 4 backend) stays sky
 seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
 seg_input_hw: [768, 1344]
 sky_alpha: 0.5
-holes_extra_args: []        # appended to refine_holes.py (e.g. --exclude_classes car person; D-C2)
+holes_extra_args: [--exclude_classes, person, rider, car, truck, bus, train, motorcycle, bicycle]   # D-C2
 # depth of the generated frames (D-B1): MapAnything jointly over each round's frames, scene-global scale per round
 depth_model_id: facebook/map-anything
-depth_extra_args: []        # appended to depth_views.py (e.g. --poses_metric; D-B2)
+depth_extra_args: [--poses_metric]   # D-B2
 # validation (as E13)
 min_baseline_scene_units: 1.0
 min_parallax_degrees: 0.5
@@ -49,16 +50,17 @@ spawn_stride: 3
 pixel_stride: 3
 unknown_w: 0.3
 round_affine_reg: 1.0
-train_extra_args: []        # appended to train_fill.py (e.g. --protect_original; E17b)
+train_extra_args: []        # no --protect_from: E17b brought the gated junk back
 diagnostic_indices: [10, 30, 50, 70, 90]
 # evaluation
 gt_root: data/waymo/processed/validation
 unseen_dir: results/E5c/val056/cross_camera_p9/unseen
-compare_log_dirs: [results/E10/val056]
-compare_labels: [E10_gen]
-realism_compare:            # D-E1 renders (realism2/) of earlier runs, compared with this run's (stages added after E14 ran)
-  E5c: results/E5c/val056
-  E10: results/E10/val056
+compare_log_dirs: [results/E20/val056/model, results/E23/val056/model]
+compare_labels: [E20_gen, E23_gen]
+realism_compare:            # D-E1 renders (realism2/) of earlier runs, compared with this run's
+  E5f: results/E5f/val056
+  E20: results/E20/val056/model
+  E23: results/E23/val056/model
 rig_frames: [96, 104, 112]
 rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
 rig_rights_scene_units: [0, 0.5]

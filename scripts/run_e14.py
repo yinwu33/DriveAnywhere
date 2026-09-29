@@ -23,6 +23,10 @@ exit code and time, and the run stops at the first failure:
 Output: <output_dir>/ view_gate.pt, views/r<k>, validation/r<k>, model/ (the E14 run: checkpoint, config with
 view_gate), r<k>_after/, renders/common/, logs/, config.yaml, meta.json, run_status.json.
 
+gate: null computes the view gate from the init run (stage "gate"); a path reuses that init run's own gate (E28
+continues E20). prior_views_dirs / prior_validation_dirs: generated views of earlier runs used as GEN3C memory and as
+validation memory (not distilled again).
+
 --resume continues a run that stopped: the config must be unchanged; stages that succeeded before are skipped when
 their command is identical (their outputs, logs and commit stay as they were), the failed stage and everything after
 it run again with the current commit, recorded per stage and in run_status.json "resumes".
@@ -108,10 +112,15 @@ def main() -> None:
             raise RuntimeError(f"{name} failed with exit {process.returncode}: {entry['log']}")
         print(f"[{exp}] DONE {name} {entry['elapsed_s'] / 60:.1f} min", flush=True)
 
-    gate = str(out / "view_gate.pt")
-    run("gate", "main", ["scripts/make_view_gate.py", "--log_dir", cfg["init_log_dir"], "--mesh_ply", cfg["mesh_ply"],
-        "--mesh_distance", str(cfg["gate_mesh_distance"]), "--margin", str(cfg["gate_margin_deg"]),
-        "--fade", str(cfg["gate_fade_deg"]), "--cone_min_weight", str(cfg["gate_cone_min_weight"]), "--out", gate])
+    if cfg["gate"] is None:
+        gate = str(out / "view_gate.pt")
+        run("gate", "main", ["scripts/make_view_gate.py", "--log_dir", cfg["init_log_dir"], "--mesh_ply", cfg["mesh_ply"],
+            "--mesh_distance", str(cfg["gate_mesh_distance"]), "--margin", str(cfg["gate_margin_deg"]),
+            "--fade", str(cfg["gate_fade_deg"]), "--cone_min_weight", str(cfg["gate_cone_min_weight"]), "--out", gate])
+    else:  # the init run's own gate (E28 continues E20)
+        gate = cfg["gate"]
+    prior_views, prior_validations = cfg["prior_views_dirs"], cfg["prior_validation_dirs"]
+    assert len(prior_views) == len(prior_validations), "one validation dir per prior views dir"
     model = str(out / "model")
     views_dirs, validations = [], []
     for k, move in enumerate(cfg["moves"]):
@@ -120,7 +129,7 @@ def main() -> None:
         render = ["scripts/render_views.py", "--log_dir", source, "--move", move, "--out_dir", views,
                   "--frame_stride", str(cfg["frame_stride"]), "--ramp_frames", str(cfg["ramp_frames"]),
                   "--render_hw", *map(str, cfg["render_hw"]), "--src_offsets", *map(str, cfg["src_offsets"]),
-                  "--memory_dirs", *views_dirs]
+                  "--memory_dirs", *prior_views, *views_dirs]
         if k == 0:
             render += ["--view_gate", gate]
         run(f"r{k}_render", "main", render)
@@ -128,8 +137,8 @@ def main() -> None:
                       "--num_steps", str(cfg["generation_steps"]), "--seed", str(cfg["generation_seed"]),
                       "--memory_candidate_policy", "pose", "--memory_radius", str(cfg["memory_radius"]),
                       "--max_memory_candidates", str(cfg["max_memory_candidates"])]
-        if views_dirs:
-            generation += ["--memory_dirs", *views_dirs, "--validation_dirs", *validations]
+        if prior_views or views_dirs:
+            generation += ["--memory_dirs", *prior_views, *views_dirs, "--validation_dirs", *prior_validations, *validations]
         generation += cfg["generation_extra_args"]
         if cfg["cache_preview"]:
             run(f"r{k}_cache_preview", "gen3c", [*generation, "--buffers_only"])
@@ -143,8 +152,8 @@ def main() -> None:
                   "--min_parallax_degrees", str(cfg["min_parallax_degrees"]), "--max_references", str(cfg["max_references"]),
                   "--depth_tol", str(cfg["depth_tolerance"]), "--rgb_tol", str(cfg["rgb_tolerance"]),
                   "--min_support", str(cfg["min_support"]), "--max_conflict_fraction", str(cfg["max_conflict_fraction"])]
-        if views_dirs:
-            verify += ["--memory_dirs", *views_dirs, "--memory_validation_dirs", *validations]
+        if prior_views or views_dirs:
+            verify += ["--memory_dirs", *prior_views, *views_dirs, "--memory_validation_dirs", *prior_validations, *validations]
         run(f"r{k}_validate", "main", verify)
         views_dirs.append(views)
         validations.append(validation)
