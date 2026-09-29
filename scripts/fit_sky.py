@@ -10,6 +10,9 @@ refine_holes.py hands generated sky to the Sky model and nothing trained it. Her
     anchor     L1 between the cube map and its initial values at the directions of the real FRONT training sky pixels
                (dataset sky_masks), so the forward sky (trained through the per-image Affine) does not move;
     smooth     --tv_w x mean absolute difference between neighbouring texels (within each face).
+--freeze_real (E27b): every texel that any real FRONT training sky pixel reads (the gradient of the cube-map lookup
+over all of them is nonzero there) is frozen exactly, so neither the smoothness term nor the generated sky changes
+the forward sky (E27 without it blurred the cloud texture of the FRONT views: held-out LPIPS 0.081 -> 0.132).
 Every other parameter of the run is copied unchanged.
 
 Output <out_log_dir>: checkpoint_final.pth (the run's checkpoint with the new Sky), config.yaml (the run's),
@@ -72,6 +75,7 @@ def main() -> None:
     parser.add_argument("--per_frame", type=int, default=4000, help="sky pixels sampled per real FRONT frame")
     parser.add_argument("--batch", type=int, default=65536)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--freeze_real", action="store_true", help="freeze every texel a real FRONT sky pixel reads")
     args = parser.parse_args()
     os.makedirs(args.out_log_dir, exist_ok=False)
     commit = git_commit()
@@ -106,6 +110,18 @@ def main() -> None:
             continue
         real_d.append(dirs[torch.from_numpy(rng.choice(len(dirs), size=min(args.per_frame, len(dirs)), replace=False))])
     real_d = torch.cat(real_d).float().to(device)
+    frozen = torch.zeros(sky.base.shape[:3], dtype=torch.bool, device=device)
+    if args.freeze_real:
+        sky.base.grad = None
+        for idx in range(len(dataset.train_image_set)):
+            ii, _ = dataset.train_image_set.get_image(idx, 1)
+            dirs = ii["viewdirs"][ii["sky_masks"] > 0.5].float().to(device)
+            if len(dirs) == 0:
+                continue
+            sky({"viewdirs": dirs}).sum().backward()
+        frozen = sky.base.grad.abs().sum(-1) > 0
+        sky.base.grad = None
+        print(f"[fit_sky] freezing {frozen.float().mean().item() * 100:.2f}% of the texels (read by real FRONT sky)", flush=True)
     with torch.no_grad():
         real_c = sky({"viewdirs": real_d}).detach()
     print(f"[fit_sky] {len(gen_d):,} generated sky pixels from {len(args.views_dirs)} trajectories, "
@@ -123,6 +139,7 @@ def main() -> None:
         loss = gen_loss + args.anchor_w * anchor_loss + args.tv_w * tv
         opt.zero_grad()
         loss.backward()
+        sky.base.grad[frozen] = 0.0
         opt.step()
         with torch.no_grad():
             sky.base.clamp_(0.0, 1.0)
@@ -138,7 +155,9 @@ def main() -> None:
     changed = (sky.base.detach() - base0).abs().max(-1).values > 0.02
     with open(os.path.join(args.out_log_dir, "fit_sky.json"), "w") as f:
         json.dump({**vars(args), "generated_samples": len(gen_d), "real_anchor_samples": len(real_d), "history": history,
-                   "texels_changed_fraction": float(changed.float().mean()), "generative": True,
+                   "texels_changed_fraction": float(changed.float().mean()), "texels_frozen_fraction": float(frozen.float().mean()),
+                   "frozen_max_change": float((sky.base.detach() - base0).abs()[frozen].max()) if bool(frozen.any()) else 0.0,
+                   "generative": True,
                    "kind": "Sky cube map fitted to GEN3C-generated sky; all Gaussians unchanged",
                    "runtime_s": time.time() - t0, "dashrecon_commit": commit}, f, indent=2)
     with open(os.path.join(args.out_log_dir, "meta.json"), "w") as f:
