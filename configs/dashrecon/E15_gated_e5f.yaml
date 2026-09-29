@@ -53,6 +53,10 @@ gt_root: data/waymo/processed/validation
 unseen_dir: results/E5c/val056/cross_camera_p9/unseen
 compare_log_dirs: [results/E5c/val056, results/E14/val056/model]
 compare_labels: [E5c, E14_gen]
+realism_compare:            # D-E1 renders (realism2/) of earlier runs, compared with this run's
+  E5c: results/E5c/val056
+  E5f: results/E5f/val056
+  E14: results/E14/val056/model
 rig_frames: [96, 104, 112]
 rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
 rig_rights_scene_units: [0, 0.5]

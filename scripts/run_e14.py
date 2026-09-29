@@ -18,6 +18,8 @@ exit code and time, and the run stops at the first failure:
     r<k>_after         diagnose_distillation.py on the round's own views
     eval_front / eval_cross_camera / common_rig   FRONT held-out, the four side cameras over E5c's unseen pixels
                        (evaluation reads GT), fixed common cameras against E5c and the compare runs
+    eval_realism_render / eval_realism   D-E1's distribution-level realism of the four side cameras (every 2nd frame;
+                       KID / FID, SegFormer classes, sharpness) against the realism_compare runs' realism2/ renders
 Output: <output_dir>/ view_gate.pt, views/r<k>, validation/r<k>, model/ (the E14 run: checkpoint, config with
 view_gate), r<k>_after/, renders/common/, logs/, config.yaml, meta.json, run_status.json.
 
@@ -162,6 +164,12 @@ def main() -> None:
     run("eval_cross_camera", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
         "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",
         "--unseen_dir", cfg["unseen_dir"], "--out_subdir", "cross_camera_p9"])
+    run("eval_realism_render", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
+        "--frame_stride", "2", "--alpha", "0.5", "--example_frames", "--cams", "1", "2", "3", "4", "--out_subdir", "realism2",
+        "--save_renders"])
+    run("eval_realism", "main", ["scripts/eval_realism.py", "--runs",
+        *[f"{label}={log_dir}/realism2" for label, log_dir in cfg["realism_compare"].items()], f"{exp}={model}/realism2",
+        "--seg_model_id", cfg["seg_model_id"], "--out", str(out / "realism.json")])
     run("common_rig", "main", ["scripts/render_sweep_comparison.py", "--init_log_dir", cfg["init_log_dir"],
         "--log_dirs", *cfg["compare_log_dirs"], model, "--labels", cfg["init_label"], *cfg["compare_labels"], f"{exp}_gen",
         "--frames", *map(str, cfg["rig_frames"]), "--yaws", *map(str, cfg["rig_yaws"]),
