@@ -33,6 +33,7 @@
 | 候选（Mapillary，§14） | [MTGS](#mtgs)、[3DGUT](#3dgut)、[WildGaussians](#wildgaussians) | 多次经过融合；畸变与卷帘快门；外观嵌入 |
 | 计划 D-E1（评测升级） | [MEt3R](#met3r)、[OneSceneEval](#onesceneeval)、[ReconDreamer](#recondreamer) | 不依赖真值的多视角一致性；基于 COLMAP 的一致性；NTA-IoU / NTL-IoU |
 | 计划 E16（现成基线） | [Lyra](#lyra) | GEN3C + 3DGS 解码器，从单目视频直接生成 3DGS |
+| E17c | [Let There Be Color](#let-there-be-color) | 网格贴图的最佳视角选择：每个想象的表面点只由一个生成视角负责 |
 | 计划 E17（先几何后外观） | [InfiniCube](#infinicube)、[InfiniVerse](#infiniverse)、[SEM-ROVER](#sem-rover)、[LSD-3D](#lsd-3d)、[Lyra 2.0](#lyra-20) | 体素、占据或网格代理保证一致性，生成器只负责外观；历史帧检索 |
 | 计划 E18（测试时适配） | [CogNVS](#cognvs)、[World from Motion](#world-from-motion) | 在本场景视频上自监督微调补全模型 |
 | 计划 D-D1（蒸馏改进） | [DriveX](#drivex)、[FaithFusion](#faithfusion)、[FreeFix](#freefix) | 伪真值渐进更新；逐像素置信度 |
@@ -167,6 +168,18 @@
 - **做了什么**：平面化高斯 + 无偏深度渲染（直接渲染相机到高斯平面的距离和法向），多视角几何一致性。
 - **可借鉴**：同 2DGS，偏重表面精度；可作为导出道路 / 碰撞网格的备选。
 - **状态**：候选。
+
+#### Let There Be Color
+*Let There Be Color! Large-Scale Texturing of 3D Reconstructions*，Waechter、Moehrle、Goesele，ECCV 2014。不在 arXiv 上，所以没有 PDF，也不在 `papers.tsv` 里。
+- **做了什么**：给多视图重建的网格贴纹理。
+  - 每个面只从一张图取颜色，用 MRF 选视角。数据项偏好离得近、正对、清晰的视角；平滑项让相邻面尽量用同一张图，减少接缝。
+  - 用光度一致性检查剔除被遮挡物污染的视角。
+  - 最后做全局和局部的颜色调整，消除接缝处的颜色跳变。
+- **已借鉴**：E17c 用它的"每个表面点只由一个视角负责"。
+  - 我们的实现是逐像素的：分数 = 置信度 × |cos(视线, 法向)| / 深度，在 ±12 帧的窗口里取分数最高的生成视角。
+  - 没有做 MRF 平滑项和接缝的颜色调整（`scripts/best_view_ownership.py`）。
+- **仍可借鉴**：如果 E17c 的补丁之间出现色差或接缝，下一步是补上平滑项，以及按轮次做颜色调整。
+- **状态**：借鉴中（E17c）。
 
 ### 候选
 
