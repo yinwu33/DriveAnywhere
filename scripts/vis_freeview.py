@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.ggds import SDXLRefiner, disparity_image  # noqa: E402
-from dashrecon.gen.novel import build_trainer  # noqa: E402
+from dashrecon.gen.novel import attach_view_gate, build_trainer, view_gate_path  # noqa: E402
 from dashrecon.gen.views import ViewMove, render_moved  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 
@@ -77,6 +77,8 @@ def main() -> None:
     for d, c in zip(args.log_dirs, cfgs):
         t = build_trainer(c, dataset, device)
         t.resume_from_checkpoint(ckpt_path=os.path.join(d, "checkpoint_final.pth"), load_only_model=True)
+        if view_gate_path(c) is not None:  # Phase 9 runs render novel views through their view gate (D-A3)
+            attach_view_gate(t, view_gate_path(c))
         t.set_eval()
         trainers.append(t)
     scene = f"val{int(cfgs[0].data.scene_idx):03d}"
