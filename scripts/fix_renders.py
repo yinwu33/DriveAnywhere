@@ -37,11 +37,14 @@ def main() -> None:
     names = sorted(os.listdir(os.path.join(args.src, "renders")))
     fixer = FixerClient(args.timestep, os.path.join(args.out, "fixer_work"), args.cuda_home)
     t0 = time.time()
-    for b in range(0, len(names), args.batch):
-        part = names[b:b + args.batch]
+    by_cam = {}
+    for n in names:  # <t:03d>_<cam>.png; the cameras render at different sizes
+        by_cam.setdefault(n.rsplit("_", 1)[1], []).append(n)
+    batches = [group[b:b + args.batch] for group in by_cam.values() for b in range(0, len(group), args.batch)]
+    for part in batches:
         imgs = [np.asarray(Image.open(os.path.join(args.src, "renders", n)).convert("RGB")).astype(np.float32) / 255.0 for n in part]
         h, w = imgs[0].shape[:2]
-        assert all(i.shape[:2] == (h, w) for i in imgs), "renders of one size per batch"
+        assert all(i.shape[:2] == (h, w) for i in imgs), "renders of one camera differ in size"
         ph, pw = -h % 16, -w % 16
         padded = np.stack([np.pad(i, ((0, ph), (0, pw), (0, 0)), mode="edge") for i in imgs])
         fixed = fixer.refine(padded)[:, :h, :w]
