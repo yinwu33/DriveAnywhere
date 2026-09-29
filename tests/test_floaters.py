@@ -73,3 +73,17 @@ def test_view_gate_apply_and_roundtrip(tmp_path):
     gate.save(str(tmp_path / "g.pt"), {"note": "test"})
     back = ViewGate.load(str(tmp_path / "g.pt"), torch.device("cpu"))
     assert back.n == 2 and back.margin == 15.0 and torch.equal(back.selected, gate.selected)
+
+
+def test_double_sided_gate_keeps_the_view_from_behind():
+    from dashrecon.gen.floaters import cone_gate
+
+    means = torch.zeros(1, 3)
+    axis = torch.tensor([[1.0, 0.0, 0.0]])  # seen from -x, looking towards +x
+    half, observed = torch.tensor([5.0]), torch.tensor([True])
+    behind = torch.tensor([10.0, 0.0, 0.0])  # looking back along the same rays
+    side = torch.tensor([0.0, -10.0, 0.0])
+    one = lambda c: float(cone_gate(means, c, axis, half, observed, 15.0, 15.0)[0])
+    two = lambda c: float(cone_gate(means, c, axis, half, observed, 15.0, 15.0, double_sided=True)[0])
+    assert one(behind) == 0.0 and two(behind) == 1.0
+    assert one(side) == 0.0 and two(side) == 0.0

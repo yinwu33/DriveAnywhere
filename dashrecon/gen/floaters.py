@@ -54,10 +54,16 @@ def observation_cone(means: torch.Tensor, centres: torch.Tensor, weights: torch.
 
 
 def cone_gate(means: torch.Tensor, centre: torch.Tensor, axis: torch.Tensor, half_angle: torch.Tensor,
-              observed: torch.Tensor, margin: float, fade: float) -> torch.Tensor:
+              observed: torch.Tensor, margin: float, fade: float, double_sided: bool = False) -> torch.Tensor:
     """Opacity factor (N,) for a camera at ``centre``: 1 while the viewing direction is within half_angle + margin
-    degrees of the observation axis, falling linearly to 0 over the next ``fade`` degrees; 0 if never observed."""
+    degrees of the observation axis, falling linearly to 0 over the next ``fade`` degrees; 0 if never observed.
+
+    double_sided measures the angle to the axis *line* (min(a, 180 - a)): a view along the observed rays but facing the
+    other way (looking back) hides depth errors along those rays just as the observing view did, so only views across
+    the rays (the sides) are gated (D-A4 in docs/EXPERIMENTS.md; E14's one-sided gate emptied the rear view)."""
     ang = torch.rad2deg(torch.arccos((unit(means - centre) * axis).sum(-1).clamp(-1.0, 1.0)))
+    if double_sided:
+        ang = torch.minimum(ang, 180.0 - ang)
     excess = (ang - half_angle).clamp(min=0.0)
     g = (1.0 - (excess - margin) / fade).clamp(0.0, 1.0)
     return torch.where(observed, g, torch.zeros_like(g))
@@ -136,6 +142,7 @@ class ViewGate:
     selected: torch.Tensor
     margin: float
     fade: float
+    double_sided: bool = False
 
     @property
     def n(self) -> int:
@@ -143,7 +150,8 @@ class ViewGate:
 
     def factors(self, means: torch.Tensor, centre: torch.Tensor) -> torch.Tensor:
         """(n,) opacity factors of the first n Gaussians for a camera at ``centre``."""
-        g = cone_gate(means[:self.n], centre, self.axis, self.half_angle, self.observed, self.margin, self.fade)
+        g = cone_gate(means[:self.n], centre, self.axis, self.half_angle, self.observed, self.margin, self.fade,
+                      self.double_sided)
         return torch.where(self.selected, g, torch.ones_like(g))
 
     def apply(self, gs, centre: torch.Tensor):
@@ -158,10 +166,13 @@ class ViewGate:
 
     def save(self, path: str, meta: dict) -> None:
         torch.save({"axis": self.axis.cpu(), "half_angle": self.half_angle.cpu(), "observed": self.observed.cpu(),
-                    "selected": self.selected.cpu(), "margin": self.margin, "fade": self.fade, "meta": meta}, path)
+                    "selected": self.selected.cpu(), "margin": self.margin, "fade": self.fade,
+                    "double_sided": self.double_sided, "meta": meta}, path)
 
     @staticmethod
     def load(path: str, device: torch.device) -> "ViewGate":
         d = torch.load(path, map_location=device)
+        # gates saved before D-A4 have no double_sided entry; they were one-sided
+        double_sided = bool(d["double_sided"]) if "double_sided" in d else False
         return ViewGate(axis=d["axis"], half_angle=d["half_angle"], observed=d["observed"], selected=d["selected"],
-                        margin=float(d["margin"]), fade=float(d["fade"]))
+                        margin=float(d["margin"]), fade=float(d["fade"]), double_sided=double_sided)

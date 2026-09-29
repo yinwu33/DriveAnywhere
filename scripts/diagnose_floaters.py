@@ -71,7 +71,7 @@ HW = (704, 1280)
 SH_C0 = 0.28209479177387814
 TURBO = cv2.applyColorMap(np.arange(256, dtype=np.uint8)[:, None], cv2.COLORMAP_TURBO)[:, 0, ::-1].astype(np.float32) / 255
 TERM = re.compile(r"^(support|scale|mesh|needle)([<>])([0-9.]+)$")
-GATE = re.compile(r"^gate([0-9.]+)$")
+GATE = re.compile(r"^(d?)gate([0-9.]+)$")
 
 
 def to_turbo(values: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
@@ -96,25 +96,26 @@ def front_heldout(trainer, dataset, device, prepare) -> dict:
 
 
 def parse_variant(spec: str, quantities: dict) -> tuple:
-    """"base" -> (None, False, None); "dc&scale>1" -> (selection, dc_only, None); "gate30&mesh>0.3" -> (selection,
-    False, 30.0). The selection is None when no quantity term is given. Unknown terms raise."""
+    """"base" -> (None, False, None, False); "dc&scale>1" -> (selection, dc_only, None, False); "gate30&mesh>0.3" ->
+    (selection, False, 30.0, False); "dgate15" -> double-sided gate (D-A4). The selection is None when no quantity term
+    is given. Unknown terms raise."""
     if spec == "base":
-        return None, False, None
-    dc_only, select, margin = False, None, None
+        return None, False, None, False
+    dc_only, select, margin, double = False, None, None, False
     for term in spec.split("&"):
         if term == "dc":
             dc_only = True
             continue
         g = GATE.match(term)
         if g is not None:
-            margin = float(g.group(1))
+            margin, double = float(g.group(2)), g.group(1) == "d"
             continue
         m = TERM.match(term)
         assert m is not None, f"bad variant term {term!r} in {spec!r}"
         x, v = quantities[m.group(1)], float(m.group(3))
         sel = x < v if m.group(2) == "<" else x > v
         select = sel if select is None else select & sel
-    return select, dc_only, margin
+    return select, dc_only, margin, double
 
 
 def pct(x: torch.Tensor) -> dict:
@@ -196,7 +197,7 @@ def main() -> None:
 
     images, rows, base_opacity = {}, {}, []
     for spec in args.variants:
-        select, dc_only, margin = parse_variant(spec, quantities)
+        select, dc_only, margin, double = parse_variant(spec, quantities)
         bg._features_rest.data.copy_(rest0)
         if dc_only:
             bg._features_rest.data.zero_()
@@ -208,7 +209,7 @@ def main() -> None:
             if margin is None:
                 bg._opacities.data.copy_(static)
                 return
-            g = cone_gate(bg._means, centre, axis, half_angle, observed, margin, args.gate_fade)
+            g = cone_gate(bg._means, centre, axis, half_angle, observed, margin, args.gate_fade, double)
             if select is not None:
                 g = torch.where(select, g, torch.ones_like(g))
             p = torch.sigmoid(opacity0[:, 0]) * g
@@ -230,6 +231,7 @@ def main() -> None:
                 exposed.append(float((base_opacity[k] & (o < 0.5)).float().mean()))
         prune = select if margin is None else None
         rows[spec] = {"selected": 0 if select is None else int(select.sum()), "dc_only": dc_only, "gate_margin_deg": margin,
+                      "gate_double_sided": double,
                       "base_side_weight_removed": None if prune is None else float(side[prune].sum() / side.sum()),
                       "selected_saturation": None if select is None else pct(saturation[select]),
                       "side_mean_opacity": opac, "side_exposed_fraction": exposed,
