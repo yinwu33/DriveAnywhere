@@ -1,0 +1,30 @@
+# D-C2 (docs/EXPERIMENTS.md): speckle treatment of GEN3C's cache on exactly the inputs of E14 round 2 (yaw +90).
+output_dir: results/_diagnostics/DC2/val056
+base_label: E14_r2
+base_views: results/E14/val056/views/r2          # cameras, cache sources, E14's refined hole mask; linked
+memory_dirs: [results/E14/val056/views/r0, results/E14/val056/views/r1]
+memory_validation_dirs: [results/E14/val056/validation/r0, results/E14/val056/validation/r1]
+refs_dir: results/E5c/val056/realism2/refs       # D-E1 references (SIDE_RIGHT looks about where yaw 90 looks)
+cam: 4
+arms:          # window in pixels of the 704 x 1280 cache; density = valid fraction in the window
+  drop:        # sparse dots removed: GEN3C imagines them
+    mode: drop
+    window: 15
+    density: 0.5
+  fill:        # sparse regions closed by averaging the dots (smeared, no depth test)
+    mode: fill
+    window: 15
+    density: 0.15
+generation_steps: 35
+generation_seed: 1
+memory_radius: 16
+max_memory_candidates: 6
+depth_model_id: facebook/map-anything
+min_baseline_scene_units: 1.0
+min_parallax_degrees: 0.5
+max_references: 4
+depth_tolerance: 0.10
+rgb_tolerance: 0.12
+min_support: 2
+max_conflict_fraction: 0.25
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024

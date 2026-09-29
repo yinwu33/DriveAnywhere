@@ -20,6 +20,7 @@ feeds a scripts/render_views.py directory rendered at GEN3C's 704 x 1280 with a 
 Pipeline construction and the call follow cosmos_predict1/diffusion/inference/gen3c_dynamic.py @ db2ffe1 with all
 offloading, no guardrail, no prompt encoder (the repository's low-memory settings, ~43 GB peak; the prompt is then
 unused) and its defaults (35 steps, guidance 1, seed 1); --fps is passed as the frame-rate conditioning.
+--speckle drop|fill (consistent cache only) removes or fills the sparse dots a grazing-angle warp leaves (D-C2).
 --prompt TEXT enables the T5-11B prompt encoder (checkpoints/google-t5/t5-11b, offloaded after encoding) and conditions
 every chunk on TEXT (D-C1 in docs/EXPERIMENTS.md); without it the pipeline is exactly the prompt-free one above.
 
@@ -75,6 +76,10 @@ def main() -> None:
     parser.add_argument("--memory_candidate_policy", choices=["frame", "pose"], default="frame")
     parser.add_argument("--max_memory_candidates", type=int, default=3)
     parser.add_argument("--require_memory", action="store_true", help="fail if no validated memory reaches the cache")
+    parser.add_argument("--speckle", choices=["keep", "drop", "fill"], default="keep",
+                        help="consistent cache only: sparse warp dots (dashrecon.gen.cache.treat_speckle, D-C2)")
+    parser.add_argument("--speckle_window", type=int, default=15)
+    parser.add_argument("--speckle_density", type=float, default=0.5)
     parser.add_argument("--num_steps", type=int, default=35)
     parser.add_argument("--guidance", type=float, default=1.0)
     parser.add_argument("--prompt", help="scene description; enables the T5 prompt encoder (default: no prompt encoder)")
@@ -93,6 +98,8 @@ def main() -> None:
         raise FileExistsError(f"refusing to overwrite existing generated frames: {out_dir}")
     if args.cache_policy == "fixed" and (args.memory_dirs or args.validation_dirs or args.require_memory):
         raise ValueError("memory options require --cache_policy consistent")
+    if args.cache_policy == "fixed" and args.speckle != "keep":
+        raise ValueError("--speckle requires --cache_policy consistent")
     memory_dirs = [Path(p).resolve() for p in args.memory_dirs]
     validation_dirs = [Path(p).resolve() for p in args.validation_dirs]
     os.makedirs(out_dir, exist_ok=True)
@@ -140,7 +147,8 @@ def main() -> None:
         from dashrecon.gen.cache import build_consistent_cache
         warp, valid, cache_report = build_consistent_cache(
             cams, Path(views_dir), data_cfg, Path(image_dir), memory_dirs, validation_dirs,
-            real_frame, args.memory_radius, .10, .12, args.memory_candidate_policy, args.max_memory_candidates)
+            real_frame, args.memory_radius, .10, .12, args.memory_candidate_policy, args.max_memory_candidates,
+            args.speckle, args.speckle_window, args.speckle_density)
         if args.require_memory and cache_report["memory_coverage"] <= 0:
             raise ValueError("no validated memory reached the generator; see validation results")
     else:

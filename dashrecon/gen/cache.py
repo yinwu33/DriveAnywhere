@@ -17,16 +17,48 @@ from dashrecon.gen.trajectory import memory_candidate_indices
 from dashrecon.scenes import train_frame_mask
 
 
+def treat_speckle(rgb: np.ndarray, valid: np.ndarray, depth: np.ndarray, mode: str, window: int,
+                  density: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Handle the sparse dots a forward warp leaves where it stretches the source (grazing angles, D-C2).
+
+``density`` of a pixel = fraction of valid pixels in the ``window`` x ``window`` box around it.
+    keep: unchanged;
+    drop: valid pixels with density < ``density`` become empty (the generator imagines them freely);
+    fill: the cache becomes exactly the pixels with density >= ``density``: empty ones among them get the box
+          average of the valid colours and depths around them (normalised convolution; foreground and background
+          dots are averaged, no depth test), valid ones below it are dropped as in drop.
+"""
+    if mode == "keep":
+        return rgb, valid, depth
+    v = valid.astype(np.float32)
+    local = cv2.blur(v, (window, window), borderType=cv2.BORDER_CONSTANT)
+    if mode == "drop":
+        kept = valid & (local >= density)
+        return np.where(kept[..., None], rgb, -1.), kept, np.where(kept, depth, 0.)
+    if mode != "fill":
+        raise ValueError(f"unknown speckle mode {mode}")
+    kept = local >= density
+    grow = kept & ~valid
+    den = np.maximum(local, 1e-6)
+    rgb_avg = np.stack([cv2.blur(rgb[..., c] * v, (window, window), borderType=cv2.BORDER_CONSTANT) for c in range(3)], -1) / den[..., None]
+    depth_avg = cv2.blur(depth * v, (window, window), borderType=cv2.BORDER_CONSTANT) / den
+    rgb = np.where(grow[..., None], rgb_avg, rgb)
+    depth = np.where(grow, depth_avg, depth)
+    return np.where(kept[..., None], rgb, -1.), kept, np.where(kept, depth, 0.)
+
+
 def build_consistent_cache(cams: list, views_dir: Path, data_cfg, image_dir: Path,
                            memory_dirs: list[Path], validation_dirs: list[Path],
                            real_frame, memory_radius: int, depth_tol: float,
                            rgb_tol: float, memory_candidate_policy: str = "frame",
-                           max_memory_candidates: int = 3) -> tuple[np.ndarray, np.ndarray, dict]:
+                           max_memory_candidates: int = 3, speckle: str = "keep", speckle_window: int = 15,
+                           speckle_density: float = 0.5) -> tuple[np.ndarray, np.ndarray, dict]:
     """Two buffers: best real source; complementary real source plus memory holes.
 
 Only train FRONT pixels outside estimated dynamic/sky masks enter real caches.
 Memory is accepted only on validated original holes and never overwrites real
 coverage. The best projected coverage, not a fixed source offset, picks sources.
+Every warp (real and memory) first goes through treat_speckle (``speckle`` keep: the E14 cache).
 """
     from cosmos_predict1.diffusion.inference.forward_warp_utils_pytorch import forward_warp
 
@@ -84,8 +116,8 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
             rgb_t, torch.tensor(valid, device=device).float()[None, None], None, None,
             torch.linalg.inv(torch.tensor(target_cam["c2w"], device=device))[None], k[None], k[None],
             world_points1=points, render_depth=True)
-        return (rgb_w[0].permute(1, 2, 0).float().cpu().numpy(), valid_w[0, 0].cpu().numpy() > .5,
-                depth_w[0].float().cpu().numpy())
+        return treat_speckle(rgb_w[0].permute(1, 2, 0).float().cpu().numpy(), valid_w[0, 0].cpu().numpy() > .5,
+                             depth_w[0].float().cpu().numpy(), speckle, speckle_window, speckle_density)
 
     out = np.full((len(cams), 2, h, w, 3), -1., np.float32)
     valid = np.zeros((len(cams), 2, h, w), np.float32)
@@ -159,6 +191,7 @@ coverage. The best projected coverage, not a fixed source offset, picks sources.
     memory_source.cache_clear()
     return out, valid, {"policy": "real_first_coverage_validated_memory", "frames": rows,
                         "memory_candidate_policy": memory_candidate_policy, "max_memory_candidates": max_memory_candidates,
+                        "speckle": {"mode": speckle, "window": speckle_window, "density": speckle_density},
                         "positive_memory_frame_indices": positive_indices,
                         "candidate_filter": "positive validation before pose ranking; legacy frame ranking unchanged",
                         "skipped_heldout_source_frames": sorted(skipped_test),
