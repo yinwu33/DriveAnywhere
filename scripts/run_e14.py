@@ -14,7 +14,7 @@ exit code and time, and the run stops at the first failure:
     r<k>_depth         depth_views.py: MapAnything jointly over the round's frames, scene-global scale (D-B1);
                        + depth_extra_args
     r<k>_validate      validate_generated_views.py (translated references, as E13)
-    r<k>_train         train_fill.py --view_gate --no_refine --unknown_w --round_affine
+    r<k>_train         train_fill.py --view_gate --no_refine --unknown_w --round_affine + train_extra_args
     r<k>_after         diagnose_distillation.py on the round's own views
     eval_front / eval_cross_camera / common_rig   FRONT held-out, the four side cameras over E5c's unseen pixels
                        (evaluation reads GT), fixed common cameras against E5c and the compare runs
@@ -151,7 +151,7 @@ def main() -> None:
                  "--seen_w", "0", "--steps", str(cfg["optimization_steps"]), "--seed", str(cfg["optimization_seed"]),
                  "--spawn_stride", str(cfg["spawn_stride"]), "--pixel_stride", str(cfg["pixel_stride"]),
                  "--no_refine", "--unknown_w", str(cfg["unknown_w"]), "--round_affine",
-                 "--round_affine_reg", str(cfg["round_affine_reg"])]
+                 "--round_affine_reg", str(cfg["round_affine_reg"]), *cfg["train_extra_args"]]
         if k == 0:
             train += ["--view_gate", gate]
         run(f"r{k}_train", "main", train)

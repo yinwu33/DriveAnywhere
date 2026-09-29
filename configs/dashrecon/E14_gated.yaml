@@ -45,6 +45,7 @@ spawn_stride: 3
 pixel_stride: 3
 unknown_w: 0.3
 round_affine_reg: 1.0
+train_extra_args: []        # appended to train_fill.py (e.g. --protect_original; E17b)
 diagnostic_indices: [10, 30, 50, 70, 90]
 # evaluation
 gt_root: data/waymo/processed/validation
