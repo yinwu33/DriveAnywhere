@@ -1,0 +1,23 @@
+# E19 (docs/EXPERIMENTS.md): Fixer progressive distillation (Difix3D+, E7's recipe) on the turning views of E20.
+exp: E19
+scene_id: val056
+output_root: results
+init_log_dir: results/E20/val056/model
+output_dir: results/E19/val056
+yaw_choices: [45, -45, 90, -90]   # pool views turned to one of these (+- 3 degree jitter), no sideways move
+steps: 6000                      # E7's defaults otherwise: refresh every 250 steps, Fixer timestep 250, gen_w 0.5, lpips_w 0.2
+seed: 0
+# evaluation
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:
+  E5f: results/E5f/val056
+  E20: results/E20/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+rig_init_log_dir: results/E5f/val056
+rig_init_label: E5f
+rig_compare:
+  E20_gen: results/E20/val056/model
+rig_frames: [96, 104, 112]
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]

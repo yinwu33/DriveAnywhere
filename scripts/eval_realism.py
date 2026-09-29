@@ -7,7 +7,10 @@ these metrics ask whether the renders look like real street images of this kind 
         Inception-v3 features;
     semantic plausibility: SegFormer-B5 Cityscapes (the Phase 4 model) class histogram over all pixels of the renders
         vs of the references, Jensen-Shannon divergence (base 2), and the fractions of the main static classes;
-    sharpness: mean variance of the Laplacian of the grey renders over that of the references.
+    sharpness: mean variance of the Laplacian of the grey renders over that of the references;
+    flat fraction: renders whose grey standard deviation (at 240 px width) is below --flat_std, i.e. an almost uniform
+        colour field (a camera looking into one large Gaussian). KID can prefer these to noisy texture (D-E3), so every
+        realism result reports it; the references are checked too.
 Multi-view consistency metrics (MEt3R, COLMAP-based) are for generated frames; a render of one 3DGS is consistent by
 construction, so they are not used here (docs/PLAN_AFTER_E14.md D-E1, corrected).
 
@@ -70,11 +73,18 @@ def sharpness(img: np.ndarray) -> float:
     return float(cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32), cv2.CV_32F).var())
 
 
+def grey_std(img: np.ndarray) -> float:
+    """Standard deviation of the grey image at 240 px width (the flat-frame test)."""
+    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    return float(cv2.resize(g, (240, round(g.shape[0] * 240 / g.shape[1])), interpolation=cv2.INTER_AREA).std())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", nargs="+", required=True, help="label=dir")
     parser.add_argument("--seg_model_id", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--flat_std", type=float, default=12.0, help="grey std below which a render counts as flat")
     args = parser.parse_args()
     commit = git_commit()
     assert not os.path.exists(args.out), args.out
@@ -128,14 +138,16 @@ def main() -> None:
                 "semantic_js": js_divergence(hf, hr),
                 "class_fraction_render": {c: float(hf[seg.labels.index(c)] / hf.sum()) for c in MAIN_CLASSES},
                 "class_fraction_real": {c: float(hr[seg.labels.index(c)] / hr.sum()) for c in MAIN_CLASSES},
-                "sharpness_ratio": float(np.mean([sharpness(imgs[n]) for n in sel]) / np.mean([ref_sharp[n] for n in sel]))}
+                "sharpness_ratio": float(np.mean([sharpness(imgs[n]) for n in sel]) / np.mean([ref_sharp[n] for n in sel])),
+                "flat_fraction": float(np.mean([grey_std(imgs[n]) < args.flat_std for n in sel])),
+                "flat_fraction_real": float(np.mean([grey_std(ref_imgs[n]) < args.flat_std for n in sel]))}
         print(f"[eval_realism] {label}: " + "  ".join(
-            f"{g} KID {v['kid']*1000:.1f}e-3 FID {v['fid']:.1f} semJS {v['semantic_js']:.3f} sharp {v['sharpness_ratio']:.2f}"
+            f"{g} KID {v['kid']*1000:.1f}e-3 FID {v['fid']:.1f} semJS {v['semantic_js']:.3f} sharp {v['sharpness_ratio']:.2f} flat {v['flat_fraction']:.2f}"
             for g, v in results[label].items()), flush=True)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump({"reads_gt": True, "runs": runs, "files": len(names), "groups": {g: list(c) for g, c in GROUPS.items()},
-                   "seg_model_id": args.seg_model_id, "kid_subset_size": "min(100, images)", "inception_input": "299 x 299 bicubic",
+                   "seg_model_id": args.seg_model_id, "flat_std": args.flat_std, "kid_subset_size": "min(100, images)", "inception_input": "299 x 299 bicubic",
                    "results": results, "runtime_s": time.time() - t0, "dashrecon_commit": commit}, f, indent=2)
 
 
