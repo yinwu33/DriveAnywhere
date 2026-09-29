@@ -1,0 +1,15 @@
+# D-E3 (docs/EXPERIMENTS.md): E14 after each round (render-time variants of its round checkpoints), D-E1 protocol.
+output_dir: results/_diagnostics/DE3/val056
+log_dir: results/E14/val056/model
+gate: results/E14/val056/view_gate.pt
+checkpoints:
+  E14_after_r0: results/E14/val056/model/rounds/ckpt_r0.pth   # +45
+  E14_after_r1: results/E14/val056/model/rounds/ckpt_r1.pth   # +45, -45 (what E20 does, from E5c and without its fixes)
+  E14_after_r2: results/E14/val056/model/rounds/ckpt_r2.pth   # + the +90 round
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:            # D-E1 renders of earlier runs
+  E5c: results/E5c/val056
+  E5f: results/E5f/val056
+  E14: results/E14/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024

@@ -3,7 +3,8 @@
 Writes --out_dir (must not exist) with
     view_gate.pt     --gate with the requested changes (--double_sided);
     config.yaml      the run's config with view_gate pointing to it;
-    checkpoint_final.pth  a link to the run's checkpoint (nothing is retrained or copied);
+    checkpoint_final.pth  a link to the run's checkpoint, or to --checkpoint (e.g. rounds/ckpt_r1.pth of a round-by-round
+                     run, D-E3; nothing is retrained or copied);
     meta.json        what was changed, from which run and gate.
 Every script that loads a run from its config (render_sweep_comparison.py, eval_cross_camera.py, view_gs.py, ...) then
 renders the same Gaussians through the new gate. Runs trained without a gate can be given one this way too.
@@ -31,6 +32,7 @@ def main() -> None:
     parser.add_argument("--log_dir", required=True)
     parser.add_argument("--gate", required=True, help="view gate to start from (the run's own, or one for a run without)")
     parser.add_argument("--double_sided", action="store_true")
+    parser.add_argument("--checkpoint", help="checkpoint to link instead of <log_dir>/checkpoint_final.pth")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=False)
@@ -42,11 +44,13 @@ def main() -> None:
     original = view_gate_path(cfg)
     cfg.view_gate = out_gate
     OmegaConf.save(cfg, os.path.join(args.out_dir, "config.yaml"))
-    os.symlink(os.path.abspath(os.path.join(args.log_dir, "checkpoint_final.pth")), os.path.join(args.out_dir, "checkpoint_final.pth"))
+    checkpoint = os.path.join(args.log_dir, "checkpoint_final.pth") if args.checkpoint is None else args.checkpoint
+    assert os.path.exists(checkpoint), checkpoint
+    os.symlink(os.path.abspath(checkpoint), os.path.join(args.out_dir, "checkpoint_final.pth"))
     with open(os.path.join(args.out_dir, "meta.json"), "w") as f:
         json.dump({"kind": "render-time variant of a trained run (no training)", "log_dir": args.log_dir,
                    "original_view_gate": original, "gate_from": args.gate, "double_sided": args.double_sided,
-                   "dashrecon_commit": git_commit()}, f, indent=2)
+                   "checkpoint": checkpoint, "dashrecon_commit": git_commit()}, f, indent=2)
     print(f"[virtual_run] {args.out_dir}: {args.log_dir} through {out_gate} (double_sided={args.double_sided})", flush=True)
 
 
