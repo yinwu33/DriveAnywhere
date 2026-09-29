@@ -14,6 +14,9 @@ Differences from drivestudio's built-in viewer (tools/train.py --enable_viewer, 
       DECISIONS L for how they relate to metres) and turned by "yaw" / "pitch" (degrees) as the Phase 9 views
       (dashrecon.gen.views.ViewMove, e.g. E8 round 0 = right 1.5, yaw 15); "go to frame" re-applies it.
 Mouse: drag to orbit, right-drag to pan, scroll to move (viser controls); world z is up.
+--fixer adds a "Fixer post-process" checkbox: each rendered frame then goes through NVIDIA Fixer (single step at
+--fixer_timestep, dashrecon.gen.fixer_client; the "+" of Difix3D+, E26 in docs/EXPERIMENTS.md). This is a per-frame
+generative enhancement, not part of the 3D model: sharper and cleaner, but consecutive frames can differ.
 
 Example (main venv):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
@@ -22,6 +25,7 @@ Example (main venv):
 import argparse
 import os
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -115,6 +119,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="local interface to bind; defaults to loopback")
     parser.add_argument("--initial_frame", type=int, default=0, help="start at this scene frame")
     parser.add_argument("--initial_yaw", type=float, default=0., help="initial yaw in degrees")
+    parser.add_argument("--fixer", action="store_true", help="offer per-frame Fixer post-processing (checkbox)")
+    parser.add_argument("--fixer_timestep", type=int, default=250)
     args = parser.parse_args()
     import nerfview
     import viser
@@ -132,7 +138,24 @@ def main() -> None:
         raise ValueError("initial frame/yaw is outside the viewer range")
     state = {"run": runs[0]}
     server = viser.ViserServer(host=args.host, port=args.port, verbose=False)
-    viewer = nerfview.Viewer(server=server, render_fn=lambda cs, wh: render(state["run"], cs, wh), mode="rendering")
+    fixer, fixer_on = None, None
+    if args.fixer:
+        from dashrecon.gen.fixer_client import FixerClient
+
+        fixer = FixerClient(args.fixer_timestep, tempfile.mkdtemp(prefix=f"view_gs_fixer_{args.port}_"), os.environ["CUDA_HOME"])
+        fixer_on = server.gui.add_checkbox("Fixer post-process (gen)", initial_value=False)
+
+    def render_view(camera_state, img_wh) -> np.ndarray:
+        rgb = render(state["run"], camera_state, img_wh)
+        if fixer is None or not fixer_on.value:
+            return rgb
+        h, w = rgb.shape[:2]
+        padded = np.pad(rgb.astype(np.float32) / 255.0, ((0, -h % 16), (0, -w % 16), (0, 0)), mode="edge")
+        return (np.clip(fixer.refine(padded[None])[0, :h, :w], 0, 1) * 255).round().astype(np.uint8)
+
+    viewer = nerfview.Viewer(server=server, render_fn=render_view, mode="rendering")
+    if fixer is not None:
+        fixer_on.on_update(lambda _: viewer.rerender(None))
 
     run_choice = server.gui.add_dropdown("run", options=[r.label for r in runs], initial_value=runs[0].label)
     frame = server.gui.add_slider("frame", min=0, max=len(runs[0].frames) - 1, step=1, initial_value=args.initial_frame)
