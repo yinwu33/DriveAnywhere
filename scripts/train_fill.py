@@ -31,6 +31,10 @@ E14 options (docs/EXPERIMENTS.md):
     --protect_original the Gaussians of --init_log_dir take no gradient from the generated views (they learn from the
                        real FRONT frames only; the generated views shape the spawned Gaussians), E17b: E14's side
                        supervision altered E5c's near-mesh Gaussians, which then looked broken from behind (D-A5).
+    --protect_from L   as --protect_original, but the protected Gaussians are the first N, N = the Background count of
+                       <L>/checkpoint_final.pth: the real reconstruction a round-by-round run started from (run_e14.py),
+                       so the generated Gaussians of earlier rounds keep learning from their own views. Needs stable
+                       indices (--no_refine in every round).
     --owner_dirs O...  one per views dir: <O>/owner/<k>.png (scripts/best_view_ownership.py) multiplies the confidence, so
                        every imagined surface point spawns and is supervised from its best generated view only (E17c).
     --spawn_all        spawn Gaussians from every views dir (all rounds distilled at once, E17a), not only the newest.
@@ -179,6 +183,7 @@ def main() -> None:
     parser.add_argument("--spawn_all", action="store_true", help="spawn from every views dir, not only the newest")
     parser.add_argument("--owner_dirs", nargs="*", help="one scripts/best_view_ownership.py output per views dir (E17c)")
     parser.add_argument("--protect_original", action="store_true", help="generated views do not update the init run's Gaussians")
+    parser.add_argument("--protect_from", help="generated views do not update the Gaussians of this run (first N, round-by-round runs)")
     parser.add_argument("--round_affine", action="store_true")
     parser.add_argument("--round_affine_reg", type=float, default=1.0)
     parser.add_argument("--round_affine_lr", type=float, default=1e-3)
@@ -256,8 +261,17 @@ def main() -> None:
     assert trainer.step == start, (trainer.step, start)
     if gate_path is not None:
         attach_view_gate(trainer, gate_path)
+    if args.protect_original and args.protect_from is not None:
+        raise ValueError("--protect_original and --protect_from are exclusive")
     if args.protect_original:
         trainer.protect_first_n = n_before
+    if args.protect_from is not None:
+        if not args.no_refine:
+            raise ValueError("--protect_from needs --no_refine (stable indices)")
+        n_real = torch.load(os.path.join(args.protect_from, "checkpoint_final.pth"), map_location="cpu",
+                            weights_only=False)["models"]["Background"]["_means"].shape[0]
+        assert n_real <= n_before, (n_real, n_before)
+        trainer.protect_first_n = n_real
     eye = torch.eye(3, 4, device=device)
     affines = None
     if args.round_affine:
@@ -363,6 +377,7 @@ def main() -> None:
     assert len(rounds) == args.round, f"meta.json has {len(rounds)} rounds, this is round {args.round}"
     rounds.append({"round": args.round, "init_log_dir": args.init_log_dir, "views_dirs": args.views_dirs,
                    "spawned": int(len(new["_means"])), "voxel": new["voxel"], "gaussians_before": int(n_before),
+                   "protected_gaussians": int(trainer.protect_first_n),
                    "gaussians_after": int(sum(trainer.get_gaussian_count().values())), "steps": [start + 1, start + args.steps],
                    "runtime_s": runtime, "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "dashrecon_commit": commit})
     with open(meta_path, "w") as f:
