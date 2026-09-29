@@ -176,3 +176,59 @@ class ViewGate:
         double_sided = bool(d["double_sided"]) if "double_sided" in d else False
         return ViewGate(axis=d["axis"], half_angle=d["half_angle"], observed=d["observed"], selected=d["selected"],
                         margin=float(d["margin"]), fade=float(d["fade"]), double_sided=double_sided)
+
+
+def iterate_observations(trainer, dataset, device, generated: list):
+    """Yield (camera centre (3,), blending weight (N,)) for every view that supervised the run's Background Gaussians:
+    each FRONT training view over the pixels the photometric loss constrained (outside the dynamic and sky masks), and
+    each view of the ``generated`` (views_dir, validation_dir) trajectories over the hole pixels its distillation
+    supervised (validate_generated_views.py status 1 unknown, 2 weak, 4 accepted; 3 conflict got no weight in
+    train_fill.py --unknown_w). Generated views are rendered without any view gate (the trainer must have none)."""
+    import json
+    import os
+
+    import numpy as np
+    from PIL import Image
+
+    from dashrecon.gen.novel import to_device
+    from dashrecon.gen.views import front_image_index, render_at
+
+    assert trainer.view_gate is None, "observations must see every Gaussian"
+    for j in range(len(dataset.train_image_set)):
+        ii, ci = dataset.train_image_set.get_image(j, 1)
+        ii, ci = to_device(ii, device), to_device(ci, device)
+        img_id = ii["img_idx"].flatten()[0]
+        with torch.no_grad():
+            cam = trainer.process_camera(camera_infos=ci, image_ids=img_id, novel_view=False)
+            gs = trainer.collect_gaussians(cam=cam, image_ids=img_id)
+        mask = ((ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5)).float()
+        yield cam.camtoworlds[:3, 3].detach(), blend_weight(trainer, gs, cam, mask)
+    for views_dir, validation_dir in generated:
+        cams = json.load(open(os.path.join(views_dir, "cams.json")))["cams"]
+        for k, c in enumerate(cams):
+            status = np.asarray(Image.open(os.path.join(validation_dir, "status", f"{k:03d}.png")))
+            mask = torch.from_numpy(np.isin(status, (1, 2, 4))).float().to(device)
+            ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, c["frame"] - dataset.start_timestep), 1)
+            c2w = torch.tensor(c["c2w"], dtype=torch.float32, device=device)
+            with torch.no_grad():
+                render_at(trainer, to_device(ii, device), to_device(ci, device), c2w,
+                          torch.tensor(c["K"], dtype=torch.float32, device=device), tuple(c["hw"]))
+            yield c2w[:3, 3], blend_weight(trainer, trainer._last_gs, trainer._last_cam, mask)
+
+
+def observation_cone_streaming(means: torch.Tensor, observations, min_weight: float) -> tuple:
+    """observation_cone without holding all weights: ``observations()`` returns a fresh iterator of (centre, weight)
+    and is called twice (axis, then half-angle)."""
+    acc = torch.zeros_like(means)
+    observed = torch.zeros(len(means), dtype=torch.bool, device=means.device)
+    views = 0
+    for c, w in observations():
+        acc += w.float()[:, None] * unit(means - c)
+        observed |= w >= min_weight
+        views += 1
+    axis = torch.where(observed[:, None], unit(acc + 1e-12), torch.zeros_like(acc))
+    half = torch.zeros(len(means), device=means.device)
+    for c, w in observations():
+        ang = torch.rad2deg(torch.arccos((unit(means - c) * axis).sum(-1).clamp(-1.0, 1.0)))
+        half = torch.where(w >= min_weight, torch.maximum(half, ang), half)
+    return axis, half, observed, views
