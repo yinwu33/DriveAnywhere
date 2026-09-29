@@ -7,6 +7,7 @@ realism_compare runs (KID / FID, classes, sharpness, flat fraction), and the fix
 Stages via dashrecon.stage_runner. EVALUATION stages read GT side cameras.
 E21 (the same without generated content): with init_gate set, the first stage gives the init run that view gate as a
 render-time variant (virtual_run.py, nothing retrained) in <output_dir>/init, and training starts from there.
+train_extra_args are appended to train_fixer.py (e.g. --exclude_classes car ... --seg_model_id ...).
 
 Example (main venv, clean committed checkout):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1 \
@@ -44,7 +45,8 @@ def main() -> None:
     runner.run("train", "main", ["scripts/train_fixer.py", "--scene_id", cfg["scene_id"], "--output_root", cfg["output_root"],
                "--init_log_dir", init, "--out_log_dir", model, "--exp", cfg["exp"],
                "--yaw_choices", *map(str, cfg["yaw_choices"]), "--off_lo_start", "0", "--off_hi_start", "0",
-               "--off_lo_end", "0", "--off_hi_end", "0", "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"])])
+               "--off_lo_end", "0", "--off_hi_end", "0", "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"]),
+               *cfg["train_extra_args"]])
     runner.run("eval_front", "main", ["scripts/eval_front_heldout.py", "--log_dir", model, "--example_frames", "50", "100", "150"])
     runner.run("eval_cross_camera", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
                "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",

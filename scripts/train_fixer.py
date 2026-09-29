@@ -32,6 +32,9 @@ E19 (docs/EXPERIMENTS.md) options: --init_log_dir / --out_log_dir / --exp name t
 uniform +-yaw_max jitter), e.g. the Phase 9 turning angles, with --off_* 0 for no sideways move. A run trained with a
 view gate (E14 / E17) keeps rendering its novel views through it; refinement is then off (as train_fill.py
 --no_refine) so the gate's Gaussians keep their indices.
+--exclude_classes (Cityscapes names, with --seg_model_id): pixels of the Fixer targets that SegFormer labels as one of
+these classes are not kept, so restored views do not distil vehicles or people into the static scene (E22: Fixer
+invented parked cars; real vehicles are masked in the FRONT frames and in the generated frames too).
 
 Example (main venv, from the repo root):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
@@ -101,7 +104,11 @@ def main() -> None:
     parser.add_argument("--out_log_dir", help="output run (default <output_root>/E7/<scene_id>)")
     parser.add_argument("--exp", default=EXP)
     parser.add_argument("--yaw_choices", type=float, nargs="*", default=[], help="pool yaws (degrees) before the jitter")
+    parser.add_argument("--exclude_classes", nargs="*", default=[], help="Cityscapes classes left out of the Fixer targets")
+    parser.add_argument("--seg_model_id", default=None, help="SegFormer for --exclude_classes")
+    parser.add_argument("--seg_input_hw", type=int, nargs=2, default=[768, 1152])
     args = parser.parse_args()
+    assert not args.exclude_classes or args.seg_model_id is not None, "--exclude_classes needs --seg_model_id"
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -147,6 +154,12 @@ def main() -> None:
     lpips_vgg = lpips.LPIPS(net="vgg", verbose=False).to(device).eval().requires_grad_(False)
     frozen_params = list(trainer.models["Affine"].parameters()) + list(trainer.models["Sky"].parameters())
     frames = pool_frames(dataset, args.pool_stride, device)
+    seg, excluded_ids = None, []
+    if args.exclude_classes:
+        from dashrecon.masks.segformer import SegformerSkyRoadBackend
+
+        seg = SegformerSkyRoadBackend(args.seg_model_id, tuple(args.seg_input_hw))
+        excluded_ids = [seg.class_id(name) for name in args.exclude_classes]
     n_rounds = -(-args.steps // args.refresh_every)
     example_rounds = sorted({0, n_rounds // 2, n_rounds - 1})
     print(f"[train_fixer] {args.scene_id}: pool {len(frames)} frames, {n_rounds} rounds, steps {start + 1}..{start + args.steps}", flush=True)
@@ -173,12 +186,18 @@ def main() -> None:
                     pool.append({"ii": fr["ii"], "ci": ci, "frame": fr["frame"], "offset": off, "yaw": yaw})
             renders = np.stack(renders)
             targets = fixer.refine(renders)
+            excluded = 0.0
             for k, v in enumerate(pool):
                 v["target"] = torch.from_numpy(targets[k]).to(device).half()
+                v["exclude"] = torch.zeros(targets[k].shape[:2], dtype=torch.bool, device=device)
+                if excluded_ids:
+                    labels = seg.labels(Image.fromarray((np.clip(targets[k], 0, 1) * 255).round().astype(np.uint8)))
+                    v["exclude"] = torch.from_numpy(np.isin(labels, excluded_ids)).to(device)
+                    excluded += float(v["exclude"].float().mean()) / len(pool)
                 if r in example_rounds and k < args.save_views:
                     save_example(os.path.join(log_dir, "gen", f"round{r}_view{k}.jpg"), renders[k], targets[k])
             rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0,
-                           "mean_abs_change": float(np.abs(targets - renders).mean()),
+                           "mean_abs_change": float(np.abs(targets - renders).mean()), "excluded_fraction": excluded,
                            "pool": [{"frame": v["frame"], "offset": v["offset"], "yaw": v["yaw"]} for v in pool]})
             if r % 4 == 0 or r == n_rounds - 1:
                 print(f"[train_fixer] round {r} at step {step}: |offset| in [{lo:.2f}, {hi:.2f}], "
@@ -205,7 +224,7 @@ def main() -> None:
         trainer.update_visibility_filter()  # postprocess_per_train_step reads the last render's radii and gradients
         rgb = nv["rgb"]
         with torch.no_grad():
-            keep = (nv["mesh_valid"] | (nv["opacity"][..., 0] > args.keep_alpha)).float()[..., None]
+            keep = ((nv["mesh_valid"] | (nv["opacity"][..., 0] > args.keep_alpha)) & ~v["exclude"]).float()[..., None]
         target = keep * v["target"].float() + (1.0 - keep) * rgb.detach()
         l1 = (rgb - target).abs().sum() / (3.0 * keep.sum()).clamp(min=1.0)
         lp = lpips_vgg(rgb.permute(2, 0, 1)[None] * 2 - 1, target.permute(2, 0, 1)[None] * 2 - 1).mean()

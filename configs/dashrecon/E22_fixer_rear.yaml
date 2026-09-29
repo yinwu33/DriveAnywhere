@@ -8,6 +8,7 @@ output_dir: results/E22/val056
 yaw_choices: [135, -135, 180]   # rear-facing pool views (+- 3 degree jitter), no sideways move
 steps: 4000                      # on top of E19's 6000; E7's defaults otherwise
 seed: 0
+train_extra_args: []             # appended to train_fixer.py
 # evaluation
 gt_root: data/waymo/processed/validation
 unseen_dir: results/E5c/val056/cross_camera_p9/unseen
