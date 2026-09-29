@@ -1,0 +1,24 @@
+# E22 (docs/EXPERIMENTS.md): E19 continued with Fixer on the rear-facing views (the rear stayed broken in E14-E19).
+exp: E22
+scene_id: val056
+output_root: results
+init_log_dir: results/E19/val056/model
+init_gate: null                  # E19 carries E20's view gate
+output_dir: results/E22/val056
+yaw_choices: [135, -135, 180]   # rear-facing pool views (+- 3 degree jitter), no sideways move
+steps: 4000                      # on top of E19's 6000; E7's defaults otherwise
+seed: 0
+# evaluation
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:
+  E5f: results/E5f/val056
+  E19: results/E19/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+rig_init_log_dir: results/E5f/val056
+rig_init_label: E5f
+rig_compare:
+  E19_gen: results/E19/val056/model
+rig_frames: [96, 104, 112]
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]
