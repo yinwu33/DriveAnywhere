@@ -1,0 +1,26 @@
+# E24 (docs/EXPERIMENTS.md): E23 with vehicles and people left out of the Fixer targets (E22 / E23 invented parked cars).
+exp: E24
+scene_id: val056
+output_root: results
+init_log_dir: results/E20/val056/model
+init_gate: null                  # E20 carries its own view gate
+output_dir: results/E24/val056
+yaw_choices: [45, -45, 90, -90, 135, -135, 180]   # pool views turned to one of these (+- 3 degree jitter), no sideways move
+steps: 8000                      # 7 directions instead of E19's 4; E7's defaults otherwise: refresh every 250 steps, Fixer timestep 250, gen_w 0.5, lpips_w 0.2
+seed: 0
+train_extra_args: [--exclude_classes, person, rider, car, truck, bus, train, motorcycle, bicycle,
+                   --seg_model_id, nvidia/segformer-b5-finetuned-cityscapes-1024-1024]   # appended to train_fixer.py
+# evaluation
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:
+  E5f: results/E5f/val056
+  E23: results/E23/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+rig_init_log_dir: results/E5f/val056
+rig_init_label: E5f
+rig_compare:
+  E23_gen: results/E23/val056/model
+rig_frames: [96, 104, 112]
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]
