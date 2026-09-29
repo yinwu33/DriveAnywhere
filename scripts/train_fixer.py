@@ -27,6 +27,12 @@ Outputs in <output_root>/E7/<scene_id>/: config.yaml, checkpoint_final.pth, metr
 meta.json (generative: true), fixer_params.json and gen/round<r>_view<k>.jpg (render | Fixer target) for the
 first --save_views views of rounds 0, the middle one and the last one.
 
+E19 (docs/EXPERIMENTS.md) options: --init_log_dir / --out_log_dir / --exp name the runs explicitly (instead of
+<output_root>/<init_exp> -> <output_root>/E7); --yaw_choices turns every pool view to one of these yaws (plus the
+uniform +-yaw_max jitter), e.g. the Phase 9 turning angles, with --off_* 0 for no sideways move. A run trained with a
+view gate (E14 / E17) keeps rendering its novel views through it; refinement is then off (as train_fill.py
+--no_refine) so the gate's Gaussians keep their indices.
+
 Example (main venv, from the repo root):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
         .venvs/main/bin/python scripts/train_fixer.py --scene_id val056 --output_root results
@@ -45,7 +51,8 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient  # noqa: E402
-from dashrecon.gen.novel import build_trainer, mesh_losses, refined_c2w, shifted_c2w, to_device  # noqa: E402
+from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, shifted_c2w, to_device,  # noqa: E402
+                                 view_gate_path)
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
@@ -90,20 +97,29 @@ def main() -> None:
     parser.add_argument("--save_views", type=int, default=4)
     parser.add_argument("--print_every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--init_log_dir", help="start run (default <output_root>/<init_exp>/<scene_id>)")
+    parser.add_argument("--out_log_dir", help="output run (default <output_root>/E7/<scene_id>)")
+    parser.add_argument("--exp", default=EXP)
+    parser.add_argument("--yaw_choices", type=float, nargs="*", default=[], help="pool yaws (degrees) before the jitter")
     args = parser.parse_args()
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
 
-    src_dir = os.path.join(args.output_root, args.init_exp, args.scene_id)
-    log_dir = os.path.join(args.output_root, EXP, args.scene_id)
+    src_dir = os.path.join(args.output_root, args.init_exp, args.scene_id) if args.init_log_dir is None else args.init_log_dir
+    log_dir = os.path.join(args.output_root, EXP, args.scene_id) if args.out_log_dir is None else args.out_log_dir
     cfg = OmegaConf.load(os.path.join(src_dir, "config.yaml"))
     assert_non_oracle(cfg)
     assert "mesh" in cfg.trainer.losses, f"{src_dir} was trained without the mesh losses"
     start = int(cfg.trainer.optim.num_iters)
     cfg.trainer.optim.num_iters = start + args.steps
     cfg.trainer.gaussian_ctrl_general_cfg.reset_alpha_interval = 10**9
+    gate_path = view_gate_path(cfg)
+    if gate_path is not None:  # keep the gated Gaussians' indices (train_fill.py --no_refine)
+        cfg.trainer.gaussian_ctrl_general_cfg.refine_interval = 10**9
+        if "ctrl" in cfg.model.Background:
+            cfg.model.Background.ctrl.refine_interval = 10**9
     cfg.log_dir = log_dir
     for sub in ("metrics", "videos", "gen"):
         os.makedirs(os.path.join(log_dir, sub), exist_ok=True)
@@ -123,6 +139,8 @@ def main() -> None:
     trainer = build_trainer(cfg, dataset, device)
     trainer.resume_from_checkpoint(ckpt_path=params["init_ckpt"], load_only_model=True)
     assert trainer.step == start, (trainer.step, start)
+    if gate_path is not None:
+        attach_view_gate(trainer, gate_path)
     trainer.initialize_optimizer()
     base_lr = {g["name"]: g["lr"] for g in trainer.optimizer.param_groups}
     fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"])
@@ -147,6 +165,8 @@ def main() -> None:
                 for fr in frames:
                     off = float(rng.choice([-1.0, 1.0]) * rng.uniform(lo, hi))
                     yaw = float(rng.uniform(-args.yaw_max, args.yaw_max))
+                    if args.yaw_choices:
+                        yaw += float(rng.choice(args.yaw_choices))
                     ci = dict(fr["ci"])
                     ci["camera_to_world"] = shifted_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), off, yaw)
                     renders.append(trainer(fr["ii"], ci, novel_view=True)["rgb"].clamp(0, 1).float().cpu().numpy())
@@ -219,10 +239,10 @@ def main() -> None:
     runtime = time.time() - t_begin
     splits = [s for s, on in (("test", cfg.render.render_test), ("full", cfg.render.render_full)) if on]
     with open(os.path.join(log_dir, "metrics.json"), "w") as f:
-        json.dump({"exp": EXP, "scene_id": args.scene_id, **collect_metrics(log_dir, splits)}, f, indent=2)
+        json.dump({"exp": args.exp, "scene_id": args.scene_id, **collect_metrics(log_dir, splits)}, f, indent=2)
     with open(os.path.join(log_dir, "meta.json"), "w") as f:
         json.dump({
-            "exp": EXP, "scene_id": args.scene_id, "init": src_dir, "dashrecon_commit": commit, "torch": torch.__version__,
+            "exp": args.exp, "scene_id": args.scene_id, "init": src_dir, "dashrecon_commit": commit, "torch": torch.__version__,
             "runtime_s": runtime, "generation_s": fixer.seconds, "generator": fixer.info, "rounds": rounds,
             "pool": rounds[0]["pool"], "example_rounds": example_rounds,
             "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": True, "uses_oracle": False,
