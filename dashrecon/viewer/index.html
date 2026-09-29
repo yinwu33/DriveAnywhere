@@ -727,6 +727,15 @@ camera.up.set(0, 0, 1);
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping = false;
 controls.addEventListener("change", render);
+// 3DGS mode: pixels no splat covers show a sky-like gradient, as the real renderer shows its Sky model there (the
+// splats alone would leave them black and look like holes)
+const skyBackground = (() => {
+  const c = document.createElement("canvas"); c.width = 2; c.height = 256;
+  const g = c.getContext("2d"), grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, "#7fa3c8"); grad.addColorStop(0.45, "#b9c9d6"); grad.addColorStop(0.55, "#c8c4bb"); grad.addColorStop(1, "#8f877c");
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  return new THREE.CanvasTexture(c);
+})();
 scene3.add(new THREE.AmbientLight(0xffffff, 0.55));
 const sun = new THREE.DirectionalLight(0xffffff, 0.75);
 sun.position.set(0.4, 0.3, 1.0);
@@ -1035,6 +1044,7 @@ function refreshScene() {
   const s = current;
   if (cloudMode === "splat" && !s.splat) cloudMode = s.mesh ? "mesh" : (s.fused ? "fused" : "raw");
   const splatOn = cloudMode === "splat";
+  scene3.background = splatOn ? skyBackground : null;
   const meshOn = cloudMode === "mesh" && Boolean(s.mesh);
   const fusedOn = cloudMode === "fused" && Boolean(s.fused);
   s.raw.points.visible = !fusedOn && !meshOn && !splatOn;
@@ -1097,7 +1107,8 @@ function refreshScene() {
   }
   if (splatOn) extra.innerHTML = `<span>${expName(s.splat.exp)} Gaussians: ${s.splat.n.toLocaleString("en-US")} of ${s.splat.n_total.toLocaleString("en-US")} (most opaque × largest) · base colour only, no sky model` +
     (SPLATS.generative[s.splat.exp] ? " · contains generated content" : "") +
-    (s.splat.gated ? ` · view gate on ${s.splat.gated.toLocaleString("en-US")} splats (hidden when seen from outside their training views)` : "") + "</span>";
+    (s.splat.gated ? ` · view gate on ${s.splat.gated.toLocaleString("en-US")} splats (hidden when seen from outside their training views)` : "") +
+    " · background: a fixed sky-like gradient where no splat covers the pixel" + "</span>";
   if (meshOn) extra.innerHTML += ` <span>showing ${window.MESH[currentId].nf.toLocaleString("en-US")} of ${MESH.scenes[currentId].stats.faces.toLocaleString("en-US")} faces</span>`;
   if (fusedOn && showRejected) extra.innerHTML += ' <span><span class="sw" style="background: var(--bad)"></span>rejected by consistency check</span>';
   extra.hidden = extra.innerHTML === "";
