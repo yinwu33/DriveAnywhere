@@ -31,6 +31,8 @@ E14 options (docs/EXPERIMENTS.md):
     --protect_original the Gaussians of --init_log_dir take no gradient from the generated views (they learn from the
                        real FRONT frames only; the generated views shape the spawned Gaussians), E17b: E14's side
                        supervision altered E5c's near-mesh Gaussians, which then looked broken from behind (D-A5).
+    --owner_dirs O...  one per views dir: <O>/owner/<k>.png (scripts/best_view_ownership.py) multiplies the confidence, so
+                       every imagined surface point spawns and is supervised from its best generated view only (E17c).
     --spawn_all        spawn Gaussians from every views dir (all rounds distilled at once, E17a), not only the newest.
     --round_affine     one 3x4 colour transform per views dir (a "virtual traversal" appearance, after MTGS), applied
                        to the render before it is compared with that dir's generated frames; identity at the start
@@ -72,7 +74,8 @@ RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
 
 
 def load_views(views_dir: str, device: torch.device, validation_dir: str | None = None,
-               view_indices: list[int] | None = None, unknown_w: float = 0.0, depth_dir: str | None = None) -> list:
+               view_indices: list[int] | None = None, unknown_w: float = 0.0, depth_dir: str | None = None,
+               owner_dir: str | None = None) -> list:
     """Load generated supervision, optionally restricted to a recorded local window. With a validation dir, the
     confidence is the accepted confidence, plus unknown_w on unknown / weak hole pixels (status 1, 2)."""
     with open(os.path.join(views_dir, "cams.json")) as f:
@@ -105,6 +108,11 @@ def load_views(views_dir: str, device: torch.device, validation_dir: str | None 
                 if status.shape != hole.shape or not np.array_equal(status > 0, hole):
                     raise ValueError(f"validation status does not match the hole mask in {views_dir}, view {k}")
                 confidence = np.where((status == 1) | (status == 2), np.float32(unknown_w), confidence)
+        if owner_dir is not None:
+            owner = np.asarray(Image.open(os.path.join(owner_dir, "owner", f"{k:03d}.png"))) > 127
+            if owner.shape != hole.shape:
+                raise ValueError(f"ownership of {views_dir}, view {k} does not match its size")
+            confidence = confidence * owner
         views.append({"confidence": torch.from_numpy(confidence).to(device), "k": k, "frame": c["frame"], "dir": views_dir,
                       "c2w": torch.tensor(c["c2w"], dtype=torch.float32, device=device),
                       "K": torch.tensor(c["K"], dtype=torch.float32, device=device),
@@ -169,11 +177,14 @@ def main() -> None:
     parser.add_argument("--unknown_w", type=float, default=0.0)
     parser.add_argument("--depth_dirs", nargs="*", help="one scripts/render_mesh_depth.py output per views dir (E17a)")
     parser.add_argument("--spawn_all", action="store_true", help="spawn from every views dir, not only the newest")
+    parser.add_argument("--owner_dirs", nargs="*", help="one scripts/best_view_ownership.py output per views dir (E17c)")
     parser.add_argument("--protect_original", action="store_true", help="generated views do not update the init run's Gaussians")
     parser.add_argument("--round_affine", action="store_true")
     parser.add_argument("--round_affine_reg", type=float, default=1.0)
     parser.add_argument("--round_affine_lr", type=float, default=1e-3)
     args = parser.parse_args()
+    if args.owner_dirs is not None and len(args.owner_dirs) != len(args.views_dirs):
+        raise ValueError("one --owner_dirs entry per --views_dirs required")
     if args.depth_dirs is not None and len(args.depth_dirs) != len(args.views_dirs):
         raise ValueError("one --depth_dirs entry per --views_dirs required")
     if args.unknown_w > 0 and args.validation_dirs is None:
@@ -232,8 +243,9 @@ def main() -> None:
     trainer = build_trainer(cfg, dataset, device)
     validation_dirs = [None] * len(args.views_dirs) if args.validation_dirs is None else args.validation_dirs
     depth_dirs = [None] * len(args.views_dirs) if args.depth_dirs is None else args.depth_dirs
-    views = [v for d, vd, dd in zip(args.views_dirs, validation_dirs, depth_dirs)
-             for v in load_views(d, device, vd, args.view_indices, args.unknown_w, dd)]
+    owner_dirs = [None] * len(args.views_dirs) if args.owner_dirs is None else args.owner_dirs
+    views = [v for d, vd, dd, od in zip(args.views_dirs, validation_dirs, depth_dirs, owner_dirs)
+             for v in load_views(d, device, vd, args.view_indices, args.unknown_w, dd, od)]
     newest = views if args.spawn_all else [v for v in views if v["dir"] == args.views_dirs[-1]]
     bg = state["models"]["Background"]
     new = spawn(newest, args.spawn_stride, args.pixel_stride, args.scale_factor, args.init_opacity, bg["_features_rest"].shape[1:])
