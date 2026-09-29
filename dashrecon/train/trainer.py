@@ -34,6 +34,9 @@ class DashreconTrainer(MultiTrainer):
         self._last_novel = False
         # dashrecon.gen.floaters.ViewGate applied to novel views only (E14); set by dashrecon.gen.novel.attach_view_gate
         self.view_gate = None
+        # E17b: novel-view renders see the first protect_first_n Background Gaussians detached, so generated views only
+        # shape the Gaussians spawned from them while the original ones learn from the real frames alone
+        self.protect_first_n = 0
         if self.mesh_cfg is not None:
             import nvdiffrast.torch as dr
 
@@ -56,6 +59,14 @@ class DashreconTrainer(MultiTrainer):
 
     def collect_gaussians(self, cam, image_ids):
         gs = super().collect_gaussians(cam=cam, image_ids=image_ids)
+        if self.protect_first_n > 0 and self._last_novel:
+            from models.gaussians.basics import dataclass_gs
+
+            n = self.protect_first_n
+            assert gs._means.shape[0] >= n, (gs._means.shape[0], n)
+            part = lambda x: torch.cat([x[:n].detach(), x[n:]], dim=0)
+            gs = dataclass_gs(_means=part(gs._means), _scales=part(gs._scales), _quats=part(gs._quats), _rgbs=part(gs._rgbs),
+                              _opacities=part(gs._opacities), detach_keys=gs.detach_keys, extras=gs.extras)
         if self.view_gate is not None and self._last_novel:
             gs = self.view_gate.apply(gs, cam.camtoworlds[:3, 3])
         self._last_gs = gs

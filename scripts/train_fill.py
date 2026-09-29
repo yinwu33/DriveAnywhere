@@ -28,6 +28,9 @@ E14 options (docs/EXPERIMENTS.md):
     --depth_dirs D...  one per views dir: <D>/mesh_depth/<k>.npy (scripts/render_mesh_depth.py) replaces that trajectory's
                        filled_depth, so all trajectories share one geometry (E17a); pixels without mesh depth get no
                        depth loss and spawn nothing.
+    --protect_original the Gaussians of --init_log_dir take no gradient from the generated views (they learn from the
+                       real FRONT frames only; the generated views shape the spawned Gaussians), E17b: E14's side
+                       supervision altered E5c's near-mesh Gaussians, which then looked broken from behind (D-A5).
     --spawn_all        spawn Gaussians from every views dir (all rounds distilled at once, E17a), not only the newest.
     --round_affine     one 3x4 colour transform per views dir (a "virtual traversal" appearance, after MTGS), applied
                        to the render before it is compared with that dir's generated frames; identity at the start
@@ -166,6 +169,7 @@ def main() -> None:
     parser.add_argument("--unknown_w", type=float, default=0.0)
     parser.add_argument("--depth_dirs", nargs="*", help="one scripts/render_mesh_depth.py output per views dir (E17a)")
     parser.add_argument("--spawn_all", action="store_true", help="spawn from every views dir, not only the newest")
+    parser.add_argument("--protect_original", action="store_true", help="generated views do not update the init run's Gaussians")
     parser.add_argument("--round_affine", action="store_true")
     parser.add_argument("--round_affine_reg", type=float, default=1.0)
     parser.add_argument("--round_affine_lr", type=float, default=1e-3)
@@ -240,6 +244,8 @@ def main() -> None:
     assert trainer.step == start, (trainer.step, start)
     if gate_path is not None:
         attach_view_gate(trainer, gate_path)
+    if args.protect_original:
+        trainer.protect_first_n = n_before
     eye = torch.eye(3, 4, device=device)
     affines = None
     if args.round_affine:
