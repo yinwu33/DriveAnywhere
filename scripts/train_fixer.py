@@ -32,6 +32,9 @@ E19 (docs/EXPERIMENTS.md) options: --init_log_dir / --out_log_dir / --exp name t
 uniform +-yaw_max jitter), e.g. the Phase 9 turning angles, with --off_* 0 for no sideways move. A run trained with a
 view gate (E14 / E17) keeps rendering its novel views through it; refinement is then off (as train_fill.py
 --no_refine) so the gate's Gaussians keep their indices.
+Free-view pool (E29): --yaw_uniform draws the yaw from U(-180, 180) instead of --yaw_choices; --up_range / --pitch_range
+add a random height (scene units, up) and pitch (degrees, positive down) per pool view (dashrecon.gen.views.moved_c2w).
+They draw from the random stream only when set, so runs without them keep their pools.
 --exclude_classes (Cityscapes names, with --seg_model_id): pixels of the Fixer targets that SegFormer labels as one of
 these classes are not kept, so restored views do not distil vehicles or people into the static scene (E22: Fixer
 invented parked cars; real vehicles are masked in the FRONT frames and in the generated frames too).
@@ -54,8 +57,9 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient  # noqa: E402
-from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, shifted_c2w, to_device,  # noqa: E402
+from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, to_device,  # noqa: E402
                                  view_gate_path)
+from dashrecon.gen.views import ViewMove, moved_c2w  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
@@ -104,11 +108,15 @@ def main() -> None:
     parser.add_argument("--out_log_dir", help="output run (default <output_root>/E7/<scene_id>)")
     parser.add_argument("--exp", default=EXP)
     parser.add_argument("--yaw_choices", type=float, nargs="*", default=[], help="pool yaws (degrees) before the jitter")
+    parser.add_argument("--yaw_uniform", action="store_true", help="pool yaw ~ U(-180, 180) (free-view pool, E29)")
+    parser.add_argument("--up_range", type=float, nargs=2, default=[0.0, 0.0], help="pool height ~ U(lo, hi) scene units")
+    parser.add_argument("--pitch_range", type=float, nargs=2, default=[0.0, 0.0], help="pool pitch ~ U(lo, hi) degrees")
     parser.add_argument("--exclude_classes", nargs="*", default=[], help="Cityscapes classes left out of the Fixer targets")
     parser.add_argument("--seg_model_id", default=None, help="SegFormer for --exclude_classes")
     parser.add_argument("--seg_input_hw", type=int, nargs=2, default=[768, 1152])
     args = parser.parse_args()
     assert not args.exclude_classes or args.seg_model_id is not None, "--exclude_classes needs --seg_model_id"
+    assert not (args.yaw_uniform and args.yaw_choices), "--yaw_uniform replaces --yaw_choices"
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -180,10 +188,14 @@ def main() -> None:
                     yaw = float(rng.uniform(-args.yaw_max, args.yaw_max))
                     if args.yaw_choices:
                         yaw += float(rng.choice(args.yaw_choices))
+                    if args.yaw_uniform:
+                        yaw = float(rng.uniform(-180.0, 180.0))
+                    up = float(rng.uniform(*args.up_range)) if args.up_range != [0.0, 0.0] else 0.0
+                    pitch = float(rng.uniform(*args.pitch_range)) if args.pitch_range != [0.0, 0.0] else 0.0
                     ci = dict(fr["ci"])
-                    ci["camera_to_world"] = shifted_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), off, yaw)
+                    ci["camera_to_world"] = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), ViewMove(right=off, up=up, yaw=yaw, pitch=pitch))
                     renders.append(trainer(fr["ii"], ci, novel_view=True)["rgb"].clamp(0, 1).float().cpu().numpy())
-                    pool.append({"ii": fr["ii"], "ci": ci, "frame": fr["frame"], "offset": off, "yaw": yaw})
+                    pool.append({"ii": fr["ii"], "ci": ci, "frame": fr["frame"], "offset": off, "yaw": yaw, "up": up, "pitch": pitch})
             renders = np.stack(renders)
             targets = fixer.refine(renders)
             excluded = 0.0
@@ -198,7 +210,7 @@ def main() -> None:
                     save_example(os.path.join(log_dir, "gen", f"round{r}_view{k}.jpg"), renders[k], targets[k])
             rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0,
                            "mean_abs_change": float(np.abs(targets - renders).mean()), "excluded_fraction": excluded,
-                           "pool": [{"frame": v["frame"], "offset": v["offset"], "yaw": v["yaw"]} for v in pool]})
+                           "pool": [{"frame": v["frame"], "offset": v["offset"], "yaw": v["yaw"], "up": v["up"], "pitch": v["pitch"]} for v in pool]})
             if r % 4 == 0 or r == n_rounds - 1:
                 print(f"[train_fixer] round {r} at step {step}: |offset| in [{lo:.2f}, {hi:.2f}], "
                       f"mean |target - render| {rounds[-1]['mean_abs_change']:.4f}, {time.time() - t0:.1f} s", flush=True)

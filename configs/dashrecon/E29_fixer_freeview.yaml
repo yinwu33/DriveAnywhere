@@ -1,0 +1,27 @@
+# E29 (docs/EXPERIMENTS.md): E23 continued with a free-view Fixer pool (any yaw, sideways +-3, up 0-2, pitch -15..5).
+exp: E29
+scene_id: val056
+output_root: results
+init_log_dir: results/E23/val056/model
+init_gate: null                  # E23 carries E20's view gate
+output_dir: results/E29/val056
+yaw_choices: []                  # --yaw_uniform below
+steps: 6000                      # on top of E23; E7's defaults otherwise
+method: fixer                    # scripts/train_fixer.py
+seed: 0
+train_extra_args: [--yaw_uniform, --up_range, "0", "2", --pitch_range, "-15", "5",
+                   --off_lo_start, "0", --off_hi_start, "3", --off_lo_end, "0", --off_hi_end, "3"]   # appended (later values win)
+# evaluation
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:
+  E5f: results/E5f/val056
+  E23: results/E23/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+rig_init_log_dir: results/E5f/val056
+rig_init_label: E5f
+rig_compare:
+  E23_gen: results/E23/val056/model
+rig_frames: [96, 104, 112]
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]
