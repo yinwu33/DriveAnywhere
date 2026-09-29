@@ -52,9 +52,13 @@ def main() -> None:
     parser.add_argument("--validation_dirs", nargs="*", default=[], help="their validations (status maps)")
     parser.add_argument("--replace_gate", action="store_true", help="the run already has a gate; make a new one for it")
     parser.add_argument("--double_sided", action="store_true")
+    parser.add_argument("--training_gate", help="the gate the run was distilled with; generated observers are rendered "
+                        "through it, as the distillation saw them (required with --views_dirs on a gated run)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     assert len(args.views_dirs) == len(args.validation_dirs), "one validation dir per views dir"
+    assert (args.training_gate is not None) == (bool(args.views_dirs) and args.replace_gate), \
+        "--training_gate is required exactly when a gated run's generated views are observers"
     commit = git_commit()
     assert not commit.endswith("-dirty"), "commit code before making a view gate"
     assert args.mesh_ply.startswith(DASHRECON_ROOT), f"mesh must be a dashrecon product: {args.mesh_ply}"
@@ -73,7 +77,9 @@ def main() -> None:
     trainer.set_eval()
     assert set(trainer.gaussian_classes.keys()) == {"Background"}, trainer.gaussian_classes
     bg = trainer.models["Background"]
-    observations = lambda: iterate_observations(trainer, dataset, device, list(zip(args.views_dirs, args.validation_dirs)))
+    training_gate = None if args.training_gate is None else ViewGate.load(args.training_gate, device)
+    observations = lambda: iterate_observations(trainer, dataset, device, list(zip(args.views_dirs, args.validation_dirs)),
+                                                training_gate)
     axis, half, observed, n_views = observation_cone_streaming(bg._means.detach(), observations, args.cone_min_weight)
     with torch.no_grad():
         mesh = io.read_mesh_ply(args.mesh_ply)

@@ -178,12 +178,14 @@ class ViewGate:
                         margin=float(d["margin"]), fade=float(d["fade"]), double_sided=double_sided)
 
 
-def iterate_observations(trainer, dataset, device, generated: list):
+def iterate_observations(trainer, dataset, device, generated: list, training_gate=None):
     """Yield (camera centre (3,), blending weight (N,)) for every view that supervised the run's Background Gaussians:
     each FRONT training view over the pixels the photometric loss constrained (outside the dynamic and sky masks), and
     each view of the ``generated`` (views_dir, validation_dir) trajectories over the hole pixels its distillation
     supervised (validate_generated_views.py status 1 unknown, 2 weak, 4 accepted; 3 conflict got no weight in
-    train_fill.py --unknown_w). Generated views are rendered without any view gate (the trainer must have none)."""
+    train_fill.py --unknown_w). Generated views are rendered as the distillation saw them: through ``training_gate``
+    (the gate the run was distilled with, a ViewGate or None), so Gaussians it hid there get no weight from them
+    (D-A5: rendering them ungated gave E5c's gated junk side-view weight and brought it back)."""
     import json
     import os
 
@@ -193,7 +195,7 @@ def iterate_observations(trainer, dataset, device, generated: list):
     from dashrecon.gen.novel import to_device
     from dashrecon.gen.views import front_image_index, render_at
 
-    assert trainer.view_gate is None, "observations must see every Gaussian"
+    assert trainer.view_gate is None, "the trainer must start without a gate"
     for j in range(len(dataset.train_image_set)):
         ii, ci = dataset.train_image_set.get_image(j, 1)
         ii, ci = to_device(ii, device), to_device(ci, device)
@@ -210,9 +212,11 @@ def iterate_observations(trainer, dataset, device, generated: list):
             mask = torch.from_numpy(np.isin(status, (1, 2, 4))).float().to(device)
             ii, ci = dataset.full_image_set.get_image(front_image_index(dataset, c["frame"] - dataset.start_timestep), 1)
             c2w = torch.tensor(c["c2w"], dtype=torch.float32, device=device)
+            trainer.view_gate = training_gate
             with torch.no_grad():
                 render_at(trainer, to_device(ii, device), to_device(ci, device), c2w,
                           torch.tensor(c["K"], dtype=torch.float32, device=device), tuple(c["hw"]))
+            trainer.view_gate = None
             yield c2w[:3, 3], blend_weight(trainer, trainer._last_gs, trainer._last_cam, mask)
 
 
