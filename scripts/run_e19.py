@@ -5,6 +5,8 @@ config's yaws (no sideways move), then the evaluation every Phase 9 run gets: FR
 over E5c's unseen pixels (every 5th frame), D-E1's side renders (every 2nd frame) with eval_realism.py against the
 realism_compare runs (KID / FID, classes, sharpness, flat fraction), and the fixed common cameras.
 Stages via dashrecon.stage_runner. EVALUATION stages read GT side cameras.
+E21 (the same without generated content): with init_gate set, the first stage gives the init run that view gate as a
+render-time variant (virtual_run.py, nothing retrained) in <output_dir>/init, and training starts from there.
 
 Example (main venv, clean committed checkout):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 HF_HUB_OFFLINE=1 \
@@ -34,8 +36,13 @@ def main() -> None:
     out = Path(cfg["output_dir"])
     runner = StageRunner(out, cfg, commit, args.resume, cfg["exp"])
     model = str(out / "model")
+    init = cfg["init_log_dir"]
+    if cfg["init_gate"] is not None:
+        init = str(out / "init")
+        runner.run("init_gate", "main", ["scripts/virtual_run.py", "--log_dir", cfg["init_log_dir"], "--gate", cfg["init_gate"],
+                   "--out_dir", init])
     runner.run("train", "main", ["scripts/train_fixer.py", "--scene_id", cfg["scene_id"], "--output_root", cfg["output_root"],
-               "--init_log_dir", cfg["init_log_dir"], "--out_log_dir", model, "--exp", cfg["exp"],
+               "--init_log_dir", init, "--out_log_dir", model, "--exp", cfg["exp"],
                "--yaw_choices", *map(str, cfg["yaw_choices"]), "--off_lo_start", "0", "--off_hi_start", "0",
                "--off_lo_end", "0", "--off_hi_end", "0", "--steps", str(cfg["steps"]), "--seed", str(cfg["seed"])])
     runner.run("eval_front", "main", ["scripts/eval_front_heldout.py", "--log_dir", model, "--example_frames", "50", "100", "150"])
