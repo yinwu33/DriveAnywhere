@@ -126,3 +126,118 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
     return CalibResult(frames=frames, K=K, dist=np.array([k1, k2]), poses_c2w=np.stack(poses),
                        obs={"frame": np.concatenate(obs_f), "u": np.concatenate(obs_u), "v": np.concatenate(obs_v),
                             "z": np.concatenate(obs_z)}, stats=stats)
+
+
+def sequence_pairs(names: list[str], overlap: int) -> list[tuple[str, str]]:
+    """COLMAP-style sequential pairs of one ordered sequence: each image with the next ``overlap`` images and with the
+    images 2^k ahead (k < overlap), as match_sequential with quadratic_overlap (no loop detection)."""
+    offsets = set(range(1, overlap + 1)) | {2 ** k for k in range(overlap) if 2 ** k < len(names)}
+    return [(names[i], names[i + d]) for i in range(len(names)) for d in sorted(offsets) if i + d < len(names)]
+
+
+def run_glomap_multi(groups: list[dict], work_dir: str, max_features: int, overlap: int, cross_stride: int,
+                     seed: int) -> tuple[dict, dict]:
+    """Joint self-calibration of several traversals of the same road (MT1 in docs/EXPERIMENTS.md).
+
+    Every traversal gets its own RADIAL camera (``CameraMode.PER_FOLDER``: different vehicles, different lenses) and
+    sequential pairs within itself (:func:`sequence_pairs`); traversals are tied together by matching every
+    ``cross_stride``-th frame of each traversal with every ``cross_stride``-th frame of every other one (exhaustive
+    over these keyframes: no GT pose decides which frames see the same place). One GLOMAP global mapping registers
+    all of them in one SfM frame.
+
+    Args:
+        groups: one dict per traversal: ``label`` (folder name), ``image_dir`` (original distorted FRONT images),
+            ``names`` (file names in frame order), ``frames`` (frame indices), ``mask_root`` (Phase 4 masks).
+        work_dir: scratch directory (images linked into ``images/<label>/``, feature masks, database, sparse model).
+        max_features: SIFT features per image.
+        overlap: sequential overlap within a traversal.
+        cross_stride: keyframe stride of the cross-traversal pairs.
+        seed: random seed of the global mapper.
+
+    Returns:
+        ({label: CalibResult in the shared SfM frame}, statistics including the 3D points seen by several traversals).
+    """
+    import pycolmap
+
+    image_root, mask_dir = os.path.join(work_dir, "images"), os.path.join(work_dir, "feature_masks")
+    all_names, label_of = [], {}
+    for g in groups:
+        os.makedirs(os.path.join(image_root, g["label"]))
+        write_feature_masks(g["mask_root"], g["frames"], g["names"], os.path.join(mask_dir, g["label"]))
+        for n in g["names"]:
+            os.symlink(os.path.abspath(os.path.join(g["image_dir"], n)), os.path.join(image_root, g["label"], n))
+            all_names.append(f"{g['label']}/{n}")
+            label_of[f"{g['label']}/{n}"] = g["label"]
+    db = os.path.join(work_dir, "database.db")
+    assert not os.path.exists(db), f"{db} exists: start from an empty work dir"
+    t0 = time.time()
+    reader = pycolmap.ImageReaderOptions()
+    reader.camera_model = "RADIAL"
+    reader.mask_path = mask_dir
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.sift.max_num_features = max_features
+    pycolmap.extract_features(db, image_root, image_names=all_names, camera_mode=pycolmap.CameraMode.PER_FOLDER,
+                              reader_options=reader, extraction_options=extraction)
+    t1 = time.time()
+    pairs = []
+    for g in groups:
+        pairs += sequence_pairs([f"{g['label']}/{n}" for n in g["names"]], overlap)
+    cross = []
+    for a in range(len(groups)):
+        for b in range(a + 1, len(groups)):
+            ka = [f"{groups[a]['label']}/{n}" for n in groups[a]["names"][::cross_stride]]
+            kb = [f"{groups[b]['label']}/{n}" for n in groups[b]["names"][::cross_stride]]
+            cross += [(x, y) for x in ka for y in kb]
+    pair_file = os.path.join(work_dir, "pairs.txt")
+    with open(pair_file, "w") as f:
+        f.writelines(f"{x} {y}\n" for x, y in pairs + cross)
+    pairing = pycolmap.ImportedPairingOptions()
+    pairing.match_list_path = pair_file
+    pycolmap.match_image_pairs(db, pairing_options=pairing)
+    t2 = time.time()
+    sparse_dir = os.path.join(work_dir, "sparse")
+    os.makedirs(sparse_dir)
+    options = pycolmap.GlobalPipelineOptions()
+    options.random_seed = seed
+    recs = pycolmap.global_mapping(db, image_root, sparse_dir, options)
+    t3 = time.time()
+    assert len(recs) == 1, f"global mapping produced {len(recs)} models (the traversals were not tied together)"
+    rec = next(iter(recs.values()))
+    by_name = {img.name: img for img in rec.images.values()}
+    missing = [n for n in all_names if n not in by_name or not by_name[n].has_pose]
+    assert not missing, f"{len(missing)} frames not registered: {missing[:10]}"
+    results = {}
+    for g in groups:
+        cams = {by_name[f"{g['label']}/{n}"].camera_id for n in g["names"]}
+        assert len(cams) == 1, f"{g['label']}: frames on {len(cams)} cameras"
+        cam = rec.cameras[cams.pop()]
+        assert str(cam.model).endswith("RADIAL") and not str(cam.model).endswith("SIMPLE_RADIAL"), cam.model
+        f_, cx, cy, k1, k2 = (float(x) for x in cam.params)
+        K = np.array([[f_, 0.0, cx - 0.5], [0.0, f_, cy - 0.5], [0.0, 0.0, 1.0]])
+        poses, obs_f, obs_u, obs_v, obs_z = [], [], [], [], []
+        for t, n in zip(g["frames"], g["names"]):
+            img = by_name[f"{g['label']}/{n}"]
+            w2c = np.eye(4)
+            w2c[:3, :4] = img.cam_from_world().matrix()
+            poses.append(np.linalg.inv(w2c))
+            xyz = np.array([rec.points3D[p.point3D_id].xyz for p in img.points2D if p.has_point3D()])
+            pc = xyz @ w2c[:3, :3].T + w2c[:3, 3]
+            pc = pc[pc[:, 2] > 0]
+            obs_f.append(np.full(len(pc), t))
+            obs_u.append(K[0, 0] * pc[:, 0] / pc[:, 2] + K[0, 2])
+            obs_v.append(K[1, 1] * pc[:, 1] / pc[:, 2] + K[1, 2])
+            obs_z.append(pc[:, 2])
+        results[g["label"]] = CalibResult(
+            frames=g["frames"], K=K, dist=np.array([k1, k2]), poses_c2w=np.stack(poses),
+            obs={"frame": np.concatenate(obs_f), "u": np.concatenate(obs_u), "v": np.concatenate(obs_v),
+                 "z": np.concatenate(obs_z)},
+            stats={"registered": len(g["names"]), "colmap_params": [f_, cx, cy, k1, k2]})
+    image_label = {img_id: label_of[img.name] for img_id, img in rec.images.items()}
+    shared = sum(1 for p in rec.points3D.values()
+                 if len({image_label[el.image_id] for el in p.track.elements}) > 1)
+    stats = {"registered": len(all_names), "points3D": int(rec.num_points3D()),
+             "points3D_seen_by_several_traversals": int(shared),
+             "mean_reprojection_error_px": float(rec.compute_mean_reprojection_error()),
+             "pairs_within": len(pairs), "pairs_cross": len(cross),
+             "runtime_s": {"extract": t1 - t0, "match": t2 - t1, "map": t3 - t2}}
+    return results, stats
