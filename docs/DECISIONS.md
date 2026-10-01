@@ -1109,3 +1109,26 @@ E12 完成后恢复本项目查看器，均仅监听 127.0.0.1，HTTP 200；8081
   - Lyra 1.0 在完全卸载时约 43 GB，可以尝试；
   - Lyra 2.0（Wan2.1-14B）和 Voyager（≥ 60 GB）需要更大的 GPU。
 - 需要云 GPU 的方案只在本地方案都不够时再向用户提出（涉及 Waymo 衍生数据上云）。
+
+## Y. 同一路段的多次经过（MT1，2026-10-01，用户："找同一个地点多次 traversal 的数据，用多 videos 来构建"）
+
+数据、流程和结果见 docs/EXPERIMENTS.md 的 MT1。这里记两条与代码有关的结论。
+
+### Y1. drivestudio 的逐图像颜色模型（Affine）从来没有学习（代码与 D4 的假设不一致）
+
+- D4 写的是"CamPose、Affine 沿用上游默认开启"，以为每张图都有自己的曝光 / 白平衡补偿。
+- 实际上 `models/modules.py` 的 `AffineTransform` 把 embedding 和两层 MLP 全部零初始化（`zero_init`）：
+  - 隐藏层是 ReLU(0) = 0，第二层权重是 0；
+  - 所以 embedding、第一层、第二层权重的梯度都恰好为 0，只有最后一层的 bias 会学，等于所有图像共用一个颜色偏移。
+- 核对：MT1 / MT1A 的 checkpoint 里 `embedding.weight`、`decoder.0.*`、`decoder.2.weight` 全为 0，只有 `decoder.2.bias` 非零（最大 0.011 / 0.008）。E3–E30 用的是同一个模块和同样的配置（lr 1e-5），同样没有逐图像曝光。
+- 影响：单段视频里曝光变化小，影响有限（未量化）；两天的视频必须有逐图像曝光，MT1 两段直接合并失败，这是原因之一。
+- 处理：`dashrecon/train/exposure.py` 的 `PerImageExposure`，即 MTGS 的 `LearnableExposureRGBModel`：每张图一个直接学习的 3×4 矩阵，初值 [I | 0]，lr 1e-3（前 5000 步从 1e-5 预热）→ 1e-4，测试帧用前一帧（同一段里的训练帧）的矩阵。MT1e / MT1x / MT1m 使用；之前的实验不重跑，只记录。之后可以在 val056 上用 E5f + 曝光验证单段的影响。
+
+### Y2. 参照 MTGS 代码的外观设置（用户："为什么不参考一下 MTGS"）
+
+读了 github.com/OpenDriveLab/MTGS（commit 7ab67a3）的 `mtgs/config/MTGS.py`、`mtgs/scene_model/gaussian_model/multi_color_gaussian_splatting.py`、`mtgs/scene_model/module/appearance.py`：
+- 每张图一个曝光矩阵（见 Y1）；
+- 几何与 SH 零阶共享，每段一套高阶 SH（`multi_feature_rest=True`）；逐段的零阶 adapter 存在，但学习率为 0，等于不用；
+- 天空是高斯天空盒，每段一套颜色（`mono_sky=False`）；
+- 另有 2DGS、LiDAR 逆深度、单目深度 NCC、法向等几何正则，这里不照搬（没有 LiDAR，几何正则沿用 E5f）。
+MT1app（逐段零阶残差 + 逐段天空）是按论文做的简化版，没有逐图像曝光。MT1m 按 MTGS 代码：逐段高阶 SH 残差（`TraversalGaussians(residual=["rest"])`）+ 逐段天空 + 逐图像曝光；MT1x 是 MT1app + 曝光；MT1e 是 MT1 + 曝光。

@@ -144,6 +144,8 @@
 - **已借鉴**：
   - E5f：flatten 与大尺寸惩罚。FRONT 留出更清晰（清晰度比 0.68 → 0.82），侧视大糊团变细碎点。
   - E14：每轮生成帧当作一次"虚拟经过"，带单独的 3×4 仿射外观（MTGS 外观节点的简化版，没有做 SH 残差）。
+  - MT1app（10-01）：同一路段两次经过，逐段零阶颜色残差 + 逐段天空；把两天光照的冲突解开（A 段留出 15.4 → 25.5 dB）。
+  - MT1e / MT1x / MT1m（10-01）：读了代码（github.com/OpenDriveLab/MTGS，commit 7ab67a3）后照搬两点：逐图像 3×4 曝光（`LearnableExposureRGBModel`，lr 1e-3 → 1e-4）；逐段高阶 SH（`multi_feature_rest=True`，零阶 adapter 学习率为 0）。顺带发现 drivestudio 的 Affine 零初始化后从不学习（DECISIONS Y1）。
 - **仍可借鉴**：
   - 不依赖尺度的单目深度 NCC 损失，可以覆盖网格之外的远处；
   - 多次经过融合（§14 Mapillary 计划，唯一能让侧面内容"真实"的办法）；
