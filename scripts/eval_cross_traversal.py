@@ -6,6 +6,8 @@ FRONT frames of --member (virtual frames in the member's range that dashrecon.sc
 whether or not the run trained on that member, so a run trained on one traversal and a run trained on all of them
 are scored on the same frames.
 
+    appearance  per-traversal appearance runs (MT1app) render novel views with trainer.traversal.novel; with
+             --member_appearance they use the member's own (what the run would show for that day);
     camera   the frame's estimated pose and intrinsics in the combined pose dir (no CamPose refinement: drivestudio's
              test frames are rendered the same way, DECISIONS D4); render size = the run's training size;
     template image / camera infos of the run's own training frame whose camera centre is nearest (render_at
@@ -53,6 +55,8 @@ def main() -> None:
     parser.add_argument("--member", required=True)
     parser.add_argument("--example_frames", type=int, nargs="*", required=True)
     parser.add_argument("--out_subdir", required=True)
+    parser.add_argument("--member_appearance", action="store_true",
+                        help="per-traversal appearance runs (MT1app): render with --member's appearance, not trainer.traversal.novel")
     args = parser.parse_args()
     commit = git_commit()
     device = torch.device("cuda")
@@ -66,6 +70,9 @@ def main() -> None:
     if view_gate_path(cfg) is not None:
         attach_view_gate(trainer, view_gate_path(cfg))
     trainer.set_eval()
+    if args.member_appearance:
+        assert trainer.traversal_starts is not None, "--member_appearance needs a run with trainer.traversal"
+        trainer.traversal_novel = list(io.read_meta(cfg.data.pixel_source.pose_dir)["members"]).index(args.member)
 
     pose_dir, mask_dir = cfg.data.pixel_source.pose_dir, cfg.data.pixel_source.mask_dir
     meta = io.read_meta(pose_dir)
@@ -120,7 +127,8 @@ def main() -> None:
     keys = ("psnr", "psnr_raw", "psnr_nosky", "ssim", "lpips", "nearest_train_dist")
     summary = {k: float(np.mean([r[k] for r in rows])) for k in keys}
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
-        json.dump({"log_dir": args.log_dir, "member": args.member, "frames": len(rows), "test_stride": test_stride,
+        json.dump({"log_dir": args.log_dir, "member": args.member, "member_appearance": args.member_appearance,
+                   "frames": len(rows), "test_stride": test_stride,
                    "run_frames": [int(run_frames[0]), int(run_frames[-1]) + 1], "resolution": [h, w],
                    "reads_gt": False, "summary": summary, "per_frame": rows, "dashrecon_commit": commit}, f, indent=2)
     print(f"[eval_cross_traversal] {args.log_dir} at {args.member}'s {len(rows)} held-out frames: PSNR {summary['psnr']:.2f} "
