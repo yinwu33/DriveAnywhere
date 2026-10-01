@@ -17,6 +17,10 @@ Mouse: drag to orbit, right-drag to pan, scroll to move (viser controls); world 
 --fixer adds a "Fixer post-process" checkbox: each rendered frame then goes through NVIDIA Fixer (single step at
 --fixer_timestep, dashrecon.gen.fixer_client; the "+" of Difix3D+, E26 in docs/EXPERIMENTS.md). This is a per-frame
 generative enhancement, not part of the 3D model: sharper and cleaner, but consecutive frames can differ.
+Combined multi-traversal scenes (MT1, scripts/combine_traversals.py): runs on the same pose dir share one world, so a
+run trained on fewer frames (MT1A: the first traversal) may sit after the first run, and for frames it does not have
+the camera comes from the first run. Runs with per-traversal appearance (MT1app, dashrecon.train.traversal) get an
+"appearance" dropdown: one traversal's colours and sky, or their mean.
 
 Example (main venv):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
@@ -78,17 +82,20 @@ class Run:
             self.vfov.append(float(2 * np.arctan(0.5 * float(ci["height"]) / float(ci["intrinsics"][1, 1]))))
         self.frames = np.arange(dataset.start_timestep, dataset.end_timestep)
         self.label = os.path.relpath(log_dir)
+        self.pose_dir = cfg.data.pixel_source.pose_dir
         del dataset
 
 
 @torch.no_grad()
-def render(run: Run, camera_state, img_wh) -> np.ndarray:
+def render(run: Run, camera_state, img_wh, appearance: int) -> np.ndarray:
     """Background Gaussians (view-dependent colour) over the Sky model, uint8 (H, W, 3)."""
     from datasets.base.pixel_source import get_rays
     from gsplat.rendering import rasterization
     from models.gaussians.basics import dataclass_camera
 
     trainer, device = run.trainer, run.trainer.device
+    if trainer.traversal_starts is not None:
+        trainer.set_traversal(appearance)
     w, h = img_wh
     c2w = torch.from_numpy(camera_state.c2w).float().to(device)
     k = torch.from_numpy(camera_state.get_K(img_wh)).float().to(device)
@@ -133,10 +140,11 @@ def main() -> None:
         for run, label in zip(runs, args.labels):
             run.label = label
     for r in runs[1:]:
-        assert len(r.frames) == len(runs[0].frames), "runs must cover the same frames"
+        assert len(r.frames) == len(runs[0].frames) or (len(r.frames) < len(runs[0].frames) and r.pose_dir == runs[0].pose_dir), (
+            "runs must cover the same frames, or fewer frames of the first run's world")
     if not 0 <= args.initial_frame < len(runs[0].frames) or not -180 <= args.initial_yaw <= 180:
         raise ValueError("initial frame/yaw is outside the viewer range")
-    state = {"run": runs[0]}
+    state = {"run": runs[0], "appearance": 0}
     server = viser.ViserServer(host=args.host, port=args.port, verbose=False)
     fixer, fixer_on = None, None
     if args.fixer:
@@ -146,7 +154,7 @@ def main() -> None:
         fixer_on = server.gui.add_checkbox("Fixer post-process (gen)", initial_value=False)
 
     def render_view(camera_state, img_wh) -> np.ndarray:
-        rgb = render(state["run"], camera_state, img_wh)
+        rgb = render(state["run"], camera_state, img_wh, state["appearance"])
         if fixer is None or not fixer_on.value:
             return rgb
         h, w = rgb.shape[:2]
@@ -164,9 +172,20 @@ def main() -> None:
             "yaw": server.gui.add_slider("yaw", min=-180.0, max=180.0, step=5.0, initial_value=args.initial_yaw),
             "pitch": server.gui.add_slider("pitch", min=-45.0, max=45.0, step=5.0, initial_value=0.0)}
     go = server.gui.add_button("go to frame")
+    if any(r.trainer.traversal_starts is not None for r in runs):
+        from dashrecon import io
+
+        members = io.read_meta(next(r for r in runs if r.trainer.traversal_starts is not None).pose_dir)["members"]
+        names = [f"{m} (frames from {s})" for m, s in zip(members, next(r for r in runs if r.trainer.traversal_starts is not None).trainer.traversal_starts)]
+        appearance = server.gui.add_dropdown("appearance", options=names + ["mean"], initial_value=names[0])
+
+        @appearance.on_update
+        def _(_) -> None:
+            state["appearance"] = (names + ["mean"]).index(appearance.value) if appearance.value in names else -1
+            viewer.rerender(None)
 
     def place(client) -> None:
-        run = state["run"]
+        run = state["run"] if int(frame.value) < len(state["run"].frames) else runs[0]
         c2w = moved_c2w(torch.from_numpy(run.c2w[int(frame.value)]), ViewMove(**{k: float(v.value) for k, v in move.items()})).numpy()
         with client.atomic():
             client.camera.up_direction = (0.0, 0.0, 1.0)
