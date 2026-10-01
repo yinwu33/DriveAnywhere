@@ -16,7 +16,7 @@ Outputs (the layout of a single scene, so dashrecon.train.pixel_source, run_fusi
     <out_root>/<group>/<pose_tag>/   frames.txt, intrinsics.npy (N,3,3), poses_c2w.npy, depth/, depth_conf/, meta.json
                                      (members, frame ranges, s_t, s_c, the world transform)
     <out_root>/<group>/<mask_tag>/   mask_dynamic / mask_sky / mask_road, frames.txt, meta.json
-    <undistorted_root>/<group idx>/images/<t:03d>_0.jpg   links to the members' undistorted images
+    <undistorted_root>/<group idx>/images/<t:03d>_0.jpg   links to the members' undistorted images (real paths)
 
 Example (any venv with numpy / PIL):
     .venvs/main/bin/python scripts/combine_traversals.py --group mt1 --pose_tag pose-glomap-mt1_depth-mapanything \
@@ -110,7 +110,7 @@ def main() -> None:
             io.write_depth_conf(pose_out, v, io.read_depth_conf(m["pose_dir"], int(t)))
             for kind in MASK_KINDS:
                 io.write_mask(mask_out, kind, v, io.read_mask(m["mask_dir"], kind, int(t)))
-            os.symlink(os.path.abspath(os.path.join(m["img_dir"], f"{int(t):03d}_{FRONT_CAM_ID}.jpg")),
+            os.symlink(os.path.realpath(os.path.join(m["img_dir"], f"{int(t):03d}_{FRONT_CAM_ID}.jpg")),
                        os.path.join(img_out, f"{v:03d}_{FRONT_CAM_ID}.jpg"))
         ranges[m["sid"]] = {"virtual_frames": [offset, offset + len(m["frames"])],
                             "member_frames": [int(m["frames"][0]), int(m["frames"][-1]) + 1],
