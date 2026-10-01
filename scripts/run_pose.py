@@ -7,7 +7,8 @@ Two modes (no calibration, GT pose, LiDAR or boxes in either: AGENTS.md section 
       the undistorted image tree of that calibration; the backend gets the shared intrinsics and the SfM poses
       as inputs and supplies dense depth. The SfM poses are kept and scaled so that the sparse SfM points agree
       with the backend depth (median of depth / SfM z over all observations) ->
-      ``<out_root>/<scene_id>/pose-glomap_depth-<backend>/``.
+      ``<out_root>/<scene_id>/pose-glomap_depth-<backend>/`` (``calib-glomap-<group>`` from run_calib_multi.py ->
+      ``pose-glomap-<group>_depth-<backend>/``: still the scene's own world, see scripts/combine_traversals.py).
 Both then re-express the poses in the gravity-aligned world of dashrecon.pose.world.
 
 Example (mapanything venv):
@@ -118,7 +119,8 @@ def main() -> None:
             "backend_vs_sfm_poses": {"scale": s_pred, "rms_residual": res_pred},
             "distortion_k1_k2": camera["dist"].tolist(),
         }
-        tag = f"pose-glomap_depth-{args.backend}"
+        # calib-glomap -> pose-glomap_depth-<backend>; calib-glomap-mt1 (joint, run_calib_multi.py) -> pose-glomap-mt1_...
+        tag = f"pose-{os.path.basename(os.path.normpath(args.camera_dir)).removeprefix('calib-')}_depth-{args.backend}"
         print(f"[run_pose] {args.scene_id}: depth scale {s:.4f} (median |log ratio| {stats['median_abs_log_ratio']:.3f}, "
               f"{stats['observations_used']} obs); backend poses vs scaled SfM: scale {s_pred:.3f}, rms {res_pred:.3f}", flush=True)
 

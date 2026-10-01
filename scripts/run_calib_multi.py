@@ -96,7 +96,8 @@ def main() -> None:
     shutil.rmtree(os.path.join(work_dir, "images"))
 
     params = {k: getattr(args, k) for k in ("max_features", "overlap", "cross_stride", "seed")}
-    common = {"backend": "glomap (joint, one camera per traversal)", "pycolmap": pycolmap.__version__,
+    common = {"backend": "glomap", "joint": "one GLOMAP model of all traversals, one camera per traversal",
+              "pycolmap": pycolmap.__version__,
               "group": args.group, "traversals": args.scene_ids, "params": params,
               "poses_frame": "SfM world frame and units shared by all traversals of the group (not metric, not gravity-aligned)",
               "uses_oracle": False, "uses_calibration": False,
