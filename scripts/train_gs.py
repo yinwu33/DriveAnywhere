@@ -13,6 +13,8 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
     MT1A MT1 with the first traversal only (data.end_timestep), initialised from a mesh of its frames only.
     MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
          traversal); novel views get the first traversal's appearance.
+    MT1e / MT1x / MT1m  MT1 / MT1app / MTGS-style (per-traversal higher SH bands, one sky per traversal), all three with
+         MTGS's per-image exposure (dashrecon.train.exposure) instead of drivestudio's Affine.
 
 Checks GT isolation on the merged config (dashrecon.train.guard) before training, then runs
 tools/train.py:main. Output: <output_root>/<exp>/<scene_id>/ (drivestudio log dir: config.yaml, checkpoints,
@@ -48,7 +50,15 @@ PIPELINES = {
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
-               "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1"}
+               "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1"}
+MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
+# per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
+TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
+# MTGS's per-image exposure (dashrecon.train.exposure) instead of drivestudio's Affine, whose zero-initialised MLP never learns
+EXPOSURE = ["model.Affine.type=dashrecon.train.exposure.PerImageExposure", "model.Affine.optim.all.lr=0.001",
+            "model.Affine.optim.all.lr_final=0.0001", "model.Affine.optim.all.warmup_steps=5000",
+            "model.Affine.optim.all.lr_pre_warmup=0.00001", "model.Affine.optim.all.weight_decay=0.0"]
 # MT1A: the first traversal of the combined scene alone, with a mesh fused from its frames only (run_fusion --frame_range)
 MT1A_ROOT = "data/dashrecon/_mt1a_only"
 E5F_REG = ["model.Background.reg.flatten.w=1.0", "model.Background.reg.max_s_square_reg.w=0.05"]
@@ -78,20 +88,23 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "MT1", "MT1A", "MT1app"):
+    if exp in ("E5f",) + MT1_EXPS:
         opts += E5F_REG
-    if exp in ("MT1", "MT1A", "MT1app"):
+    if exp in MT1_EXPS:
         # drivestudio's front_center_interp video would interpolate across the jump between traversals, and its rays
         # for all frames are precomputed on the GPU (16 GB for the 395 frames of mt1)
         opts += ["render.render_novel=null"]
-    if exp == "MT1app":
+    if exp in TRAVERSAL_RESIDUAL:
         meta = io.read_meta(pose_dir)
         starts = [meta["traversals"][m]["virtual_frames"][0] for m in meta["members"]]
         opts += ["model.Background.type=dashrecon.train.traversal.TraversalGaussians",
                  f"model.Background.num_traversals={len(starts)}", "model.Background.reg.traversal_residual.w=0.01",
-                 "model.Background.optim.sh_dc_tr.lr=0.0025",
+                 f"model.Background.residual=[{','.join(TRAVERSAL_RESIDUAL[exp])}]",
+                 "model.Background.optim.sh_dc_tr.lr=0.0025", "model.Background.optim.sh_rest_tr.lr=0.000125",
                  "model.Sky.type=dashrecon.train.traversal.TraversalEnvLight", f"model.Sky.params.num_traversals={len(starts)}",
                  f"trainer.traversal.starts=[{','.join(str(x) for x in starts)}]", "trainer.traversal.novel=0"]
+    if exp in ("MT1e", "MT1x", "MT1m"):
+        opts += EXPOSURE
     if exp == "MT1A":
         first = io.read_meta(pose_dir)["members"][0]
         opts += [f"data.end_timestep={io.read_meta(pose_dir)['traversals'][first]['virtual_frames'][1]}"]
