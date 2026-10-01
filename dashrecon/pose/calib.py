@@ -5,6 +5,9 @@ COLMAP 4.2 through pycolmap, API confirmed against pycolmap 4.2.0:
       (``CameraMode.SINGLE``); pixels where the mask PNG ``<mask_path>/<image name>.png`` is 0 get no
       features (dynamic objects and sky, from the Phase 4 masks of the same images);
     - ``match_sequential`` (neighbouring frames, quadratic overlap, no loop detection);
+    - optionally ``calibrate_view_graph`` (focal lengths from the fundamental matrices of the view graph, then the
+      two-view geometries upgraded to calibrated), which COLMAP recommends before global mapping when no focal prior
+      exists (MT1 in docs/EXPERIMENTS.md: the focal length of a straight drive is poorly determined, OPEN_QUESTIONS 33);
     - ``global_mapping`` (GLOMAP). Incremental mapping failed on forward driving (2 of 199 frames registered
       on val039, DECISIONS K), the global mapper registered every frame of the 5 development scenes.
 The camera model is COLMAP ``RADIAL`` (f, cx, cy, k1, k2) with the principal point kept at the image centre;
@@ -52,8 +55,17 @@ def write_feature_masks(mask_root: str, frames: np.ndarray, names: list[str], ou
         Image.fromarray(np.where(blocked, 0, 255).astype(np.uint8)).save(os.path.join(out_dir, f"{name}.png"))
 
 
+def view_graph_calibration(db: str, seed: int) -> None:
+    """Focal lengths from the view graph (pycolmap.calibrate_view_graph) written into the database."""
+    import pycolmap
+
+    options = pycolmap.ViewGraphCalibrationOptions()
+    options.random_seed = seed
+    assert pycolmap.calibrate_view_graph(db, options), "view graph calibration failed"
+
+
 def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: str, work_dir: str,
-               max_features: int, overlap: int, seed: int) -> CalibResult:
+               max_features: int, overlap: int, seed: int, view_graph_calib: bool) -> CalibResult:
     """Self-calibrate one shared RADIAL camera and the trajectory of an ordered image sequence.
 
     Args:
@@ -65,6 +77,7 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
         max_features: SIFT features per image.
         overlap: sequential matching overlap (quadratic overlap on top).
         seed: random seed of the global mapper.
+        view_graph_calib: run :func:`view_graph_calibration` before global mapping.
     """
     import pycolmap
 
@@ -86,6 +99,8 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
     pairing.quadratic_overlap = True
     pairing.loop_detection = False
     pycolmap.match_sequential(db, pairing_options=pairing)
+    if view_graph_calib:
+        view_graph_calibration(db, seed)
     t2 = time.time()
     sparse_dir = os.path.join(work_dir, "sparse")
     os.makedirs(sparse_dir)
@@ -136,7 +151,7 @@ def sequence_pairs(names: list[str], overlap: int) -> list[tuple[str, str]]:
 
 
 def run_glomap_multi(groups: list[dict], work_dir: str, max_features: int, overlap: int, cross_stride: int,
-                     seed: int) -> tuple[dict, dict]:
+                     seed: int, view_graph_calib: bool) -> tuple[dict, dict]:
     """Joint self-calibration of several traversals of the same road (MT1 in docs/EXPERIMENTS.md).
 
     Every traversal gets its own RADIAL camera (``CameraMode.PER_FOLDER``: different vehicles, different lenses) and
@@ -153,6 +168,7 @@ def run_glomap_multi(groups: list[dict], work_dir: str, max_features: int, overl
         overlap: sequential overlap within a traversal.
         cross_stride: keyframe stride of the cross-traversal pairs.
         seed: random seed of the global mapper.
+        view_graph_calib: run :func:`view_graph_calibration` before global mapping.
 
     Returns:
         ({label: CalibResult in the shared SfM frame}, statistics including the 3D points seen by several traversals).
@@ -194,6 +210,8 @@ def run_glomap_multi(groups: list[dict], work_dir: str, max_features: int, overl
     pairing = pycolmap.ImportedPairingOptions()
     pairing.match_list_path = pair_file
     pycolmap.match_image_pairs(db, pairing_options=pairing)
+    if view_graph_calib:
+        view_graph_calibration(db, seed)
     t2 = time.time()
     sparse_dir = os.path.join(work_dir, "sparse")
     os.makedirs(sparse_dir)

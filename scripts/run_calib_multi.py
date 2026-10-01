@@ -62,6 +62,8 @@ def main() -> None:
     parser.add_argument("--overlap", type=int, required=True)
     parser.add_argument("--cross_stride", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--view_graph_calibration", action="store_true",
+                        help="estimate focal lengths from the view graph before global mapping (dashrecon.pose.calib)")
     args = parser.parse_args()
     assert len(args.scene_ids) >= 2, "a joint calibration needs at least two traversals"
     commit = git_commit()
@@ -89,13 +91,14 @@ def main() -> None:
     work_dir = os.path.join(group_dir, "colmap")
     os.makedirs(work_dir)
 
-    results, stats = run_glomap_multi(groups, work_dir, args.max_features, args.overlap, args.cross_stride, args.seed)
+    results, stats = run_glomap_multi(groups, work_dir, args.max_features, args.overlap, args.cross_stride, args.seed,
+                                      args.view_graph_calibration)
     # the database, feature masks and image links are large or fully determined by the inputs above
     os.remove(os.path.join(work_dir, "database.db"))
     shutil.rmtree(os.path.join(work_dir, "feature_masks"))
     shutil.rmtree(os.path.join(work_dir, "images"))
 
-    params = {k: getattr(args, k) for k in ("max_features", "overlap", "cross_stride", "seed")}
+    params = {k: getattr(args, k) for k in ("max_features", "overlap", "cross_stride", "seed", "view_graph_calibration")}
     common = {"backend": "glomap", "joint": "one GLOMAP model of all traversals, one camera per traversal",
               "pycolmap": pycolmap.__version__,
               "group": args.group, "traversals": args.scene_ids, "params": params,

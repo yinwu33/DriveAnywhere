@@ -43,6 +43,8 @@ def main() -> None:
     parser.add_argument("--max_features", type=int, required=True)
     parser.add_argument("--overlap", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--view_graph_calibration", action="store_true",
+                        help="estimate focal lengths from the view graph before global mapping (dashrecon.pose.calib)")
     args = parser.parse_args()
     commit = git_commit()
     import pycolmap
@@ -60,7 +62,8 @@ def main() -> None:
     os.makedirs(work_dir)
     print(f"[run_calib] {args.scene_id}: {len(frames)} FRONT frames {frames[0]}..{frames[-1]}", flush=True)
 
-    res = run_glomap(img_dir, names, frames, args.mask_dir, work_dir, args.max_features, args.overlap, args.seed)
+    res = run_glomap(img_dir, names, frames, args.mask_dir, work_dir, args.max_features, args.overlap, args.seed,
+                     args.view_graph_calibration)
     # the COLMAP database and feature masks are large and fully determined by the inputs above
     os.remove(os.path.join(work_dir, "database.db"))
     shutil.rmtree(os.path.join(work_dir, "feature_masks"))
@@ -89,7 +92,7 @@ def main() -> None:
     io.write_sparse_obs(calib_dir, res.obs["frame"], res.obs["u"], res.obs["v"], res.obs["z"])
     io.write_meta(calib_dir, {
         "backend": "glomap", "pycolmap": pycolmap.__version__, "scene_id": args.scene_id, "segment": scene.segment,
-        "params": {k: getattr(args, k) for k in ("max_features", "overlap", "seed")},
+        "params": {k: getattr(args, k) for k in ("max_features", "overlap", "seed", "view_graph_calibration")},
         "camera_model": "RADIAL (f, cx, cy, k1, k2), shared by all frames, principal point fixed at the image centre",
         "feature_mask": "dynamic | sky from " + os.path.relpath(args.mask_dir),
         "poses_frame": "SfM world frame and units (not metric, not gravity-aligned)",
