@@ -805,3 +805,4 @@ python scripts/view_gs.py --log_dirs results/E5c/val056 results/E8/val056 result
 - 2026-09-28：E12 行驶与三个固定位置扫视的等预算诊断完成（§12，DECISIONS U1）；19 项测试通过，两个查看器恢复，结果与限制见 docs/E12_SWEEP_RESULTS.md。未将完整 Phase 9 质量标为通过。
 - 2026-09-28：接用户左右 90° 负面反馈，固定相机复查 E11/E12；75 张 RGB/深度核对，完整自由视角质量明确失败。修正旧“用户认可 E11”状态描述，仅完成失败诊断（§12，DECISIONS U2）。
 - 2026-09-28：用户要求长期追踪实验与文献：新增 `docs/EXPERIMENTS.md`（每个实验先写方案、后写结果）和 `docs/papers/`（31 篇论文，`paper.md` 记录可借鉴点与对应实验）；§4 目录结构已更新。
+- 2026-10-01：多次经过实验 MT1（DECISIONS Y）；固定评价视角范围：横移 ±3 m、转向 ±45°、升高 2 m（DECISIONS Z）；准备迁移到 H100，步骤与 OneDrive 上的数据见 `docs/MIGRATION.md`。§0 第 8 条的"只 commit 不 push"之外，用户这次明确要求合并到 main 并 push。
