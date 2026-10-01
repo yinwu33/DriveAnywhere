@@ -42,10 +42,27 @@ DEV_SCENES = (
 )
 
 
+# Multi-traversal sites (docs/EXPERIMENTS.md D-M1 / MT1): several local Waymo segments that drive the same road at
+# different times, found with scripts/find_revisits.py (GT poses used only for that selection). Each traversal is a
+# Scene of its own (split "training": these segments have no local LiDAR); MULTI_TRAVERSALS maps a combined scene id
+# to its traversals, in the frame order of the combined sequence. The combined scene is virtual: its scene_idx names
+# the directory of the combined undistorted image tree (scripts/combine_traversals.py), not a Waymo segment.
+MT_SCENES = (
+    Scene("mt1a", "training", 368, "segment-17850487901509155700_9065_000_9085_000_with_camera_labels",
+          "multi_traversal", "PHX arterial, MT1 traversal A, 2018-04-02, bright sun; 325 m", 0, -1),
+    Scene("mt1b", "training", 662, "segment-6742105013468660925_3645_000_3665_000_with_camera_labels",
+          "multi_traversal", "PHX arterial, MT1 traversal B, 2018-03-24, overcast look, road before crack sealing; 341 m", 0, -1),
+    Scene("mt1", "multi", 901, "mt1a+mt1b", "multi_traversal",
+          "MT1 combined: mt1a frames then mt1b frames, one world frame from a joint self-calibration", 0, -1),
+)
+MULTI_TRAVERSALS = {"mt1": ("mt1a", "mt1b")}
+
+
 def get_scene(scene_id: str) -> Scene:
-    """Look up a development scene by id."""
-    matches = [s for s in DEV_SCENES if s.scene_id == scene_id]
-    assert len(matches) == 1, f"unknown scene_id {scene_id}; known: {[s.scene_id for s in DEV_SCENES]}"
+    """Look up a development or multi-traversal scene by id."""
+    known = DEV_SCENES + MT_SCENES
+    matches = [s for s in known if s.scene_id == scene_id]
+    assert len(matches) == 1, f"unknown scene_id {scene_id}; known: {[s.scene_id for s in known]}"
     return matches[0]
 
 
