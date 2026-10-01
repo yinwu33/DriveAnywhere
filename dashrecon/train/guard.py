@@ -4,8 +4,10 @@ from omegaconf import OmegaConf
 ALLOWED_MODELS = {"Background", "Sky", "Affine", "CamPose"}
 DASHRECON_ROOT = "data/dashrecon/"
 # where FRONT images may come from: the original processed split, or the undistorted FRONT-only tree of a
-# self-calibration (DECISIONS D13), which holds no other file
-IMAGE_ROOTS = ("data/waymo/processed/validation", "data/dashrecon/_undistorted/calib-glomap")
+# self-calibration (DECISIONS D13; calib-glomap-mt1: the joint one of MT1, whose combined scene links its members'
+# undistorted FRONT images), which holds no other file
+IMAGE_ROOTS = ("data/waymo/processed/validation", "data/dashrecon/_undistorted/calib-glomap",
+               "data/dashrecon/_undistorted/calib-glomap-mt1")
 
 
 def assert_non_oracle(cfg: OmegaConf) -> None:
