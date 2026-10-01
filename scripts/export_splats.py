@@ -15,6 +15,9 @@ Runs with a view gate in their config (E14-style Phase 9 runs, D-A3) also get, p
 axis (int8 x3) and cone half-angle (uint8, degrees) with a flag (1 gated, 0 not), plus margin / fade / double_sided, so
 the browser fades them exactly as dashrecon.gen.floaters.cone_gate does for novel views; gated Gaussians that no
 training view observed (factor 0 from every novel view) are not exported.
+Runs with per-traversal appearance (MT1app, dashrecon.train.traversal.TraversalGaussians) take --traversal K: the colour
+is then that traversal's (shared DC + its centred residual), written to splat_view_traversal<K>.js /
+splat_params_traversal<K>.json.
 Output: <log_dir>/renders/splat_view.js (registers ``window.SPLAT["<scene_id>.<exp>"]``) + splat_params.json.
 
 Example (main venv):
@@ -51,6 +54,7 @@ def main() -> None:
     parser.add_argument("--min_opacity", type=float, required=True)
     parser.add_argument("--max_scale_pct", type=float, required=True, help="drop Gaussians whose largest axis is above this percentile")
     parser.add_argument("--exp", default=None, help="experiment id (default: <log_dir>'s parent directory name)")
+    parser.add_argument("--traversal", type=int, default=None, help="per-traversal appearance runs: export this traversal's colours")
     args = parser.parse_args()
 
     ckpt = torch.load(os.path.join(args.log_dir, "checkpoint_final.pth"), map_location="cpu", weights_only=False)
@@ -60,7 +64,12 @@ def main() -> None:
     quats = bg["_quats"].float().numpy()
     quats /= np.linalg.norm(quats, axis=1, keepdims=True)
     opacity = 1.0 / (1.0 + np.exp(-bg["_opacities"].float().numpy()[:, 0]))
-    rgb = np.clip(0.5 + SH_C0 * bg["_features_dc"].float().numpy(), 0.0, 1.0)
+    dc = bg["_features_dc"].float().numpy()
+    assert (args.traversal is None) == ("_features_dc_tr" not in bg), "--traversal is for (and required by) per-traversal appearance runs"
+    if args.traversal is not None:
+        res = bg["_features_dc_tr"].float().numpy()
+        dc = dc + (res - res.mean(axis=1, keepdims=True))[:, args.traversal]
+    rgb = np.clip(0.5 + SH_C0 * dc, 0.0, 1.0)
     assert log_scales.shape[1] == 3 and rgb.shape[1] == 3, (log_scales.shape, rgb.shape)
 
     cfg = OmegaConf.load(os.path.join(args.log_dir, "config.yaml"))
@@ -104,9 +113,10 @@ def main() -> None:
                            "par": b64(np.stack([np.clip(np.rint(half), 0, 180).astype(np.uint8), flag], axis=1))}
     out_dir = os.path.join(args.log_dir, "renders")
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "splat_view.js"), "w") as f:
+    suffix = "" if args.traversal is None else f"_traversal{args.traversal}"
+    with open(os.path.join(out_dir, f"splat_view{suffix}.js"), "w") as f:
         f.write(f"window.SPLAT = window.SPLAT || {{}};\nwindow.SPLAT[{json.dumps(args.scene_id + '.' + exp)}] = {json.dumps(payload)};\n")
-    io.write_json(os.path.join(out_dir, "splat_params.json"), {**vars(args), "exp": exp, "kept": int(len(keep)), "total": int(len(means)),
+    io.write_json(os.path.join(out_dir, f"splat_params{suffix}.json"), {**vars(args), "exp": exp, "kept": int(len(keep)), "total": int(len(means)),
                                                                   "view_gate": None if gate is None else str(cfg.view_gate),
                                                                   "gated_kept": 0 if gate is None else payload["gate"]["gated_kept"],
                                                                   "dashrecon_commit": git_commit()})
