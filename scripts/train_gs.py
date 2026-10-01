@@ -80,6 +80,10 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
     if exp in ("E5f", "MT1", "MT1A", "MT1app"):
         opts += E5F_REG
+    if exp in ("MT1", "MT1A", "MT1app"):
+        # drivestudio's front_center_interp video would interpolate across the jump between traversals, and its rays
+        # for all frames are precomputed on the GPU (16 GB for the 395 frames of mt1)
+        opts += ["render.render_novel=null"]
     if exp == "MT1app":
         meta = io.read_meta(pose_dir)
         starts = [meta["traversals"][m]["virtual_frames"][0] for m in meta["members"]]
