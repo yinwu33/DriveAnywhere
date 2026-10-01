@@ -32,3 +32,10 @@ def test_to_joint_sfm_undoes_run_pose() -> None:
 def test_common_scale() -> None:
     assert abs(common_scale(np.array([2.0, 2.0]), np.array([1.0, 5.0])) - 2.0) < 1e-12
     assert abs(common_scale(np.array([1.0, 4.0]), np.array([1.0, 1.0])) - 2.0) < 1e-12
+
+
+def test_traversal_of() -> None:
+    from dashrecon.scenes import traversal_of
+
+    starts = [0, 198]
+    assert [traversal_of(f, starts) for f in (0, 197, 198, 394)] == [0, 0, 1, 1]

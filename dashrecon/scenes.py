@@ -92,3 +92,11 @@ def train_frame_mask(frames: np.ndarray, start_timestep: int, test_stride: int) 
         return np.ones(len(frames), dtype=bool)
     rel = frames - start_timestep
     return ~((rel >= test_stride) & (rel % test_stride == 0))
+
+
+def traversal_of(frame: int, starts: list) -> int:
+    """Index of the traversal of a combined multi-traversal scene whose virtual frame range holds ``frame``
+    (``starts``: first virtual frame of every traversal, ascending from 0; scripts/combine_traversals.py)."""
+    assert starts[0] == 0 and all(a < b for a, b in zip(starts, starts[1:])), starts
+    assert frame >= 0, frame
+    return sum(1 for s in starts if s <= frame) - 1

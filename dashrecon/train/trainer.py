@@ -11,6 +11,11 @@ With ``trainer.losses.mesh`` present, every training step additionally
 Without the key the class behaves exactly like MultiTrainer (E3/E4).
 
 Config (``trainer.losses.mesh``): path, depth_w, normal_w, min_alpha, near, far.
+
+``trainer.traversal`` (combined multi-traversal scenes with per-traversal appearance, dashrecon.train.traversal):
+``starts`` (first virtual frame of every traversal) and ``novel`` (the traversal whose appearance novel views get, -1 =
+the shared average). Before every render the Background and Sky models get ``current_traversal`` from the image's frame
+index (dataset frames counted from 0: data.start_timestep must be 0), or ``novel`` for a novel view.
 """
 from typing import Dict
 
@@ -20,14 +25,17 @@ from gsplat.cuda_legacy._torch_impl import quat_to_rotmat
 from gsplat.rendering import rasterization
 
 from dashrecon import io
+from dashrecon.scenes import traversal_of
 from models.trainers.scene_graph import MultiTrainer
 
 
 class DashreconTrainer(MultiTrainer):
     """MultiTrainer + optional mesh depth/normal regularisation."""
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, traversal=None, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.traversal_starts = None if traversal is None else list(traversal.starts)
+        self.traversal_novel = None if traversal is None else int(traversal.novel)
         self.mesh_cfg = self.losses_dict.mesh if "mesh" in self.losses_dict else None
         self._last_cam = None
         self._last_gs = None
@@ -110,7 +118,15 @@ class DashreconTrainer(MultiTrainer):
         )
         return {"gs_normal": F.normalize(renders[0], dim=-1), "gs_normal_alpha": alphas[0, ..., 0]}
 
+    def set_traversal(self, k: int) -> None:
+        """Appearance of traversal k (-1 = shared average) for the Background and Sky models."""
+        self.models["Background"].current_traversal = k
+        self.models["Sky"].current_traversal = k
+
     def forward(self, image_infos, camera_infos, novel_view: bool = False):
+        if self.traversal_starts is not None:
+            self.set_traversal(self.traversal_novel if novel_view else
+                               traversal_of(int(image_infos["frame_idx"].flatten()[0]), self.traversal_starts))
         outputs = super().forward(image_infos, camera_infos, novel_view)
         if self.mesh_cfg is not None and self.training:
             outputs.update(self._mesh_maps(self._last_cam))

@@ -11,6 +11,8 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
          docs/EXPERIMENTS.md E5f); weights untuned.
     MT1  E5f on a combined multi-traversal scene (scripts/combine_traversals.py; docs/EXPERIMENTS.md MT1).
     MT1A MT1 with the first traversal only (data.end_timestep), initialised from a mesh of its frames only.
+    MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
+         traversal); novel views get the first traversal's appearance.
 
 Checks GT isolation on the merged config (dashrecon.train.guard) before training, then runs
 tools/train.py:main. Output: <output_root>/<exp>/<scene_id>/ (drivestudio log dir: config.yaml, checkpoints,
@@ -46,7 +48,7 @@ PIPELINES = {
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
-               "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1"}
+               "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1"}
 # MT1A: the first traversal of the combined scene alone, with a mesh fused from its frames only (run_fusion --frame_range)
 MT1A_ROOT = "data/dashrecon/_mt1a_only"
 E5F_REG = ["model.Background.reg.flatten.w=1.0", "model.Background.reg.max_s_square_reg.w=0.05"]
@@ -76,8 +78,16 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "MT1", "MT1A"):
+    if exp in ("E5f", "MT1", "MT1A", "MT1app"):
         opts += E5F_REG
+    if exp == "MT1app":
+        meta = io.read_meta(pose_dir)
+        starts = [meta["traversals"][m]["virtual_frames"][0] for m in meta["members"]]
+        opts += ["model.Background.type=dashrecon.train.traversal.TraversalGaussians",
+                 f"model.Background.num_traversals={len(starts)}", "model.Background.reg.traversal_residual.w=0.01",
+                 "model.Background.optim.sh_dc_tr.lr=0.0025",
+                 "model.Sky.type=dashrecon.train.traversal.TraversalEnvLight", f"model.Sky.params.num_traversals={len(starts)}",
+                 f"trainer.traversal.starts=[{','.join(str(x) for x in starts)}]", "trainer.traversal.novel=0"]
     if exp == "MT1A":
         first = io.read_meta(pose_dir)["members"][0]
         opts += [f"data.end_timestep={io.read_meta(pose_dir)['traversals'][first]['virtual_frames'][1]}"]
