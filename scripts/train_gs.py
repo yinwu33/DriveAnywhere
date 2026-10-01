@@ -9,6 +9,8 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
     E5f  E5c + drivestudio's flatten (shortest axis L1) and max_s_square (largest axis squared) Background
          regularisers, MTGS-style, against the large off-mesh Gaussians behind the side-view junk (DECISIONS W1,
          docs/EXPERIMENTS.md E5f); weights untuned.
+    MT1  E5f on a combined multi-traversal scene (scripts/combine_traversals.py; docs/EXPERIMENTS.md MT1).
+    MT1A MT1 with the first traversal only (data.end_timestep), initialised from a mesh of its frames only.
 
 Checks GT isolation on the merged config (dashrecon.train.guard) before training, then runs
 tools/train.py:main. Output: <output_root>/<exp>/<scene_id>/ (drivestudio log dir: config.yaml, checkpoints,
@@ -39,10 +41,14 @@ CONFIG = "configs/dashrecon/static_bg.yaml"
 PIPELINES = {
     "mapanything": ("pose-mapanything_depth-mapanything", "mask-gsam2_sky-segformer", "data/waymo/processed/validation"),
     "glomap": ("pose-glomap_depth-mapanything", "mask-gsam2_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
+    "glomap-mt1": ("pose-glomap-mt1_depth-mapanything", "mask-gsam2_sky-segformer_img-glomap-mt1",
+                   "data/dashrecon/_undistorted/calib-glomap-mt1"),
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
-               "E5f": "glomap"}
+               "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1"}
+# MT1A: the first traversal of the combined scene alone, with a mesh fused from its frames only (run_fusion --frame_range)
+MT1A_ROOT = "data/dashrecon/_mt1a_only"
 E5F_REG = ["model.Background.reg.flatten.w=1.0", "model.Background.reg.max_s_square_reg.w=0.05"]
 
 
@@ -53,7 +59,7 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
     fusion_tag = f"{pose_tag}__{mask_tag}"
     pose_dir = io.scene_dir("data/dashrecon", scene_id, pose_tag)
     mask_dir = io.scene_dir("data/dashrecon", scene_id, mask_tag)
-    fusion_dir = io.scene_dir("data/dashrecon", scene_id, fusion_tag)
+    fusion_dir = io.scene_dir(MT1A_ROOT if exp == "MT1A" else "data/dashrecon", scene_id, fusion_tag)
     opts = [
         f"data.data_root={image_root}",
         f"data.scene_idx={scene.scene_idx}",
@@ -70,8 +76,11 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp == "E5f":
+    if exp in ("E5f", "MT1", "MT1A"):
         opts += E5F_REG
+    if exp == "MT1A":
+        first = io.read_meta(pose_dir)["members"][0]
+        opts += [f"data.end_timestep={io.read_meta(pose_dir)['traversals'][first]['virtual_frames'][1]}"]
     return opts
 
 

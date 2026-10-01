@@ -10,7 +10,8 @@ contribute points nor serve as consistency neighbours. Steps, each switchable wi
     5. road          road smoothing onto a height field (dashrecon/fusion/road.py)
     6. normals       PCA normals oriented towards the nearest camera centre (always on)
 Output: <out_root>/<scene_id>/<pose_tag>__<mask_tag>/ with points_fused.ply (xyz, normals, rgb,
-label 0 = other / 1 = road), frames.txt (frames used), meta.json (parameters, per-step counts, road
+label 0 = other / 1 = road), frames.txt (frames used; --frame_range limits them to one traversal of a combined
+multi-traversal scene, MT1), meta.json (parameters, per-step counts, road
 statistics, runtime) and diagnostics/consistency_rejected.ply (a sample of rejected points).
 
 Example (main venv):
@@ -66,6 +67,8 @@ def main() -> None:
     parser.add_argument("--rejected_sample", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--skip", nargs="*", choices=STEPS, default=[], help="steps to disable (ablation)")
+    parser.add_argument("--frame_range", type=int, nargs=2, metavar=("START", "END"),
+                        help="use only the frames in [START, END), e.g. one traversal of a combined scene (MT1)")
     args = parser.parse_args()
     commit = git_commit()
     t0 = time.time()
@@ -80,6 +83,8 @@ def main() -> None:
     grid = pose_meta["depth_grid"]
     k_all = io.depth_intrinsics(k_img, grid)
     train = train_frame_mask(frames, scene.start_timestep, args.test_stride)
+    if args.frame_range is not None:
+        train &= (frames >= args.frame_range[0]) & (frames < args.frame_range[1])
     tf = frames[train]
     poses, ks = poses_all[train], k_all[train]
     img_dir = os.path.join(args.processed_root, f"{scene.scene_idx:03d}", "images")
