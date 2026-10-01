@@ -30,6 +30,11 @@ poses), so they are scored on the same pixels of the same real images.
 undistorted reference on the same grid, <out_subdir>/renders/<t:03d>_<cam>.png and refs/<t:03d>_<cam>.png, for
 distribution-level metrics (scripts/eval_realism.py, D-E1 in docs/EXPERIMENTS.md).
 
+--member (MT1, docs/EXPERIMENTS.md): the run is a combined multi-traversal scene (scripts/combine_traversals.py);
+only the frames of that traversal are evaluated, against that traversal's own processed segment
+(<gt_root>/<member scene_idx>/, member frame = virtual frame - first virtual frame + first member frame); the Sim(3)
+scale uses those frames only. Frame numbers in the outputs are the virtual ones.
+
 Outputs in <log_dir>/<out_subdir>/: metrics.json (means per camera and overall, per-frame values), and
 <t:03d>_<cam>.jpg (reference | colour-fitted render | overlap in grey, unseen in red) for --example_frames.
 
@@ -55,6 +60,7 @@ from skimage.metrics import structural_similarity
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.gen.novel import attach_view_gate, build_trainer, to_device, view_gate_path  # noqa: E402
 from dashrecon.gen.views import front_image_index, hole_mask, training_observers  # noqa: E402
+from dashrecon import io  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.scenes import get_scene  # noqa: E402
 from datasets.base.pixel_source import get_rays  # noqa: E402
@@ -110,6 +116,7 @@ def main() -> None:
     parser.add_argument("--unseen_dir", help="unseen masks written by --save_unseen (instead of --region_ref)")
     parser.add_argument("--out_subdir", default="cross_camera")
     parser.add_argument("--save_renders", action="store_true", help="write raw renders and references (D-E1)")
+    parser.add_argument("--member", help="traversal of a combined multi-traversal scene to evaluate (MT1)")
     args = parser.parse_args()
     commit = git_commit()
     device = torch.device("cuda")
@@ -134,11 +141,19 @@ def main() -> None:
         if view_gate_path(ref_cfg) is not None:
             attach_view_gate(ref_trainer, view_gate_path(ref_cfg))
         observers = training_observers(ref_trainer, dataset, OBS_STRIDE, device)
-    scene_idx = int(cfg.data.scene_idx)
-    gt_dir = os.path.join(args.gt_root, f"{scene_idx:03d}")
     full = dataset.full_image_set
     frames = np.arange(dataset.start_timestep, dataset.end_timestep)
     assert len(frames) == dataset.num_img_timesteps, (len(frames), dataset.num_img_timesteps)
+    if args.member is None:
+        scene_idx, first_virtual, first_member = int(cfg.data.scene_idx), 0, 0
+        idx = list(range(len(frames)))
+    else:
+        tr = io.read_meta(cfg.data.pixel_source.pose_dir)["traversals"][args.member]
+        scene_idx, (first_virtual, end_virtual), first_member = get_scene(args.member).scene_idx, tr["virtual_frames"], tr["member_frames"][0]
+        idx = [i for i in range(len(frames)) if first_virtual <= frames[i] < end_virtual]
+        assert idx, f"no frame of {args.member} ({first_virtual}..{end_virtual}) in the run's frames {frames[0]}..{frames[-1]}"
+    gt_frame = lambda t: int(t) - first_virtual + first_member  # noqa: E731
+    gt_dir = os.path.join(args.gt_root, f"{scene_idx:03d}")
 
     # estimated FRONT poses as trained (pose_dir), GT FRONT camera centres, and the scale between them
     est = []
@@ -147,8 +162,8 @@ def main() -> None:
         est.append(ci["camera_to_world"].cpu().numpy().astype(np.float64))
     est = np.stack(est)
     front_to_ego = gt_cam_to_ego(gt_dir, 0)
-    gt_front = np.stack([np.loadtxt(os.path.join(gt_dir, "ego_pose", f"{t:03d}.txt")) @ front_to_ego for t in frames])
-    s = umeyama_scale(gt_front[:, :3, 3], est[:, :3, 3])
+    gt_front = np.stack([np.loadtxt(os.path.join(gt_dir, "ego_pose", f"{gt_frame(frames[i]):03d}.txt")) @ front_to_ego for i in idx])
+    s = umeyama_scale(gt_front[:, :3, 3], est[idx, :3, 3])
 
     out_dir = os.path.join(args.log_dir, args.out_subdir)
     os.makedirs(out_dir, exist_ok=True)
@@ -158,9 +173,9 @@ def main() -> None:
         os.makedirs(os.path.join(out_dir, "renders"), exist_ok=False)
         os.makedirs(os.path.join(out_dir, "refs"), exist_ok=False)
     per_frame = []
-    sel = list(range(0, len(frames), args.frame_stride))
+    sel = idx[::args.frame_stride]
     for t in args.example_frames:
-        assert t in frames, t
+        assert t in frames[idx], t
     with torch.no_grad():
         for cam in args.cams:
             cam_name = CAM_NAMES[cam]
@@ -173,7 +188,7 @@ def main() -> None:
                 t = int(frames[i])
                 ii, ci = full.get_image(front_image_index(dataset, i), 1)
                 ii, ci = to_device(ii, device), to_device(ci, device)
-                ref_full = cv2.cvtColor(cv2.imread(os.path.join(gt_dir, "images", f"{t:03d}_{cam}.jpg")), cv2.COLOR_BGR2RGB)
+                ref_full = cv2.cvtColor(cv2.imread(os.path.join(gt_dir, "images", f"{gt_frame(t):03d}_{cam}.jpg")), cv2.COLOR_BGR2RGB)
                 H, W = ref_full.shape[:2]
                 w = int(ci["width"])
                 h = int(round(H * w / W))
@@ -181,7 +196,7 @@ def main() -> None:
                 ii["img_idx"] = torch.full((h, w), int(ii["img_idx"].flatten()[0]), dtype=ii["img_idx"].dtype, device=device)
                 ci["height"], ci["width"] = torch.tensor(h, dtype=torch.long, device=device), torch.tensor(w, dtype=torch.long, device=device)
                 ref = cv2.resize(cv2.undistort(ref_full, K, dist), (w, h), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-                dyn = np.asarray(Image.open(os.path.join(gt_dir, "dynamic_masks", "all", f"{t:03d}_{cam}.png")).resize((w, h), Image.NEAREST)) > 0
+                dyn = np.asarray(Image.open(os.path.join(gt_dir, "dynamic_masks", "all", f"{gt_frame(t):03d}_{cam}.png")).resize((w, h), Image.NEAREST)) > 0
                 # intrinsics on the render grid, +0.5 pixel-centre convention of drivestudio / gsplat
                 k_r = torch.tensor([[K[0, 0] * w / W, 0, (K[0, 2] + 0.5) * w / W], [0, K[1, 1] * h / H, (K[1, 2] + 0.5) * h / H],
                                     [0, 0, 1.0]], dtype=torch.float32, device=device)
@@ -244,7 +259,8 @@ def main() -> None:
             summary[cam_name].update({"unseen_frac": float(np.mean([r["unseen_frac"] for r in rows])), "unseen_scored": len(unseen_scored),
                                       **{k: float(np.mean([r[k] for r in unseen_scored])) for k in unseen_keys}})
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
-        json.dump({"reads_gt": True, "log_dir": args.log_dir, "scene_idx": scene_idx, "frame_stride": args.frame_stride,
+        json.dump({"reads_gt": True, "log_dir": args.log_dir, "scene_idx": scene_idx, "member": args.member,
+                   "member_frame_offset": first_member - first_virtual, "frame_stride": args.frame_stride,
                    "alpha": args.alpha, "gt_to_est_scale": s, "cams": [CAM_NAMES[c] for c in args.cams],
                    "region_ref": args.region_ref, "unseen_dir": args.unseen_dir, "hole_params": HOLE, "obs_stride": OBS_STRIDE,
                    "placement": "per-frame: estimated FRONT pose x GT FRONT->side extrinsics (translation scaled by the Sim3 scale)",
