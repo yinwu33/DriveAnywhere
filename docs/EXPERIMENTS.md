@@ -558,7 +558,12 @@
   - 侧相机：A 段的 SIDE_LEFT / SIDE_RIGHT / FRONT_LEFT / FRONT_RIGHT（评测代码读 GT，同 D15 的跨相机检查），看第二段的观测能不能让侧面更真实。
   - 自由视角目测：横移、转向、升高，与单段对照并排。
 - **预期**：两段车道位置不同（同向，但有几米的横向差），横移视角和路边立面应更完整；风险是两段间外观冲突造成路面花斑或闪烁，以及跨段配准失败。
-- **判定**：MT1-AB 的 A 段 FRONT 留出不低于 MT1-A 0.5 dB 以上；侧相机未观测区域的 PSNR / LPIPS 优于 MT1-A；横移目测更完整。
+- **判定**：
+  - A 段 FRONT 留出：MT1 比 MT1A 低不超过 0.5 dB（第二段的外观冲突不能明显损害第一段）；
+  - A 段侧相机：在 MT1A 看不到的像素上（`eval_cross_camera --member mt1a`，未观测区域由 MT1A 定义），MT1 的 PSNR / LPIPS 优于 MT1A；
+  - 在另一段的留出帧上渲染（`scripts/eval_cross_traversal.py`：另一条车道、另一天的真实图像，颜色先做逐通道仿射拟合）给出单段重建在真实偏移视角下的误差，作为参考；
+  - 横移、转向目测更完整。
+- **实验编号**：`MT1` = 两段一起（`train_gs.py --exp MT1 --scene_id mt1`，E5f 的设置），`MT1A` = 只用 mt1a 的帧（`data.end_timestep`），初始网格也只由 mt1a 的帧融合（`run_fusion --frame_range`，`data/dashrecon/_mt1a_only/`）。两者迭代次数相同。
 
 ### D-A4：双向屏蔽
 
