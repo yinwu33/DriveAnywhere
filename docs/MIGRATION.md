@@ -99,7 +99,7 @@
   - main 里 55 项单元测试全部通过。
 - 2026-10-02 第 5 步完成：E30 在 H100 上复现。FRONT 留出 19 帧 32.542 / 0.078，与旧机器（commit `1b01b7a`）逐帧比较，最大差异 PSNR 3e-5 dB、LPIPS 7e-5、SSIM 5e-7。日志在 `results/_logs/e30_h100_eval.log`。
   - 第 4 步：validation 的 5 段已解包，tar 已删除。E30 用到的 val056 目录（`_undistorted/calib-glomap/056`、`pose-glomap_depth-mapanything`、`mask-gsam2_sky-segformer_img-glomap`、融合目录、`calib-glomap`）和 `results/E20/val056/view_gate.pt` 已单独拉取，`rclone check` 无差异。
-  - `data/dashrecon` 和 `results` 的全量下载仍在进行，小文件多所以很慢。第一次下载（16 路并发、不限速）跑到一半就停住，20 秒内没有任何进展，多半是 OneDrive 限流（当时没开日志，没能确认）。改用 `-v --transfers 8 --checkers 8 --tpslimit 8` 后恢复。
+  - `data/dashrecon`（6.0 GB）和 `results`（14.7 GB）的全量下载已完成。`rclone check --one-way --size-only` 显示：dashrecon 17141 个文件全部一致；results 有 12572 个一致，2 个不同，都是 E30 重新评测时覆盖的 `front_heldout/metrics.json` 和 `150.jpg`，旧机器的版本在 OneDrive 上。第一次下载（16 路并发、不限速）跑到一半就停住，20 秒内没有任何进展，多半是 OneDrive 限流（当时没开日志，没能确认）。改用 `-v --transfers 8 --checkers 8 --tpslimit 8` 后恢复。
 - 未做：training 段（修复模型训练时再按批拉取）；gen3c 环境。
 
 ## H100 上的硬盘预算（300 GB）
