@@ -13,6 +13,12 @@
 
 ## OneDrive 上有什么
 
+上传 10-01 21:00 完成，10-02 校验：
+- 共 30,320 个对象、245 GiB；
+- 与本地逐个比对（`rclone check --one-way --size-only`）全部一致，日志 `results/_logs/verify_onedrive.log`；
+- 抽查下载 2 个 training tar：每个 990 / 995 张图像，图像能正常解码。
+
+
 | 路径 | 内容 | 大小 | 说明 |
 |---|---|---|---|
 | `data/dashrecon/{val056,val039,val041,val087,val094}` | 5 个开发场景的自标定、位姿与深度、掩码、融合点云、网格 | 约 4 GB | GLOMAP 每次结果不完全相同（OPEN_QUESTIONS 33），要和旧结果比就用这份，不要重跑 |
@@ -24,7 +30,7 @@
 | `weights/huggingface_hub/models--*` | MapAnything、Fixer、SAM 2.1、Grounding DINO、SegFormer-B5、MoGe-2 | 约 14 GB | HuggingFace 缓存格式，符号链接存成 `.rclonelink`，下载时要加 `--links` |
 | `weights/gen3c_checkpoints` | GEN3C-Cosmos-7B 及其 tokenizer、T5 | 约 71 GB | 只有 Phase 9 的生成补全要用 |
 | `waymo_processed/validation/<idx>.tar` | 5 个开发场景，drivestudio 预处理后的格式（056、039、041、087、094；只有 056 带 LiDAR） | 约 3.5 GB | 解包到 `data/waymo/processed/validation/` |
-| `waymo_processed/training/<idx>.tar` | 428 段 training 的预处理结果：5 个相机的图像、标定、自车位姿、GT 动态掩码、物体；没有 LiDAR | 约 150 GB，每段约 360 MB | 解包到 `data/waymo/processed/training/`；`<idx>` 是 `data/waymo_train_list.txt` 里的行号 |
+| `waymo_processed/training/<idx>.tar` | 428 段 training 的预处理结果：5 个相机的图像、标定、自车位姿、GT 动态掩码、物体；没有 LiDAR | 158 GB，每段 242–524 MB | 解包到 `data/waymo/processed/training/`；`<idx>` 是 `data/waymo_train_list.txt` 里的行号 |
 | `waymo_processed/training/waymo_train_day_moving.txt` | 这 428 段的清单：行号、段名、地点、行驶距离 | 小 | 同 `data/waymo_train_day_moving.txt` |
 | `docs_papers/` | 参考论文 PDF | 小 | |
 
