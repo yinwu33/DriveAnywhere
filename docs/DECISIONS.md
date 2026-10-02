@@ -1140,3 +1140,11 @@ MT1app（逐段零阶残差 + 逐段天空）是按论文做的简化版，没�
 - 单位：重建的尺度只有真值的 0.43–0.79（OPEN_QUESTIONS 15），所以"米"由评测代码换算：用 GT FRONT 轨迹做 Sim(3) 对齐得到尺度（同 `eval_cross_camera.py`），再把米换成场景单位。评测可以读 GT，重建不读。
 - 真值能覆盖的部分：偏航约 ±45° 有 FRONT_LEFT / FRONT_RIGHT 两个真实相机；横移有多次经过时可用另一次经过的图像（`eval_cross_traversal.py`）；升高没有真值，只能用无参考指标（真实感 KID / 平色帧比例 / 清晰度）和跨视角一致性。具体协议、帧和视角网格在实现评测脚本时定下来，此后所有实验都按它报告，协议改动按 AGENTS §10 第 4 条记录并重跑。
 - 用户在考虑把仓库迁到一台 H100（硬盘 300 GB）上，以便按 DECISIONS S 在 Waymo training 的多相机数据上训练修复模型（输入：只用 FRONT 重建在侧相机位置的渲染；目标：真实侧相机图像；评测场景隔离）。尚未决定。
+
+## AA. H100 上的 CUDA toolkit（2026-10-02，用户同意）
+
+- 新机器：1× NVIDIA H100L-94C（96 GB，sm_90），驱动 595.91（CUDA ≤ 13.2），Ubuntu 24.04，gcc 13.3，96 核，1 TB 内存，`/home` 剩约 370 GB。
+- 没有 `/usr/local/cuda-12.1`，只有用户目录下的 CUDA 12.6 toolkit（`~/cuda-12.6`，nvcc 12.6.20）。不另装 12.1：12.1 只支持到 gcc 12，这里只有 gcc 13。
+- 核对（2026-10-02，scratchpad 中的临时 venv）：nvcc 12.6 编译 sm_90 kernel 并调用 cuBLAS 正常；torch 2.4.1+cu121（`setup_main.sh` 的组合）`cuda.is_available()` 为 True，arch 列表含 sm_90；`CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0` 下用 `torch.utils.cpp_extension.load_inline` 现场编译 CUDA 扩展并运行，结果正确。torch 只要求 toolkit 与自身 CUDA 主版本一致。
+- 处理：`envs/setup_main.sh`、`setup_nksr.sh`、`setup_fixer.sh` 的说明改为"CUDA 12.x toolkit"，H100 上用 `CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0`。torch 版本与 wheel（cu121 / cu124）不变。
+- 未改：AGENTS §13 与各脚本 docstring 里的 `/usr/local/cuda-12.1` 只是命令示例，H100 上换成 `~/cuda-12.6` 即可；运行时会用到该路径的 `scripts/fix_renders.py`（`--cuda_home` 默认值）和 `scripts/run_phase9.sh`（存在性检查）等用到时再改。

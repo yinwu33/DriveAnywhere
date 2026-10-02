@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Main 3DGS training env: Python 3.10 + torch 2.4.1 cu121 + gsplat 1.3.0 (see docs/DECISIONS.md, section D).
-# uv ships no CUDA toolkit: CUDA extensions compile against $CUDA_HOME, which must be a 12.1 toolkit.
+# uv ships no CUDA toolkit: CUDA extensions compile against $CUDA_HOME, a CUDA 12.x toolkit (torch only checks
+# the major version): 12.1 on the A6000 machine, 12.6 on the H100 (DECISIONS AA).
 set -euo pipefail
-: "${CUDA_HOME:?set CUDA_HOME to a CUDA 12.1 toolkit, e.g. /usr/local/cuda-12.1}"
-: "${TORCH_CUDA_ARCH_LIST:?set TORCH_CUDA_ARCH_LIST, e.g. 8.6 for RTX A6000}"
+: "${CUDA_HOME:?set CUDA_HOME to a CUDA 12.x toolkit, e.g. /usr/local/cuda-12.1}"
+: "${TORCH_CUDA_ARCH_LIST:?set TORCH_CUDA_ARCH_LIST, e.g. 8.6 for RTX A6000, 9.0 for H100}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export VIRTUAL_ENV="$ROOT/.venvs/main"
 export PATH="$CUDA_HOME/bin:$PATH"

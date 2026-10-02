@@ -3,7 +3,7 @@
 # container. torch 2.6 cu124 (runs on driver 555); cosmos-predict2 and megatron-core without dependencies, as the
 # official Dockerfile does (their training-only dependencies such as tensorstore do not build here); flash-attn
 # as the prebuilt wheel (the Qwen text-encoder module asserts it at import, Fixer never runs it); transformer_engine
-# compiled against this torch with the system CUDA 12.1 toolkit. The worker (dashrecon/gen/fixer_worker.py) needs
+# compiled against this torch with the system CUDA 12.x toolkit. The worker (dashrecon/gen/fixer_worker.py) needs
 # the venv's nvidia/*/lib directories on LD_LIBRARY_PATH (transformer_engine loads cuDNN through ctypes);
 # dashrecon/gen/fixer_client.py sets that when it starts the worker.
 set -euo pipefail

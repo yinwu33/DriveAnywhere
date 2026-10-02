@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # NKSR env (Phase 7 surface reconstruction). Upstream now builds from source (package/) with conda +
-# CUDA 12.8; here the same source is built with uv against the system CUDA 12.1 toolkit and torch cu121
-# (driver 555 supports CUDA <= 12.5). setup.py fetches Eigen 3.4 and NanoVDB itself via GitPython.
+# CUDA 12.8; here the same source is built with uv against the system CUDA 12.x toolkit (12.1 on the A6000,
+# 12.6 on the H100, DECISIONS AA) and torch cu121 (driver 555 supports CUDA <= 12.5). setup.py fetches Eigen 3.4 and NanoVDB itself via GitPython.
 set -euo pipefail
-: "${CUDA_HOME:?set CUDA_HOME to a CUDA 12.1 toolkit, e.g. /usr/local/cuda-12.1}"
-: "${TORCH_CUDA_ARCH_LIST:?set TORCH_CUDA_ARCH_LIST, e.g. 8.6 for RTX A6000}"
+: "${CUDA_HOME:?set CUDA_HOME to a CUDA 12.x toolkit, e.g. /usr/local/cuda-12.1}"
+: "${TORCH_CUDA_ARCH_LIST:?set TORCH_CUDA_ARCH_LIST, e.g. 8.6 for RTX A6000, 9.0 for H100}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export VIRTUAL_ENV="$ROOT/.venvs/nksr"
 export PATH="$CUDA_HOME/bin:$PATH"

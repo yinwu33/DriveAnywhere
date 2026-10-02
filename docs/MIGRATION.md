@@ -31,7 +31,7 @@
 ## H100 上的步骤
 
 需要先准备好（用户）：
-- NVIDIA 驱动、CUDA 12.1 toolkit（或其他 12.x；`envs/setup_main.sh` 要求 12.1，用别的版本要先改脚本并记录）；
+- NVIDIA 驱动、CUDA 12.x toolkit（H100 上是 `~/cuda-12.6`，见 DECISIONS AA）；
 - `uv`、`rclone`（配置好名为 `onedrive` 的 remote）、GitHub SSH key。
 
 1. 代码：
@@ -40,7 +40,7 @@
    ```
 2. 环境：H100 是 sm_90。
    ```bash
-   export CUDA_HOME=/usr/local/cuda-12.1 TORCH_CUDA_ARCH_LIST=9.0
+   export CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0
    bash envs/setup_main.sh; bash envs/setup_mapanything.sh; bash envs/setup_masks.sh; bash envs/setup_sfm.sh
    bash envs/setup_nksr.sh; bash envs/setup_fixer.sh; bash envs/setup_waymo.sh   # setup_gen3c.sh 只在需要生成补全时
    PYTHONPATH=. .venvs/masks/bin/python -m pytest tests -q
