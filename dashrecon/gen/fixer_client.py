@@ -28,7 +28,9 @@ class FixerClient:
         libs = sorted(glob.glob(os.path.join(FIXER_VENV, "lib", "python3.12", "site-packages", "nvidia", "*", "lib")))
         assert libs, f"no nvidia libraries in {FIXER_VENV}: run envs/setup_fixer.sh"
         env = dict(os.environ)
-        env["LD_LIBRARY_PATH"] = ":".join(libs)  # transformer_engine loads cuDNN through ctypes
+        # transformer_engine loads cuDNN through ctypes, and dlopens the unversioned libcudart.so (only in the
+        # toolkit, which is not on the linker path when installed outside /usr/local, DECISIONS AA)
+        env["LD_LIBRARY_PATH"] = ":".join(libs + [os.path.join(cuda_home, "lib64")])
         env["PATH"] = os.path.join(cuda_home, "bin") + os.pathsep + env["PATH"]
         env["HF_HUB_OFFLINE"] = "1"
         os.makedirs(work_dir, exist_ok=True)

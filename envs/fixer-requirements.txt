@@ -32,6 +32,7 @@ natsort==8.4.0
 networkx==3.6.1
 ninja==1.13.2
 numpy==2.5.2
+nvidia-ml-py==13.615.71  # the module behind pynvml 13 (not a torch dependency, so not installed with torch)
 omegaconf==2.3.1
 packaging==26.3
 pandas==3.0.6

@@ -19,3 +19,4 @@ uv pip install --no-build-isolation "git+https://github.com/nerfstudio-project/g
 uv pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git@V0.7.8"
 uv pip install --no-build-isolation "git+https://github.com/NVlabs/nvdiffrast.git@v0.3.3"
 uv pip install -e "$ROOT/third_party/smplx"
+uv pip install pytest  # tests/ that import drivestudio, cv2 or torch run in this venv

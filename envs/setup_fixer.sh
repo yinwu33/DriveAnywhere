@@ -14,7 +14,9 @@ export PATH="$CUDA_HOME/bin:$PATH"
 
 uv venv "$VIRTUAL_ENV" --python 3.12.12
 uv pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
-uv pip install -r "$ROOT/envs/fixer-requirements.txt"
+# --no-deps: the file is the full closure of the verified venv, which has diffusers 0.40.0 next to
+# huggingface-hub 0.36.2 (diffusers 0.40 declares hub >= 1.23, so a resolver refuses the pair)
+uv pip install --no-deps -r "$ROOT/envs/fixer-requirements.txt"
 uv pip install --no-deps cosmos-predict2==1.0.9 megatron-core==0.10.0
 # --native-tls: GitHub downloads go through the host's TLS proxy
 uv pip install --native-tls "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl"

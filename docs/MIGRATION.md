@@ -21,7 +21,7 @@
 | `data/dashrecon/{diagnostics,scene_selection}` | 位姿诊断、选段普查（D-M1） | 小 | |
 | `results/{E5c,E5f,E20,E23,E29,E30}` | 单段基线：E5f（几何基线）、E30（自由视角组合模型）等 | 约 15 GB | E23 / E29 / E30 的视角屏蔽来自 `results/E20/val056/view_gate.pt` |
 | `results/{MT1,MT1A,MT1app}`，之后加 `{MT1e,MT1x,MT1m}` | 多次经过的实验 | 约 2 GB，之后约 4 GB | |
-| `weights/huggingface_hub/models--*` | MapAnything、Fixer、SAM 2.1、Grounding DINO、SegFormer-B5、MoGe-2 | 约 14 GB | HuggingFace 缓存格式，符号链接存成 `.rclonelink`，下载时要加 `--links` |
+| `weights/huggingface_hub/models--*` | MapAnything、Fixer、SAM 2.1、Grounding DINO、SegFormer-B5、MoGe-2 | 实际只有 2.1 GB | HuggingFace 缓存格式，符号链接存成 `.rclonelink`，下载时要加 `--links`。**不完整**：MapAnything、SAM 2.1、SegFormer、Fixer 的大文件链接到 hub 顶层的共享目录 `blobs/<2 位>/<sha256>`，这个目录没有上传；完整的只有 Grounding DINO、MoGe-2。补法见下面第 3 步 |
 | `weights/gen3c_checkpoints` | GEN3C-Cosmos-7B 及其 tokenizer、T5 | 约 71 GB | 只有 Phase 9 的生成补全要用 |
 | `waymo_processed/validation/<idx>.tar` | 5 个开发场景，drivestudio 预处理后的格式（056、039、041、087、094；只有 056 带 LiDAR） | 约 3.5 GB | 解包到 `data/waymo/processed/validation/` |
 | `waymo_processed/training/<idx>.tar` | 428 段 training 的预处理结果：5 个相机的图像、标定、自车位姿、GT 动态掩码、物体；没有 LiDAR | 约 150 GB，每段约 360 MB | 解包到 `data/waymo/processed/training/`；`<idx>` 是 `data/waymo_train_list.txt` 里的行号 |
@@ -43,15 +43,35 @@
    export CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0
    bash envs/setup_main.sh; bash envs/setup_mapanything.sh; bash envs/setup_masks.sh; bash envs/setup_sfm.sh
    bash envs/setup_nksr.sh; bash envs/setup_fixer.sh; bash envs/setup_waymo.sh   # setup_gen3c.sh 只在需要生成补全时
-   PYTHONPATH=. .venvs/masks/bin/python -m pytest tests -q
+   PYTHONPATH=. .venvs/main/bin/python -m pytest tests -q   # 有几个测试 import drivestudio / cv2，要在 main 里跑
    ```
    - nvdiffrast 在第一次使用时编译，运行时也要带上这两个环境变量（AGENTS §13 的命令都带了 `CUDA_HOME`）。
+   - AGENTS §13 和脚本 docstring 里的 `/usr/local/cuda-12.1` 在 H100 上换成 `~/cuda-12.6`（DECISIONS AA）。
 3. 权重：
    ```bash
    rclone copy --links onedrive:/Projects/P05_DriveAnywhere/weights/huggingface_hub ~/.cache/huggingface/hub
    # 需要生成补全时：rclone copy --links onedrive:/Projects/P05_DriveAnywhere/weights/gen3c_checkpoints .venvs/src/GEN3C/checkpoints
    ```
-   之后用 `HF_HUB_OFFLINE=1` 运行。lpips、Inception 这类 torch hub 小权重会自动下载。
+   OneDrive 上缺 4 个模型的大文件（见上表），按旧缓存记录的 revision 从 HuggingFace 重新下载，并写回 `refs/main`
+   （按 commit 下载不会写 `refs/main`，而离线加载找的是 `main`）：
+   ```bash
+   cd ~/.cache/huggingface/hub && rm -rf models--facebook--map-anything models--facebook--sam2.1-hiera-large \
+       models--nvidia--segformer-b5-finetuned-cityscapes-1024-1024 models--nvidia--Fixer && cd -
+   .venvs/masks/bin/python - <<'PY'
+   import os
+   from huggingface_hub import snapshot_download
+   for repo, rev in [("facebook/map-anything", "a1d87e9086706fb9974f3be5a3e3a0ca5401c5aa"),
+                     ("facebook/sam2.1-hiera-large", "665f8e2ad61cf5f53d65644ff27c8ee525124610"),
+                     ("nvidia/segformer-b5-finetuned-cityscapes-1024-1024", "2c6f153e4c23c229e2fa2b188eb250607e030cd8"),
+                     ("nvidia/Fixer", "ca20a25b55baa15dfc557db4c9b99168da8c2e14")]:
+       path = snapshot_download(repo, revision=rev)
+       refs = os.path.join(os.path.dirname(os.path.dirname(path)), "refs")
+       os.makedirs(refs, exist_ok=True)
+       open(os.path.join(refs, "main"), "w").write(rev)
+   PY
+   ```
+   - 补完共 15 GB；重新下载的 sha256 与旧缓存的链接目标一致（例如 MapAnything 的 `497e0b…`）。
+   - 之后用 `HF_HUB_OFFLINE=1` 运行。lpips、Inception、MapAnything 用的 DINOv2 这类 torch hub 权重第一次用时会自动下载。
 4. 数据：H100 上没有原始 tfrecord，也不需要 waymo 环境，直接用预处理好的结果。
    ```bash
    rclone copy onedrive:/Projects/P05_DriveAnywhere/data/dashrecon data/dashrecon
@@ -70,6 +90,14 @@
    ```
    - 要能复现 FRONT 留出 32.54 / 0.078（docs/EXPERIMENTS.md E30）。
    - 这一步需要 `data/waymo/processed/validation/056`，由上面的 validation tar 提供。
+
+## 进度（H100：H100L-94C 96 GB，`/home` 约 370 GB 可用）
+
+- 2026-10-02 第 1–3 步完成（DECISIONS AA）：
+  - 7 个 venv（main、mapanything、masks、sfm、nksr、fixer、waymo）都已建好，日志在 `results/_logs/setup_<name>.log`；
+  - 在 H100 上核对：gsplat 渲染、`gsplat.cuda_legacy`、pytorch3d、nvdiffrast（首次编译）、NKSR 重建、MapAnything 与掩码模型离线加载推理、Fixer 端到端修复；
+  - main 里 55 项单元测试全部通过。
+- 未做：第 4 步数据、第 5 步 E30 复现；gen3c 环境。
 
 ## H100 上的硬盘预算（300 GB）
 

@@ -1148,3 +1148,7 @@ MT1app（逐段零阶残差 + 逐段天空）是按论文做的简化版，没�
 - 核对（2026-10-02，scratchpad 中的临时 venv）：nvcc 12.6 编译 sm_90 kernel 并调用 cuBLAS 正常；torch 2.4.1+cu121（`setup_main.sh` 的组合）`cuda.is_available()` 为 True，arch 列表含 sm_90；`CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0` 下用 `torch.utils.cpp_extension.load_inline` 现场编译 CUDA 扩展并运行，结果正确。torch 只要求 toolkit 与自身 CUDA 主版本一致。
 - 处理：`envs/setup_main.sh`、`setup_nksr.sh`、`setup_fixer.sh` 的说明改为"CUDA 12.x toolkit"，H100 上用 `CUDA_HOME=~/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0`。torch 版本与 wheel（cu121 / cu124）不变。
 - 未改：AGENTS §13 与各脚本 docstring 里的 `/usr/local/cuda-12.1` 只是命令示例，H100 上换成 `~/cuda-12.6` 即可；运行时会用到该路径的 `scripts/fix_renders.py`（`--cuda_home` 默认值）和 `scripts/run_phase9.sh`（存在性检查）等用到时再改。
+- 建环境时另外遇到的三处，都已修好（2026-10-02）：
+  - `envs/fixer-requirements.txt` 是旧 venv 的完整依赖导出，其中 diffusers 0.40.0 和 huggingface-hub 0.36.2 同时存在，但 diffusers 0.40 声明需要 hub ≥ 1.23，uv 解析会失败。改为 `--no-deps` 安装，原样复现旧环境。这样一来 pynvml 13 背后的 `nvidia-ml-py` 不再自动装上（导出时 `nvidia-*` 包被当作 torch 的依赖去掉了），所以补进了 requirements（13.615.71）。
+  - transformer_engine 的 fused attention 会 dlopen 不带版本号的 `libcudart.so`，这个文件只在 toolkit 里有。旧机器的 `/usr/local/cuda-12.1` 在系统链接路径上，`~/cuda-12.6` 不在。所以 `dashrecon/gen/fixer_client.py` 把 `$CUDA_HOME/lib64` 加到 worker 的 `LD_LIBRARY_PATH`，放在 venv 的 nvidia 库之后。
+  - main venv 原来没有装 pytest，但 `tests/` 里有 4 个测试 import 了 drivestudio 或 cv2，只能在 main 里跑。已在 `setup_main.sh` 里加上 pytest。
