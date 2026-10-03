@@ -50,6 +50,10 @@ the detached render, so what is already observed or committed is not re-imagined
 haze and ghosts of E23 / E30 at yaw 20-45, PLAN_AFTER_E30 R1). At each stage end the last round's views are
 committed: rendered by the current model, they become memory observers that vouch for the pixels they filled.
 --bin_w adds bin_w * mean(4 a (1 - a)) of the novel view's rendered opacity a, pushing every pixel to opaque or empty.
+--commit_keep uncommitted (E32b): the Fixer target is kept where E23 keeps it (mesh or opacity > --keep_alpha) minus the
+pixels a committed view already saw (dashrecon.gen.views.seen_count over the memory observers only), instead of only on
+holes: E32 left the blurry E20 content that the real views geometrically "saw" untouched (D-Z1 yaw-45 KID 0.149 vs E23
+0.124). Each committed view then vouches for that whole region.
 
 Example (main venv, from the repo root):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
@@ -71,7 +75,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient  # noqa: E402
 from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, to_device,  # noqa: E402
                                  view_gate_path)
-from dashrecon.gen.views import ViewMove, hole_mask, moved_c2w, render_at, training_observers  # noqa: E402
+from dashrecon.gen.views import ViewMove, backproject, hole_mask, moved_c2w, render_at, seen_count, training_observers  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
@@ -148,6 +152,8 @@ def main() -> None:
     parser.add_argument("--env_up", type=float, default=0.0, help="commit envelope: max up scene units")
     parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
     parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
+    parser.add_argument("--commit_keep", choices=["hole", "uncommitted"], default="hole",
+                        help="progressive commit: Fixer target on holes only (E32) or on all uncommitted kept pixels (E32b)")
     args = parser.parse_args()
     assert not args.exclude_classes or args.seg_model_id is not None, "--exclude_classes needs --seg_model_id"
     assert not (args.yaw_uniform and args.yaw_choices), "--yaw_uniform replaces --yaw_choices"
@@ -238,7 +244,13 @@ def main() -> None:
                     c2w = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), move)
                     hw = (int(ci["height"]), int(ci["width"]))
                     out = render_at(trainer, ii, ci, c2w, ci["intrinsics"], hw)
-                    hole = torch.from_numpy(hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, **HOLE)[0]).to(device)
+                    if args.commit_keep == "hole":
+                        hole = torch.from_numpy(hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, **HOLE)[0]).to(device)
+                    else:
+                        depth = out["depth"][..., 0]
+                        seen = seen_count(backproject(depth, ci["intrinsics"], c2w), depth.reshape(-1), out["rgb"].clamp(0, 1).reshape(-1, 3).float(),
+                                          memory, HOLE["depth_tol"], HOLE["res_ratio"], HOLE["rgb_tol"]).reshape(depth.shape)
+                        hole = (out["mesh_valid"] | (out["opacity"][..., 0] > args.keep_alpha)) & (seen < 1)
                     renders.append(out["rgb"].clamp(0, 1).float().cpu().numpy())
                     pool.append({"ii": ii, "ci": ci, "c2w": c2w, "hw": hw, "hole": hole, "frame": fr["frame"], "offset": move.right,
                                  "yaw": move.yaw, "up": move.up, "pitch": 0.0})
