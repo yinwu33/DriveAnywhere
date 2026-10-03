@@ -11,4 +11,4 @@ SRC="$ROOT/.venvs/src/cosmos-transfer2.5"
 
 if [ ! -d "$SRC" ]; then git clone https://github.com/nvidia-cosmos/cosmos-transfer2.5.git "$SRC"; fi
 git -C "$SRC" checkout "$COMMIT"
-(cd "$SRC" && UV_PROJECT_ENVIRONMENT="$ROOT/.venvs/cosmos_transfer" uv sync --extra=cu128)
+(cd "$SRC" && UV_PROJECT_ENVIRONMENT="$ROOT/.venvs/cosmos_transfer" uv sync --python 3.10 --extra=cu128)  # flash-attn wheels are cp310 only
