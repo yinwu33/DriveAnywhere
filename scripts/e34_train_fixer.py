@@ -18,8 +18,10 @@ batch 1. Weights start from nvidia/Fixer's pretrained_fixer.pkl (--weights_dir, 
 
 Pairs: --dataset is the Fixer-format json of scripts/e34_manifest.py ({"train" | "test": {id: {image, target_image, prompt,
 mask}}}); several files may be given (comma separated) and are concatenated. Evaluation every --eval_every steps on the
-first --eval_samples test pairs: PSNR over kept pixels and LPIPS-Alex (the metric of the rest of the project) of
-prediction vs target, and <output_dir>/eval/<step>/<k>.jpg (input | prediction | target) for the first --eval_images.
+--eval_samples test pairs spread evenly over the (sorted) test set, so every segment and timestep range is represented
+(the first pairs by name are all t = 0, whose point-splat inputs are nearly empty): PSNR over kept pixels and LPIPS-Alex
+(the metric of the rest of the project) of prediction vs target, and <output_dir>/eval/<step>/<k>.jpg (input |
+prediction | target) for the first --eval_images of them.
 
 Example:
     CUDA_HOME=$HOME/cuda-12.6 .venvs/fixer_train/bin/python scripts/e34_train_fixer.py --dataset data/e34/fixer_gs.json \\
@@ -146,8 +148,9 @@ def main() -> None:
         out_dir = os.path.join(args.output_dir, "eval", f"{s:06d}")
         os.makedirs(out_dir, exist_ok=True)
         psnr, lp = [], []
-        for k in range(min(args.eval_samples, len(test_set))):
-            b = test_set[k]
+        n_eval = min(args.eval_samples, len(test_set))
+        for k, idx in enumerate(np.linspace(0, len(test_set) - 1, n_eval).round().astype(int)):
+            b = test_set[int(idx)]
             src, tgt, keep = b["src"][None].to(device, torch.bfloat16), b["tgt"][None].to(device), b["keep"][None].to(device)
             with torch.autocast("cuda", dtype=torch.bfloat16):  # as the worker and the official (accelerate bf16) loop
                 pred = net(src).float()
