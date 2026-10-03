@@ -2,7 +2,7 @@
 
 E34（docs/PLAN_AFTER_E30.md）在 Waymo training 上微调 NVIDIA Fixer，让它学会把"只用 FRONT 重建、在侧相机位置渲染出来的画面"修成真实的侧相机图像。用户已按 DECISIONS S 批准训练。本文件只记录**训练数据**的构造；微调由主线完成。
 
-状态：**进行中**（试点 2 段完成，批量运行中）。统计数字在最后一节，跑完后更新。
+状态：**进行中**（试点 2 段完成；a 批量运行中；b 从 10-03 22:27 起与 a 并行，每完成一段就更新 `data/e34/fixer_gs.json`，微调可以随时从当前清单开始）。统计数字在最后一节，跑完后更新。
 
 ## 1. 数据划分与隔离
 
@@ -11,7 +11,7 @@ E34（docs/PLAN_AFTER_E30.md）在 Waymo training 上微调 NVIDIA Fixer，让�
 - 第一批 100 段：按地点比例分配（最大余数法），每个地点内用 `numpy.random.default_rng(0)` 抽取，再整体打乱，所以列表的任意前缀在地点上也是分散的：
   - phx 42、sf 44、other 14（排除后候选 166 / 175 / 58）。
 - 结果写在 `data/e34/segments.json`（候选数、排除的段及原因、选中的 100 段及处理顺序）。
-- 训练 / 测试按段划分（`scripts/e34_manifest.py --test_every 20`：每 20 个通过的段里第 20 个是 test），同一段不会同时出现在两边。
+- 训练 / 测试按段划分（`scripts/e34_manifest.py --test_every 10`：通过的段按处理顺序第 1、11、21……个是 test，其余 train），同一段不会同时出现在两边；从第一段起 test 就非空（`scripts/e34_train_fixer.py` 要求两边都有）。
 
 ## 2. 每段的流程
 
@@ -56,7 +56,7 @@ E34（docs/PLAN_AFTER_E30.md）在 Waymo training 上微调 NVIDIA Fixer，让�
   - FRONT 的 MapAnything 深度，去掉天空、动态物体、置信度低于 30 分位、深度 ≥ 60 的像素（与 Phase 5 相同的规则），颜色取去畸变 FRONT 图像；
   - 时间窗口按行驶距离而不是帧数：FRONT 相机在当前帧之后 40 / 之前 10 个世界单位（MapAnything 单位，约为米的 0.8–0.9）内的帧，最多 40 帧均匀抽取。车侧的内容是 FRONT 在 10–30 m 之前看到的，按帧数开窗会随车速变化。试点里 ±10 帧窗口时 SIDE 相机的覆盖率只有 0.00–0.02，改成按距离后为 0.21–0.32；
   - 点按"深度网格一个像素在世界里的大小"投影到目标相机上的足迹溅射（最接近的奇数宽度，1–5 px），z-buffer 取最近的点，没有点的地方是黑色。
-- **输入 b，3DGS**（`e34_train_gs.py`、`e34_gs_pairs.py`）：与 `train_gs.py` 的 E5f 完全相同的设置（NKSR 网格初始化、网格深度 / 法向正则、flatten 和最大轴正则，30000 步，960×640），只关掉训练结束时的视频渲染；渲染时用目标相机自己的内参，位姿是联合标定的位姿经 `run_pose.py` 同样的缩放和世界系变换（`dashrecon/e34/geometry.py`），不做 CamPose 修正；天空模型按目标相机的光线重算。
+- **输入 b，3DGS**（`e34_train_gs.py`、`e34_gs_pairs.py`）：与 `train_gs.py` 的 E5f 相同的设置（NKSR 网格初始化、网格深度 / 法向正则、flatten 和最大轴正则，960×640），只关掉训练结束时的视频渲染；迭代数 **15000**（主线 10-03 晚决定：微调优先，不等 100 段；Fixer 论文本身也用欠拟合的重建作训练对；试点段 wt683 是 30000 步，每段的步数记在 `meta.json` 的 `gs.num_iters`）；渲染时用目标相机自己的内参，位姿是联合标定的位姿经 `run_pose.py` 同样的缩放和世界系变换（`dashrecon/e34/geometry.py`），不做 CamPose 修正；天空模型按目标相机的光线重算。
 - 每 2 帧一个目标（目标相机在标定时就是每 2 帧取一张）。
 
 ## 5. 产物与磁盘
@@ -90,11 +90,12 @@ export CUDA_HOME=$HOME/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0 HF_HUB_OFFLINE=1   # �
     --venvs .venvs --cuda_home $HOME/cuda-12.6 --log_root results/_logs \
     --remote onedrive:/Projects/P05_DriveAnywhere/waymo_processed/training --tpslimit 8 --max_raw 12 \
     --calib_jobs 4 --calib_threads 14 --keep_first 30 --gs_count 20 --min_free_gb 161 --max_failures 8
-# b：前 20 个通过的段
-.venvs/main/bin/python scripts/e34_batch.py --phase gs ...（同上的参数）
+# b：前 20 个通过的段（可以和 a 同时跑：两个 runner 通过 data/e34/gpu_lane.lock 串行使用 GPU；每完成一段就重新生成清单）
+.venvs/main/bin/python scripts/e34_batch.py --phase gs ...（同上的参数） --train_opts trainer.optim.num_iters=15000 \
+    --test_every 10 --prompt "remove degradation"
 # 清单
 .venvs/main/bin/python scripts/e34_manifest.py --segments data/e34/segments.json --pairs_root data/e34/pairs \
-    --test_every 20 --prompt "remove degradation"
+    --test_every 10 --prompt "remove degradation"
 # 目测
 .venvs/main/bin/python scripts/e34_contact_sheet.py --pairs_dir data/e34/pairs/wt683 --cams 1 2 3 4 \
     --times 60 140 --width 512 --out data/e34/vis/wt683.jpg
