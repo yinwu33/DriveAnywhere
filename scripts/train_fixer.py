@@ -152,6 +152,7 @@ def main() -> None:
     parser.add_argument("--env_up", type=float, default=0.0, help="commit envelope: max up scene units")
     parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
     parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
+    parser.add_argument("--fixer_pkl", help="fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py) instead of nvidia/Fixer")
     parser.add_argument("--commit_keep", choices=["hole", "uncommitted"], default="hole",
                         help="progressive commit: Fixer target on holes only (E32) or on all uncommitted kept pixels (E32b)")
     args = parser.parse_args()
@@ -181,7 +182,7 @@ def main() -> None:
     for sub in ("metrics", "videos", "gen"):
         os.makedirs(os.path.join(log_dir, sub), exist_ok=True)
     OmegaConf.save(cfg, os.path.join(log_dir, "config.yaml"))
-    params = {**vars(args), "generator": FIXER_REPO_ID, "generator_revision": FIXER_REVISION,
+    params = {**vars(args), "generator": FIXER_REPO_ID if args.fixer_pkl is None else args.fixer_pkl, "generator_revision": FIXER_REVISION,
               "init_ckpt": os.path.join(src_dir, "checkpoint_final.pth"), "start_step": start, "dashrecon_commit": commit}
     with open(os.path.join(log_dir, "fixer_params.json"), "w") as f:
         json.dump(params, f, indent=2)
@@ -200,7 +201,7 @@ def main() -> None:
         attach_view_gate(trainer, gate_path)
     trainer.initialize_optimizer()
     base_lr = {g["name"]: g["lr"] for g in trainer.optimizer.param_groups}
-    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"])
+    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"], args.fixer_pkl)
     lpips_vgg = lpips.LPIPS(net="vgg", verbose=False).to(device).eval().requires_grad_(False)
     frozen_params = list(trainer.models["Affine"].parameters()) + list(trainer.models["Sky"].parameters())
     frames = pool_frames(dataset, args.pool_stride, device)

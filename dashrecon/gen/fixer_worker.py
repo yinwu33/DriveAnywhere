@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--fixer_src", required=True, help="checkout of nv-tlabs/Fixer")
     parser.add_argument("--weights_dir", required=True, help="snapshot of nvidia/Fixer (base/, pretrained/)")
     parser.add_argument("--timestep", type=int, required=True)
+    parser.add_argument("--pretrained_pkl", help="fine-tuned weights (scripts/e34_train_fixer.py) instead of pretrained_fixer.pkl")
     args = parser.parse_args()
 
     sys.path.insert(0, os.path.join(args.fixer_src, "src"))
@@ -45,11 +46,12 @@ def main() -> None:
     fx.config.tokenizer["vae_pth"] = os.path.join(args.weights_dir, "base", "tokenizer_fast.pth")
     torch.set_grad_enabled(False)
     t0 = time.time()
-    model = fx.Pix2Pix_Turbo(pretrained_path=os.path.join(args.weights_dir, "pretrained", "pretrained_fixer.pkl"),
+    pkl = os.path.join(args.weights_dir, "pretrained", "pretrained_fixer.pkl") if args.pretrained_pkl is None else args.pretrained_pkl
+    model = fx.Pix2Pix_Turbo(pretrained_path=pkl,
                              timestep=args.timestep, vae_skip_connection=False, batch_size=1)
     model = model.to(device="cuda", dtype=torch.bfloat16)
     model.set_eval()
-    say({"ready": True, "load_seconds": time.time() - t0, "timestep": args.timestep, "torch": torch.__version__})
+    say({"ready": True, "load_seconds": time.time() - t0, "timestep": args.timestep, "torch": torch.__version__, "weights": pkl})
 
     for line in sys.stdin:
         req = json.loads(line)

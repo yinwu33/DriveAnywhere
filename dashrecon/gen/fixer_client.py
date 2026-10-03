@@ -21,7 +21,8 @@ FIXER_REVISION = "ca20a25b55baa15dfc557db4c9b99168da8c2e14"
 class FixerClient:
     """A running Fixer worker; ``refine`` sends a batch of images and waits for the result."""
 
-    def __init__(self, timestep: int, work_dir: str, cuda_home: str) -> None:
+    def __init__(self, timestep: int, work_dir: str, cuda_home: str, pretrained_pkl: str | None = None) -> None:
+        """pretrained_pkl: fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py); None = nvidia/Fixer as released."""
         from huggingface_hub import snapshot_download
 
         weights = snapshot_download(FIXER_REPO_ID, revision=FIXER_REVISION, local_files_only=True)
@@ -38,7 +39,8 @@ class FixerClient:
         self.log = open(os.path.join(work_dir, "fixer_worker.log"), "w")
         self.proc = subprocess.Popen(
             [os.path.join(FIXER_VENV, "bin", "python"), os.path.join(REPO, "dashrecon", "gen", "fixer_worker.py"),
-             "--fixer_src", FIXER_SRC, "--weights_dir", weights, "--timestep", str(timestep)],
+             "--fixer_src", FIXER_SRC, "--weights_dir", weights, "--timestep", str(timestep),
+             *([] if pretrained_pkl is None else ["--pretrained_pkl", os.path.abspath(pretrained_pkl)])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True, env=env)
         self.info = self._read()
         assert self.info["ready"], self.info
