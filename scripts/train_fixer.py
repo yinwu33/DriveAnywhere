@@ -55,6 +55,8 @@ the rendered surface point (dashrecon.gen.views.real_targets: depth-consistent, 
 resolution, viewing rays within --real_max_angle degrees), kept only on those pixels. Pseudo multi-view supervision of
 the content FRONT did see but renders hazy from an oblique camera (PLAN_AFTER_E30 R1 vs the geometry of observed
 content). Pool and envelope as --commit_stages (use 1 stage for a uniform envelope).
+--target real_fixer (E37): the real reprojection where a training view saw the point, the Fixer output on the other
+pixels E23 keeps (mesh or opacity > --keep_alpha): real texture wherever it exists, imagination only elsewhere.
 --commit_keep uncommitted (E32b): the Fixer target is kept where E23 keeps it (mesh or opacity > --keep_alpha) minus the
 pixels a committed view already saw (dashrecon.gen.views.seen_count over the memory observers only), instead of only on
 holes: E32 left the blurry E20 content that the real views geometrically "saw" untouched (D-Z1 yaw-45 KID 0.149 vs E23
@@ -159,7 +161,8 @@ def main() -> None:
     parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
     parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
     parser.add_argument("--fixer_pkl", help="fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py) instead of nvidia/Fixer")
-    parser.add_argument("--target", choices=["fixer", "real"], default="fixer", help="pool targets: Fixer output or real reprojection (E36)")
+    parser.add_argument("--target", choices=["fixer", "real", "real_fixer"], default="fixer",
+                        help="pool targets: Fixer output, real reprojection (E36) or real where seen + Fixer elsewhere (E37)")
     parser.add_argument("--real_max_angle", type=float, default=75.0, help="--target real: max viewing-ray difference, degrees")
     parser.add_argument("--commit_keep", choices=["hole", "uncommitted"], default="hole",
                         help="progressive commit: Fixer target on holes only (E32) or on all uncommitted kept pixels (E32b)")
@@ -210,7 +213,7 @@ def main() -> None:
         attach_view_gate(trainer, gate_path)
     trainer.initialize_optimizer()
     base_lr = {g["name"]: g["lr"] for g in trainer.optimizer.param_groups}
-    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"], args.fixer_pkl) if args.target == "fixer" else None
+    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"], args.fixer_pkl) if args.target != "real" else None
     lpips_vgg = lpips.LPIPS(net="vgg", verbose=False).to(device).eval().requires_grad_(False)
     frozen_params = list(trainer.models["Affine"].parameters()) + list(trainer.models["Sky"].parameters())
     frames = pool_frames(dataset, args.pool_stride, device)
@@ -254,10 +257,15 @@ def main() -> None:
                     c2w = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), move)
                     hw = (int(ci["height"]), int(ci["width"]))
                     out = render_at(trainer, ii, ci, c2w, ci["intrinsics"], hw)
-                    real_target = None
+                    real_target, real_keep = None, None
+                    if args.target in ("real", "real_fixer"):
+                        real_target, real_keep = real_targets(out, ci["intrinsics"], c2w, observers, HOLE["depth_tol"], HOLE["res_ratio"],
+                                                              args.real_max_angle)
                     if args.target == "real":
-                        real_target, hole = real_targets(out, ci["intrinsics"], c2w, observers, HOLE["depth_tol"], HOLE["res_ratio"],
-                                                         args.real_max_angle)
+                        hole = real_keep
+                    elif args.target == "real_fixer":
+                        mesh_valid = trainer._mesh_maps(trainer._last_cam)["mesh_valid"]
+                        hole = real_keep | mesh_valid | (out["opacity"][..., 0] > args.keep_alpha)
                     elif args.commit_keep == "hole":
                         hole = torch.from_numpy(hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, **HOLE)[0]).to(device)
                     else:
@@ -268,7 +276,7 @@ def main() -> None:
                         hole = (mesh_valid | (out["opacity"][..., 0] > args.keep_alpha)) & (seen < 1)
                     renders.append(out["rgb"].clamp(0, 1).float().cpu().numpy())
                     pool.append({"ii": ii, "ci": ci, "c2w": c2w, "hw": hw, "hole": hole, "frame": fr["frame"], "offset": move.right,
-                                 "yaw": move.yaw, "up": move.up, "pitch": 0.0, "real_target": real_target})
+                                 "yaw": move.yaw, "up": move.up, "pitch": 0.0, "real_target": real_target, "real_keep": real_keep})
                 for fr in [] if args.commit_stages else frames:
                     off = float(rng.choice([-1.0, 1.0]) * rng.uniform(lo, hi))
                     yaw = float(rng.uniform(-args.yaw_max, args.yaw_max))
@@ -284,6 +292,11 @@ def main() -> None:
                     pool.append({"ii": fr["ii"], "ci": ci, "frame": fr["frame"], "offset": off, "yaw": yaw, "up": up, "pitch": pitch})
             renders = np.stack(renders)
             targets = fixer.refine(renders) if fixer is not None else np.stack([v["real_target"].cpu().numpy() for v in pool])
+            if args.target == "real_fixer":  # real texture wherever a training view saw the point, Fixer elsewhere
+                for k, v in enumerate(pool):
+                    rk = v["real_keep"].cpu().numpy()[..., None]
+                    targets[k] = np.where(rk, v["real_target"].cpu().numpy(), targets[k])
+                rounds_real = float(np.mean([float(v["real_keep"].float().mean()) for v in pool]))
             excluded = 0.0
             for k, v in enumerate(pool):
                 v["target"] = torch.from_numpy(targets[k]).to(device).half()
@@ -297,6 +310,7 @@ def main() -> None:
             if args.commit_stages:
                 prev_pool = pool
             rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0, "target": args.target,
+                           "real_fraction": rounds_real if args.target == "real_fixer" else None,
                            "stage": r // rounds_per_stage if args.commit_stages else None, "memory_views": len(memory),
                            "hole_fraction": float(np.mean([float(v["hole"].float().mean()) for v in pool])) if args.commit_stages else None,
                            "mean_abs_change": float(np.abs(targets - renders).mean()), "excluded_fraction": excluded,
