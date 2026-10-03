@@ -17,8 +17,9 @@ Phase "gs" (pair type b), for the first --gs_count accepted segments: scripts/ru
 (nksr venv), e34_train_gs.py, e34_gs_pairs.py, e34_finalize.py --cleanup; then the other kept segments are cleaned.
 
 One GPU job at a time; a GPU job starts only when nvidia-smi reports at least its memory need free (other users share
-the GPU) and no other E34 process holds the GPU (a stage started by hand, recognised by "/e34/" or "scripts/e34_" in
-its command line). New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
+the GPU), no other E34 process holds the GPU (a stage started by hand, recognised by "/e34/" or "scripts/e34_" in
+its command line) and <root>/gpu.lock does not exist (create it to keep the GPU lane waiting during manual GPU work).
+New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
 failed (stage, log) and the batch goes on; --max_failures failures stop it. Stage output goes to
 <log_root>/e34_<scene_id>.log, the schedule to <log_root>/e34_batch_<phase>.log, the state to <root>/batch_<phase>.json.
 
@@ -164,7 +165,7 @@ class Batch:
         return busy
 
     def wait_gpu(self, need):
-        while self.gpu_free_gb() < need or self.other_e34_gpu_jobs():
+        while self.gpu_free_gb() < need or self.other_e34_gpu_jobs() or os.path.exists(self.p("gpu.lock")):
             time.sleep(20)
 
     # state tests

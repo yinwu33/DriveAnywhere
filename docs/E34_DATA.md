@@ -89,7 +89,7 @@ export CUDA_HOME=$HOME/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0 HF_HUB_OFFLINE=1   # �
 .venvs/main/bin/python scripts/e34_batch.py --phase points --segments data/e34/segments.json --root data/e34 \
     --venvs .venvs --cuda_home $HOME/cuda-12.6 --log_root results/_logs \
     --remote onedrive:/Projects/P05_DriveAnywhere/waymo_processed/training --tpslimit 8 --max_raw 12 \
-    --calib_jobs 4 --calib_threads 14 --keep_first 30 --gs_count 20 --min_free_gb 150 --max_failures 8
+    --calib_jobs 4 --calib_threads 14 --keep_first 30 --gs_count 20 --min_free_gb 161 --max_failures 8
 # b：前 20 个通过的段
 .venvs/main/bin/python scripts/e34_batch.py --phase gs ...（同上的参数）
 # 清单
@@ -100,7 +100,7 @@ export CUDA_HOME=$HOME/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0 HF_HUB_OFFLINE=1   # �
     --times 60 140 --width 512 --out data/e34/vis/wt683.jpg
 ```
 
-单步命令见各脚本的 docstring；批处理用的参数在 `scripts/e34_batch.py` 顶部。
+单步命令见各脚本的 docstring；批处理用的参数在 `scripts/e34_batch.py` 顶部。`--min_free_gb 161`（10⁹ 字节）即 `df -h` 的 150 GiB。手动在 GPU 上跑东西时先建 `data/e34/gpu.lock`，批处理的 GPU 通道会等它删掉。
 
 ## 7. 与简报的差别和遇到的问题
 
