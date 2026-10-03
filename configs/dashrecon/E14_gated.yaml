@@ -19,6 +19,7 @@ frame_stride: 2
 ramp_frames: 20
 render_hw: [704, 1280]
 src_offsets: [0, 6, 15, 30, 60, 90]
+generator: gen3c            # gen3c_fill.py (E33 uses cosmos: Cosmos-Transfer2.5 on the rendered sweep)
 # GEN3C (as E13)
 generation_steps: 35
 generation_seed: 1

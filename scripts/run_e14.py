@@ -9,6 +9,11 @@ exit code and time, and the run stops at the first failure:
                        turned by moves[k] over ramp_frames views; hole masks with the earlier rounds as 3D memory
     r<k>_cache_preview / r<k>_generate   gen3c_fill.py (consistent cache: real FRONT warps first, then validated
                        generated memory of earlier rounds; + generation_extra_args; the preview only if cache_preview)
+                       With generator: cosmos (E33) instead: r<k>_export (e33_cosmos_control.py: the sweep as input video,
+                       depth control and control mask), r<k>_generate (Cosmos-Transfer2.5, examples/inference.py in the
+                       cosmos_transfer venv, guardrails off; cosmos_prompt, cosmos_guidance, cosmos_steps, cosmos_vis_weight,
+                       cosmos_depth_weight, cosmos_sigma_max) and r<k>_import (the generated frames as filled/). The 3D memory
+                       of earlier rounds then only enters through the hole masks (render_views --memory_dirs).
     r<k>_holes         refine_holes.py: the sky of the generated frames decides what low-opacity pixels are (with the
                        gate, the side of the road renders empty and would otherwise count as sky); + holes_extra_args
     r<k>_depth         depth_views.py: MapAnything jointly over the round's frames, scene-global scale (D-B1);
@@ -133,6 +138,22 @@ def main() -> None:
         if k == 0:
             render += ["--view_gate", gate]
         run(f"r{k}_render", "main", render)
+        if cfg["generator"] == "cosmos":
+            cosmos_dir = str(out / "cosmos" / f"r{k}")
+            export_args = ["scripts/e33_cosmos_control.py", "export", "--views_dir", views, "--out_dir", cosmos_dir,
+                           "--name", f"r{k}", "--prompt", cfg["cosmos_prompt"], "--fps", str(cfg["fps"]),
+                           "--guidance", str(cfg["cosmos_guidance"]), "--num_steps", str(cfg["cosmos_steps"]),
+                           "--seed", str(cfg["generation_seed"]), "--vis_weight", str(cfg["cosmos_vis_weight"]),
+                           "--depth_weight", str(cfg["cosmos_depth_weight"])]
+            if cfg["cosmos_sigma_max"] is not None:
+                export_args += ["--sigma_max", str(cfg["cosmos_sigma_max"])]
+            run(f"r{k}_export", "main", export_args)
+            run(f"r{k}_generate", "cosmos_transfer", [".venvs/src/cosmos-transfer2.5/examples/inference.py",
+                "-i", f"{cosmos_dir}/spec.json", "-o", f"{cosmos_dir}/cosmos", "--disable_guardrails"])
+            run(f"r{k}_import", "main", ["scripts/e33_cosmos_control.py", "import", "--views_dir", views,
+                "--cosmos_video", f"{cosmos_dir}/cosmos/r{k}.mp4", "--fps", str(cfg["fps"])])
+        else:
+            assert cfg["generator"] == "gen3c", cfg["generator"]
         generation = ["scripts/gen3c_fill.py", "--views_dir", views, "--cache_policy", "consistent",
                       "--num_steps", str(cfg["generation_steps"]), "--seed", str(cfg["generation_seed"]),
                       "--memory_candidate_policy", "pose", "--memory_radius", str(cfg["memory_radius"]),
@@ -140,9 +161,10 @@ def main() -> None:
         if prior_views or views_dirs:
             generation += ["--memory_dirs", *prior_views, *views_dirs, "--validation_dirs", *prior_validations, *validations]
         generation += cfg["generation_extra_args"]
-        if cfg["cache_preview"]:
+        if cfg["generator"] == "gen3c" and cfg["cache_preview"]:
             run(f"r{k}_cache_preview", "gen3c", [*generation, "--buffers_only"])
-        run(f"r{k}_generate", "gen3c", generation)
+        if cfg["generator"] == "gen3c":
+            run(f"r{k}_generate", "gen3c", generation)
         run(f"r{k}_holes", "masks", ["scripts/refine_holes.py", "--views_dir", views, "--seg_model_id", cfg["seg_model_id"],
             "--seg_input_hw", *map(str, cfg["seg_input_hw"]), "--sky_alpha", str(cfg["sky_alpha"]), *cfg["holes_extra_args"]])
         run(f"r{k}_depth", "mapanything", ["scripts/depth_views.py", "--views_dir", views, "--backend", "mapanything",
@@ -170,6 +192,8 @@ def main() -> None:
             "--out_dir", str(out / f"r{k}_after"), "--label", f"r{k}_after",
             "--view_indices", *map(str, cfg["diagnostic_indices"]), "--novel_yaw", "7", "--validation_dirs", validation])
     run("eval_front", "main", ["scripts/eval_front_heldout.py", "--log_dir", model, "--example_frames", "50", "100", "150"])
+    run("eval_view_range", "main", ["scripts/eval_view_range.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
+        "--seg_model_id", cfg["seg_model_id"], "--frame_stride", "10", "--example_frames", "50", "100", "150"])
     run("eval_cross_camera", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
         "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",
         "--unseen_dir", cfg["unseen_dir"], "--out_subdir", "cross_camera_p9"])
