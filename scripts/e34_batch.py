@@ -17,7 +17,8 @@ Phase "gs" (pair type b), for the first --gs_count accepted segments: scripts/ru
 (nksr venv), e34_train_gs.py, e34_gs_pairs.py, e34_finalize.py --cleanup; then the other kept segments are cleaned.
 
 One GPU job at a time; a GPU job starts only when nvidia-smi reports at least its memory need free (other users share
-the GPU). New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
+the GPU) and no other E34 process holds the GPU (a stage started by hand, recognised by "/e34/" or "scripts/e34_" in
+its command line). New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
 failed (stage, log) and the batch goes on; --max_failures failures stop it. Stage output goes to
 <log_root>/e34_<scene_id>.log, the schedule to <log_root>/e34_batch_<phase>.log, the state to <root>/batch_<phase>.json.
 
@@ -150,8 +151,20 @@ class Batch:
                 self.stop = f"free disk {free:.0f} GB < {self.a.min_free_gb} GB"
         return self.stop is None
 
+    def other_e34_gpu_jobs(self):
+        """GPU processes whose command line marks them as E34 work (e.g. a pilot stage started by hand)."""
+        out = subprocess.check_output(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"], text=True)
+        busy = []
+        for pid in (int(x) for x in out.split()):
+            cmd_file = f"/proc/{pid}/cmdline"
+            if os.path.exists(cmd_file):
+                cmd = open(cmd_file, "rb").read().replace(b"\0", b" ").decode()
+                if "/e34/" in cmd or "scripts/e34_" in cmd:
+                    busy.append(pid)
+        return busy
+
     def wait_gpu(self, need):
-        while self.gpu_free_gb() < need:
+        while self.gpu_free_gb() < need or self.other_e34_gpu_jobs():
             time.sleep(20)
 
     # state tests
