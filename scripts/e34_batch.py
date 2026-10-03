@@ -204,11 +204,21 @@ class Batch:
         assert self.lane_lock_holder() == os.getpid(), "releasing a GPU lane this runner does not hold"
         os.remove(self.p("gpu_lane.lock"))
 
+    def gpu_ready(self, need):
+        return self.gpu_free_gb() >= need and not self.other_e34_gpu_jobs() and not os.path.exists(self.p("gpu.lock"))
+
     def wait_gpu(self, need):
-        """Hold the GPU lane and wait until the GPU has room: callers release it with release_lane after the job."""
-        self.acquire_lane()
-        while self.gpu_free_gb() < need or self.other_e34_gpu_jobs() or os.path.exists(self.p("gpu.lock")):
-            time.sleep(20)
+        """Wait until the GPU has room, then take the GPU lane (re-checking the room while holding it): callers release
+        it with release_lane after the job. The lane is never held while waiting for memory, so a job that needs much
+        (MapAnything, 30 GB) does not block a small one of the other runner during the parent's large GPU jobs."""
+        while True:
+            while not self.gpu_ready(need):
+                time.sleep(20)
+            self.acquire_lane()
+            if self.gpu_ready(need):
+                return
+            self.release_lane()
+            time.sleep(5)
 
     def run_gpu(self, s, stage):
         """One GPU stage under the GPU lane lock."""
