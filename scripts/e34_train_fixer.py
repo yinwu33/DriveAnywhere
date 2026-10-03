@@ -149,7 +149,8 @@ def main() -> None:
         for k in range(min(args.eval_samples, len(test_set))):
             b = test_set[k]
             src, tgt, keep = b["src"][None].to(device, torch.bfloat16), b["tgt"][None].to(device), b["keep"][None].to(device)
-            pred = net(src).float()
+            with torch.autocast("cuda", dtype=torch.bfloat16):  # as the worker and the official (accelerate bf16) loop
+                pred = net(src).float()
             mse = ((pred - tgt) ** 2 * keep).sum() / (3.0 * keep.sum()).clamp(min=1.0)
             psnr.append(float(-10 * torch.log10(mse / 4.0)))  # [-1, 1] range -> 2 ** 2
             lp.append(float(lpips_alex(pred, torch.where(keep > 0.5, tgt, pred))))
@@ -176,13 +177,14 @@ def main() -> None:
                 break
             step += 1
             src, tgt, keep = b["src"].to(device, torch.bfloat16), b["tgt"].to(device, torch.bfloat16), b["keep"].to(device, torch.bfloat16)
-            pred = net(src)
-            l2 = ((pred - tgt) ** 2 * keep).sum() / (3.0 * keep.sum()).clamp(min=1.0)
-            tgt_eff = torch.where(keep > 0.5, tgt, pred.detach())
-            h, w = pred.shape[-2:]
-            ch = cw = random.randint(128, 512)
-            top, left = random.randint(0, h - ch), random.randint(0, w - cw)
-            lp = lpips_vgg(crop(pred, top, left, ch, cw), crop(tgt_eff, top, left, ch, cw)).mean()
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                pred = net(src)
+                l2 = ((pred - tgt) ** 2 * keep).sum() / (3.0 * keep.sum()).clamp(min=1.0)
+                tgt_eff = torch.where(keep > 0.5, tgt, pred.detach())
+                h, w = pred.shape[-2:]
+                ch = cw = random.randint(128, 512)
+                top, left = random.randint(0, h - ch), random.randint(0, w - cw)
+                lp = lpips_vgg(crop(pred, top, left, ch, cw), crop(tgt_eff, top, left, ch, cw)).mean()
             loss = args.lambda_l2 * l2 + args.lambda_lpips * lp
             if not torch.isfinite(loss):
                 raise ValueError(f"non-finite loss at step {step}: l2 {float(l2)} lpips {float(lp)}")
