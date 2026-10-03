@@ -250,7 +250,8 @@ def main() -> None:
                         depth = out["depth"][..., 0]
                         seen = seen_count(backproject(depth, ci["intrinsics"], c2w), depth.reshape(-1), out["rgb"].clamp(0, 1).reshape(-1, 3).float(),
                                           memory, HOLE["depth_tol"], HOLE["res_ratio"], HOLE["rgb_tol"]).reshape(depth.shape)
-                        hole = (out["mesh_valid"] | (out["opacity"][..., 0] > args.keep_alpha)) & (seen < 1)
+                        mesh_valid = trainer._mesh_maps(trainer._last_cam)["mesh_valid"]  # eval renders carry no mesh maps
+                        hole = (mesh_valid | (out["opacity"][..., 0] > args.keep_alpha)) & (seen < 1)
                     renders.append(out["rgb"].clamp(0, 1).float().cpu().numpy())
                     pool.append({"ii": ii, "ci": ci, "c2w": c2w, "hw": hw, "hole": hole, "frame": fr["frame"], "offset": move.right,
                                  "yaw": move.yaw, "up": move.up, "pitch": 0.0})
