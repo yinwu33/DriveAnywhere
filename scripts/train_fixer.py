@@ -96,9 +96,12 @@ HOLE = {"depth_tol": 0.10, "res_ratio": 3.0, "rgb_tol": 0.10, "sky_alpha": 0.5, 
 OBS_STRIDE = 2
 
 
-def frontier_move(rng, stage: int, stages: int, weights: list, env_yaw: float, env_lateral: float, env_up: float) -> ViewMove:
-    """A pool view of the progressive commit: one dimension on the stage's new ring, the others inside its envelope."""
-    lo, hi = stage / stages, (stage + 1) / stages
+def frontier_move(rng, stage: int, stages: int, weights: list, env_yaw: float, env_lateral: float, env_up: float,
+                  ring_min: float = 0.0) -> ViewMove:
+    """A pool view of the progressive commit: one dimension on the stage's new ring, the others inside its envelope.
+    ring_min (E37b): the ring's lower bound is at least this fraction of the envelope, so with one stage the chosen
+    dimension stays in the outer part (e.g. 0.5: yaw 22-45 degrees)."""
+    lo, hi = max(stage / stages, ring_min), (stage + 1) / stages
     dim = int(rng.choice(3, p=np.asarray(weights) / np.sum(weights)))
     ring = lambda: float(rng.uniform(lo, hi))  # noqa: E731
     inside = lambda: float(rng.uniform(0.0, hi))  # noqa: E731
@@ -159,6 +162,7 @@ def main() -> None:
     parser.add_argument("--env_lateral", type=float, default=0.0, help="commit envelope: max |lateral| scene units")
     parser.add_argument("--env_up", type=float, default=0.0, help="commit envelope: max up scene units")
     parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
+    parser.add_argument("--env_ring_min", type=float, default=0.0, help="commit pool: chosen dimension at least this fraction out")
     parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
     parser.add_argument("--fixer_pkl", help="fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py) instead of nvidia/Fixer")
     parser.add_argument("--target", choices=["fixer", "real", "real_fixer"], default="fixer",
@@ -252,7 +256,7 @@ def main() -> None:
             with torch.no_grad():
                 for fr in frames if args.commit_stages else []:
                     move = frontier_move(rng, r // rounds_per_stage, args.commit_stages, args.frontier_weights, args.env_yaw,
-                                         args.env_lateral, args.env_up)
+                                         args.env_lateral, args.env_up, args.env_ring_min)
                     ii, ci = dict(fr["ii"]), dict(fr["ci"])
                     c2w = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), move)
                     hw = (int(ci["height"]), int(ci["width"]))

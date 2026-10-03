@@ -1,0 +1,32 @@
+# E37b (docs/EXPERIMENTS.md): E37 with the pool biased to the outer half of the envelope (the chosen dimension at
+# yaw 22-45 degrees / lateral 1.5-3 m / up 1-2 m; the others anywhere inside): E37 spent most of its Fixer budget
+# near the FRONT pose and lost to E23 at yaw 45 (R4).
+exp: E37b
+scene_id: val056
+output_root: results
+init_log_dir: results/E20/val056/model
+init_gate: null                  # E20 carries its own view gate
+output_dir: results/E37b/val056
+yaw_choices: []                  # the commit stages draw their own pool
+steps: 6000                      # 24 refreshes of 250 steps, one stage = uniform envelope; gen_w 0.5, lpips_w 0.2 as E23
+method: fixer                    # scripts/train_fixer.py
+seed: 0
+# envelope = DECISIONS Z (yaw 45 deg, lateral 3 m, up 2 m) in scene units with D-G1's non-GT metre estimate for val056:
+# DA3 depth / our depth = 1.728, so 1 m ~ 0.579 scene units (the GT says 0.430; DA3 overestimates by ~35 %)
+train_extra_args: [--commit_stages, "1", --env_yaw, "45", --env_lateral, "1.74", --env_up, "1.16", --target, real_fixer, --env_ring_min, "0.5"]
+# evaluation
+gt_root: data/waymo/processed/validation
+unseen_dir: results/E5c/val056/cross_camera_p9/unseen
+realism_compare:
+  E5f: results/E5f/val056
+  E23: results/E23/val056/model
+  E37: results/E37/val056/model
+seg_model_id: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+rig_init_log_dir: results/E5f/val056
+rig_init_label: E5f
+rig_compare:
+  E23_gen: results/E23/val056/model
+  E37_gen: results/E37/val056/model
+rig_frames: [96, 104, 112]
+rig_yaws: [-180, -135, -90, -45, 0, 45, 90, 135, 180]
+rig_rights_scene_units: [0, 0.5]
