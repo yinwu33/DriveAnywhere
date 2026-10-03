@@ -199,3 +199,7 @@ local_scripts
 # literature PDFs (docs/papers/fetch.sh downloads them; each keeps its own arXiv license)
 docs/papers/*.pdf
 !docs/papers/fetch.sh
+
+# subagent worktrees (Claude Code) and E34 training pairs (docs/PLAN_AFTER_E30.md)
+.claude/
+data/e34/

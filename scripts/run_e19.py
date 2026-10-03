@@ -4,7 +4,8 @@ E27 uses the same runner with method: sky (scripts/fit_sky.py instead of train_f
 train_fixer.py continues --init_log_dir (E20: +-45 degree completion from E5f) with Fixer-restored targets at the
 config's yaws (no sideways move), then the evaluation every Phase 9 run gets: FRONT held-out, the four side cameras
 over E5c's unseen pixels (every 5th frame), D-E1's side renders (every 2nd frame) with eval_realism.py against the
-realism_compare runs (KID / FID, classes, sharpness, flat fraction), and the fixed common cameras.
+realism_compare runs (KID / FID, classes, sharpness, flat fraction), the fixed common cameras, and (from E32 on) the
+DECISIONS Z view range (scripts/eval_view_range.py, D-Z1).
 Stages via dashrecon.stage_runner. EVALUATION stages read GT side cameras.
 E21 (the same without generated content): with init_gate set, the first stage gives the init run that view gate as a
 render-time variant (virtual_run.py, nothing retrained) in <output_dir>/init, and training starts from there.
@@ -56,6 +57,8 @@ def main() -> None:
     else:
         raise ValueError(f"unknown method {cfg['method']}")
     runner.run("eval_front", "main", ["scripts/eval_front_heldout.py", "--log_dir", model, "--example_frames", "50", "100", "150"])
+    runner.run("eval_view_range", "main", ["scripts/eval_view_range.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
+               "--seg_model_id", cfg["seg_model_id"], "--frame_stride", "10", "--example_frames", "50", "100", "150"])
     runner.run("eval_cross_camera", "main", ["scripts/eval_cross_camera.py", "--log_dir", model, "--gt_root", cfg["gt_root"],
                "--frame_stride", "5", "--alpha", "0.5", "--example_frames", "50", "100", "150", "--cams", "1", "2", "3", "4",
                "--unseen_dir", cfg["unseen_dir"], "--out_subdir", "cross_camera_p9"])

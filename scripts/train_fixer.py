@@ -39,6 +39,18 @@ They draw from the random stream only when set, so runs without them keep their 
 these classes are not kept, so restored views do not distil vehicles or people into the static scene (E22: Fixer
 invented parked cars; real vehicles are masked in the FRONT frames and in the generated frames too).
 
+Progressive commit (E32, docs/PLAN_AFTER_E30.md): --commit_stages S replaces the pool above. The envelope
+(|yaw| <= --env_yaw degrees, |lateral| <= --env_lateral and 0 <= up <= --env_up scene units) grows in S stages; in
+stage s every pool view puts one dimension (drawn with --frontier_weights) on the new ring [s/S, (s+1)/S] of its
+maximum and the others anywhere inside the stage's envelope. Views are rendered with rays recomputed for the moved
+camera (dashrecon.gen.views.render_at; the default pool keeps the FRONT rays, so its sky is FRONT's). The Fixer
+target is kept only on the view's holes (dashrecon.gen.views.hole_mask with scripts/render_views.py's defaults):
+pixels that no real training view (rendered at the stage start) and no committed view saw. Elsewhere the target is
+the detached render, so what is already observed or committed is not re-imagined differently by every view (the
+haze and ghosts of E23 / E30 at yaw 20-45, PLAN_AFTER_E30 R1). At each stage end the last round's views are
+committed: rendered by the current model, they become memory observers that vouch for the pixels they filled.
+--bin_w adds bin_w * mean(4 a (1 - a)) of the novel view's rendered opacity a, pushing every pixel to opaque or empty.
+
 Example (main venv, from the repo root):
     PATH=$PWD/.venvs/main/bin:/usr/local/cuda-12.1/bin:$PATH CUDA_HOME=/usr/local/cuda-12.1 \
         .venvs/main/bin/python scripts/train_fixer.py --scene_id val056 --output_root results
@@ -59,13 +71,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient  # noqa: E402
 from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, to_device,  # noqa: E402
                                  view_gate_path)
-from dashrecon.gen.views import ViewMove, moved_c2w  # noqa: E402
+from dashrecon.gen.views import ViewMove, hole_mask, moved_c2w, render_at, training_observers  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
 
 EXP = "E7"
 RENDER_KEYS = ["gt_rgbs", "rgbs", "Background_rgbs"]
+# hole mask of the progressive commit: scripts/render_views.py defaults
+HOLE = {"depth_tol": 0.10, "res_ratio": 3.0, "rgb_tol": 0.10, "sky_alpha": 0.5, "sky_elev_deg": 5.0, "open_px": 9, "min_area": 3000,
+        "dilate_px": 7}
+OBS_STRIDE = 2
+
+
+def frontier_move(rng, stage: int, stages: int, weights: list, env_yaw: float, env_lateral: float, env_up: float) -> ViewMove:
+    """A pool view of the progressive commit: one dimension on the stage's new ring, the others inside its envelope."""
+    lo, hi = stage / stages, (stage + 1) / stages
+    dim = int(rng.choice(3, p=np.asarray(weights) / np.sum(weights)))
+    ring = lambda: float(rng.uniform(lo, hi))  # noqa: E731
+    inside = lambda: float(rng.uniform(0.0, hi))  # noqa: E731
+    yaw = float(rng.choice([-1.0, 1.0])) * env_yaw * (ring() if dim == 0 else inside())
+    lateral = float(rng.choice([-1.0, 1.0])) * env_lateral * (ring() if dim == 1 else inside())
+    up = env_up * (ring() if dim == 2 else inside())
+    return ViewMove(right=lateral, up=up, yaw=yaw)
 
 
 def pool_frames(dataset, stride: int, device: torch.device) -> list:
@@ -114,9 +142,17 @@ def main() -> None:
     parser.add_argument("--exclude_classes", nargs="*", default=[], help="Cityscapes classes left out of the Fixer targets")
     parser.add_argument("--seg_model_id", default=None, help="SegFormer for --exclude_classes")
     parser.add_argument("--seg_input_hw", type=int, nargs=2, default=[768, 1152])
+    parser.add_argument("--commit_stages", type=int, default=0, help="progressive commit stages (E32); 0 = off")
+    parser.add_argument("--env_yaw", type=float, default=45.0, help="commit envelope: max |yaw| degrees")
+    parser.add_argument("--env_lateral", type=float, default=0.0, help="commit envelope: max |lateral| scene units")
+    parser.add_argument("--env_up", type=float, default=0.0, help="commit envelope: max up scene units")
+    parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
+    parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
     args = parser.parse_args()
     assert not args.exclude_classes or args.seg_model_id is not None, "--exclude_classes needs --seg_model_id"
     assert not (args.yaw_uniform and args.yaw_choices), "--yaw_uniform replaces --yaw_choices"
+    assert not args.commit_stages or not (args.yaw_uniform or args.yaw_choices or args.up_range != [0.0, 0.0]), \
+        "--commit_stages has its own pool"
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -169,6 +205,10 @@ def main() -> None:
         seg = SegformerSkyRoadBackend(args.seg_model_id, tuple(args.seg_input_hw))
         excluded_ids = [seg.class_id(name) for name in args.exclude_classes]
     n_rounds = -(-args.steps // args.refresh_every)
+    if args.commit_stages:
+        assert n_rounds % args.commit_stages == 0, f"{n_rounds} rounds do not split into {args.commit_stages} stages"
+    rounds_per_stage = n_rounds // max(args.commit_stages, 1)
+    observers, memory = [], []
     example_rounds = sorted({0, n_rounds // 2, n_rounds - 1})
     print(f"[train_fixer] {args.scene_id}: pool {len(frames)} frames, {n_rounds} rounds, steps {start + 1}..{start + args.steps}", flush=True)
 
@@ -182,8 +222,27 @@ def main() -> None:
             hi = args.off_hi_start + (args.off_hi_end - args.off_hi_start) * frac
             pool, renders = [], []
             trainer.set_eval()
+            if args.commit_stages and r % rounds_per_stage == 0:
+                with torch.no_grad():
+                    for v in prev_pool if r > 0 else []:  # commit the last round of the previous stage
+                        ii, ci = dict(v["ii"]), dict(v["ci"])
+                        out = render_at(trainer, ii, ci, v["c2w"], v["ci"]["intrinsics"], v["hw"])
+                        memory.append({"w2c": torch.linalg.inv(v["c2w"]), "K": v["ci"]["intrinsics"], "depth": out["depth"][..., 0].half(),
+                                       "valid": v["hole"], "rgb": out["rgb"].clamp(0, 1).half()})
+                observers = training_observers(trainer, dataset, OBS_STRIDE, device) + memory
             with torch.no_grad():
-                for fr in frames:
+                for fr in frames if args.commit_stages else []:
+                    move = frontier_move(rng, r // rounds_per_stage, args.commit_stages, args.frontier_weights, args.env_yaw,
+                                         args.env_lateral, args.env_up)
+                    ii, ci = dict(fr["ii"]), dict(fr["ci"])
+                    c2w = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), move)
+                    hw = (int(ci["height"]), int(ci["width"]))
+                    out = render_at(trainer, ii, ci, c2w, ci["intrinsics"], hw)
+                    hole = torch.from_numpy(hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, **HOLE)[0]).to(device)
+                    renders.append(out["rgb"].clamp(0, 1).float().cpu().numpy())
+                    pool.append({"ii": ii, "ci": ci, "c2w": c2w, "hw": hw, "hole": hole, "frame": fr["frame"], "offset": move.right,
+                                 "yaw": move.yaw, "up": move.up, "pitch": 0.0})
+                for fr in [] if args.commit_stages else frames:
                     off = float(rng.choice([-1.0, 1.0]) * rng.uniform(lo, hi))
                     yaw = float(rng.uniform(-args.yaw_max, args.yaw_max))
                     if args.yaw_choices:
@@ -208,7 +267,11 @@ def main() -> None:
                     excluded += float(v["exclude"].float().mean()) / len(pool)
                 if r in example_rounds and k < args.save_views:
                     save_example(os.path.join(log_dir, "gen", f"round{r}_view{k}.jpg"), renders[k], targets[k])
+            if args.commit_stages:
+                prev_pool = pool
             rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0,
+                           "stage": r // rounds_per_stage if args.commit_stages else None, "memory_views": len(memory),
+                           "hole_fraction": float(np.mean([float(v["hole"].float().mean()) for v in pool])) if args.commit_stages else None,
                            "mean_abs_change": float(np.abs(targets - renders).mean()), "excluded_fraction": excluded,
                            "pool": [{"frame": v["frame"], "offset": v["offset"], "yaw": v["yaw"], "up": v["up"], "pitch": v["pitch"]} for v in pool]})
             if r % 4 == 0 or r == n_rounds - 1:
@@ -236,11 +299,17 @@ def main() -> None:
         trainer.update_visibility_filter()  # postprocess_per_train_step reads the last render's radii and gradients
         rgb = nv["rgb"]
         with torch.no_grad():
-            keep = ((nv["mesh_valid"] | (nv["opacity"][..., 0] > args.keep_alpha)) & ~v["exclude"]).float()[..., None]
+            if args.commit_stages:
+                keep = (v["hole"] & ~v["exclude"]).float()[..., None]
+            else:
+                keep = ((nv["mesh_valid"] | (nv["opacity"][..., 0] > args.keep_alpha)) & ~v["exclude"]).float()[..., None]
         target = keep * v["target"].float() + (1.0 - keep) * rgb.detach()
         l1 = (rgb - target).abs().sum() / (3.0 * keep.sum()).clamp(min=1.0)
         lp = lpips_vgg(rgb.permute(2, 0, 1)[None] * 2 - 1, target.permute(2, 0, 1)[None] * 2 - 1).mean()
         loss_dict["gen_loss"] = args.gen_w * (l1 + args.lpips_w * lp)
+        if args.bin_w > 0:
+            a = nv["opacity"][..., 0]
+            loss_dict["bin_loss"] = args.bin_w * (4.0 * a * (1.0 - a)).mean()
         for k, val in mesh_losses(nv, nv["mesh_valid"].float(), cfg.trainer.losses.mesh).items():
             loss_dict["nv_" + k] = val
 
