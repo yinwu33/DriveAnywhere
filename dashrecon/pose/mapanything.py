@@ -11,6 +11,9 @@ API confirmed against facebookresearch/map-anything @ 3d10cf7 (v1.1.4):
       world = the frame of view 0, also when poses are given: model.py "in the frame of the reference view 0";
       checked on val056 E13 generated views, DECISIONS W), ``depth_z``, ``conf``, ``mask`` and
       ``metric_scaling_factor``. Given poses condition the prediction but are not reproduced exactly.
+    - ``infer(..., minibatch_size=None)`` sizes the dense-head minibatch from the free GPU memory (95 % of it, 680 MB
+      per view, ``_compute_adaptive_minibatch_size``); a fixed ``minibatch_size`` bounds the memory on a shared GPU
+      and does not change the outputs (the head runs per view).
 """
 import time
 
@@ -32,7 +35,7 @@ class MapAnythingBackend(PoseBackend):
     name = "mapanything"
 
     def __init__(self, model_id: str, max_views: int, resolution_set: int, max_intrinsics_dev: float = 0.05,
-                 poses_metric: bool = False) -> None:
+                 poses_metric: bool = False, minibatch_size: int | None = None) -> None:
         """
         Args:
             model_id: Hugging Face model id, e.g. ``facebook/map-anything-apache``.
@@ -44,6 +47,7 @@ class MapAnythingBackend(PoseBackend):
                 larger bound for generated frames, whose depth it re-scales per hole anyway).
             poses_metric: flag given poses as metric (``is_metric_scale``), so the model keeps their translation
                 scale instead of predicting its own; False (the default) for SfM poses of unknown scale.
+            minibatch_size: fixed dense-head minibatch of ``infer``; None (the default) = MapAnything's adaptive size.
         """
         from mapanything.models import MapAnything
 
@@ -51,6 +55,7 @@ class MapAnythingBackend(PoseBackend):
         self.max_intrinsics_dev = max_intrinsics_dev
         self.max_views = max_views
         self.poses_metric = poses_metric
+        self.minibatch_size = minibatch_size
         self.resolution_set = resolution_set
         self.device = torch.device("cuda")
         self.model = MapAnything.from_pretrained(model_id).to(self.device).eval()
@@ -102,7 +107,7 @@ class MapAnythingBackend(PoseBackend):
         torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.time()
         with torch.no_grad():
-            preds = self.model.infer(views, **INFER_PARAMS)
+            preds = self.model.infer(views, **INFER_PARAMS, minibatch_size=self.minibatch_size)
         torch.cuda.synchronize(self.device)
         runtime = time.time() - t0
         peak_gb = torch.cuda.max_memory_allocated(self.device) / 1024**3
@@ -141,7 +146,7 @@ class MapAnythingBackend(PoseBackend):
                 "model_id": self.model_id,
                 "code_commit": MAPANYTHING_COMMIT,
                 "torch": torch.__version__,
-                "infer_params": {**INFER_PARAMS, "resolution_set": self.resolution_set},
+                "infer_params": {**INFER_PARAMS, "resolution_set": self.resolution_set, "minibatch_size": self.minibatch_size},
                 "inputs": ["images"] + (["intrinsics"] if intrinsics is not None else [])
                           + ([f"camera_poses ({'metric' if self.poses_metric else 'non-metric'})"] if poses_c2w is not None else []),
                 "num_views": len(image_paths),
