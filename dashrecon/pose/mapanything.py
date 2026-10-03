@@ -15,6 +15,8 @@ API confirmed against facebookresearch/map-anything @ 3d10cf7 (v1.1.4):
       per view, ``_compute_adaptive_minibatch_size``); a fixed ``minibatch_size`` bounds the memory on a shared GPU
       and does not change the outputs (the head runs per view).
 """
+import contextlib
+import os
 import time
 
 import numpy as np
@@ -27,6 +29,36 @@ from dashrecon.pose.base import PoseBackend, PoseResult
 MAPANYTHING_COMMIT = "3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9"
 INFER_PARAMS = {"memory_efficient_inference": True, "use_amp": True, "amp_dtype": "bf16", "apply_mask": True,
                 "mask_edges": True, "apply_confidence_mask": False}
+DINOV2_HUB_REPO = "facebookresearch/dinov2"
+
+
+@contextlib.contextmanager
+def cached_dinov2_hub():
+    """Resolve torch.hub's "facebookresearch/dinov2" to the cached "main" checkout without asking github.com.
+
+    uniception's DINOv2 encoder calls ``torch.hub.load("facebookresearch/dinov2", ...)`` without a ref, so
+    torch.hub (``hub._parse_repo_info``) first opens https://github.com/facebookresearch/dinov2/tree/main/ to pick main
+    or master, even with the repo cached; it only falls back to the cache when there is no network at all. github.com
+    answers 503 to this machine (2026-10-03, E34), which makes every MapAnything load fail. Inside this context that
+    one repo resolves to the cached main checkout (asserted to exist); every other repo goes through torch.hub as usual.
+    """
+    from torch import hub
+
+    original = hub._parse_repo_info
+
+    def parse(github):
+        if github == DINOV2_HUB_REPO:
+            owner, name = github.split("/")
+            cached = os.path.join(hub.get_dir(), f"{owner}_{name}_main")
+            assert os.path.isdir(cached), f"{cached} missing: torch.hub has not cached {github} yet"
+            return owner, name, "main"
+        return original(github)
+
+    hub._parse_repo_info = parse
+    try:
+        yield
+    finally:
+        hub._parse_repo_info = original
 
 
 class MapAnythingBackend(PoseBackend):
@@ -58,7 +90,8 @@ class MapAnythingBackend(PoseBackend):
         self.minibatch_size = minibatch_size
         self.resolution_set = resolution_set
         self.device = torch.device("cuda")
-        self.model = MapAnything.from_pretrained(model_id).to(self.device).eval()
+        with cached_dinov2_hub():
+            self.model = MapAnything.from_pretrained(model_id).to(self.device).eval()
 
     def _depth_grid(self, image_hw: tuple[int, int], depth_hw: tuple[int, int]) -> dict:
         """Replicate ``crop_resize_if_necessary`` to describe the depth grid."""
