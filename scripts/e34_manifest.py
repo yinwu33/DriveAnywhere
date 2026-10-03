@@ -23,6 +23,8 @@ import json
 import os
 import sys
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon import io  # noqa: E402
 from dashrecon.e34.layout import CAM_NAMES  # noqa: E402
@@ -40,12 +42,14 @@ def main() -> None:
     args = parser.parse_args()
     root = os.path.dirname(os.path.abspath(args.pairs_root))
     selected = io.read_json(args.segments)["selected"]
-    pairs, seg_rows, accepted = [], [], 0
+    pairs, seg_rows, accepted, timings = [], [], 0, {}
     for s in selected:
         d = os.path.join(args.pairs_root, s["scene_id"])
         if not os.path.exists(os.path.join(d, "meta.json")):
             continue
         meta = io.read_meta(d)
+        for stage, sec in meta["timing_s"].items():
+            timings.setdefault(stage, []).append(sec)
         row = {"scene_id": s["scene_id"], "idx": s["idx"], "location": s["location"], "accepted": meta["accepted"],
                "reasons": meta["reasons"]}
         if meta["accepted"]:
@@ -74,7 +78,10 @@ def main() -> None:
         json.dump({"root": root, "paths": "relative to root", "prompt": args.prompt,
                    "split_rule": f"every {args.test_every}-th accepted segment (processing order) is test",
                    "mask_meaning": "255 = excluded from the loss (dynamic object or outside the original image)",
-                   "counts": counts, "segments": seg_rows, "pairs": pairs, "dashrecon_commit": git_commit()}, f, indent=1)
+                   "counts": counts,
+                   "timing_s": {k: {"segments": len(v), "median": float(np.median(v)), "total": float(np.sum(v))}
+                                for k, v in timings.items()},
+                   "segments": seg_rows, "pairs": pairs, "dashrecon_commit": git_commit()}, f, indent=1)
     for typ in TYPES:
         sel = [p for p in pairs if p["type"] == typ]
         if not sel:
