@@ -1152,3 +1152,27 @@ MT1app（逐段零阶残差 + 逐段天空）是按论文做的简化版，没�
   - `envs/fixer-requirements.txt` 是旧 venv 的完整依赖导出，其中 diffusers 0.40.0 和 huggingface-hub 0.36.2 同时存在，但 diffusers 0.40 声明需要 hub ≥ 1.23，uv 解析会失败。改为 `--no-deps` 安装，原样复现旧环境。这样一来 pynvml 13 背后的 `nvidia-ml-py` 不再自动装上（导出时 `nvidia-*` 包被当作 torch 的依赖去掉了），所以补进了 requirements（13.615.71）。
   - transformer_engine 的 fused attention 会 dlopen 不带版本号的 `libcudart.so`，这个文件只在 toolkit 里有。旧机器的 `/usr/local/cuda-12.1` 在系统链接路径上，`~/cuda-12.6` 不在。所以 `dashrecon/gen/fixer_client.py` 把 `$CUDA_HOME/lib64` 加到 worker 的 `LD_LIBRARY_PATH`，放在 venv 的 nvidia 库之后。
   - main venv 原来没有装 pytest，但 `tests/` 里有 4 个测试 import 了 drivestudio 或 cv2，只能在 main 里跑。已在 `setup_main.sh` 里加上 pytest。
+
+## AB. E30 之后的方向分析（2026-10-03，用户要求）
+
+用户："现在试验到 E30。我对目前的结果依然不满意。你来计划分析一下，同时搜索论文，看看下一步的几个实验怎么设计。"
+
+分析和实验设计写在 [PLAN_AFTER_E30.md](PLAN_AFTER_E30.md)，新增 10 篇论文写进 [papers/paper.md](papers/paper.md)。要点：
+
+- 在 DECISIONS Z 的范围内渲染了 E5f / E30（按评测侧的 Sim(3) 尺度 0.43 把米换成场景单位；图在 `results/_vis_plan_e30/`）。横移 3 m、升高 2 m 基本可用；**偏航 20–45° 是主要缺口**：半透明的雾和重影、天空里的黑色划痕和顶部灰带、与住宅区不符的编造内容（办公楼、红地面）。
+- 判断的主因：单帧 Fixer 对每个视角各自想象，3DGS 在矛盾的目标之间取平均，得到低不透明度的叠加（R1）。次要原因：
+  - 生成器不了解这类街道（R2）；
+  - 远景和天空没有统一的背景（R3）；
+  - E29 的视角池按场景单位定义，换算成真实距离约为横移 7 m、升高 4.6 m，只有约 25% 落在 ±45° 内（R4）；
+  - 尺度和焦距不准（R5）。
+- 实验设计：
+  - 先做 D-Z1（落地 Z 的评测协议，新增半透明率指标）和 D-G1（DA3 等尺度来源的对照）；
+  - 不训练的两条线并行：E32（一次生成后锁定、逐步外扩、不透明度二值化）和 E33（Cosmos-Transfer2.5 当视频级修复器，H100 上可跑）；
+  - E35：远景和天空的全景背景；
+  - E34：在 Waymo training 上用侧相机真值训练驾驶领域的修复模型，按 S 节准入，需用户确认；
+  - E31：只改视角池的便宜消融。
+- 待用户决定：
+  - E34 的准入，以及构造训练对时侧相机位姿用多相机 GLOMAP 还是 GT 外参；
+  - 是否用 Para-Lane 做外部横移评测；
+  - 是否扩到 5 个场景。
+

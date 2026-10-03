@@ -44,3 +44,13 @@
 2605.18754	OneSceneEval	Can These Views Be One Scene? Evaluating Multiview 3D Consistency when 3D Foundation Models Hallucinate
 2605.07550	GLADOS	Mind the Gap: Geometrically Accurate Generative Reconstruction from Disjoint Views
 2607.04661	FocusGS	Targeted Structure Completion for Sparse-View 3D Reconstruction in Autonomous Driving
+2512.23983	DriveExplorer	DriveExplorer: Images-Only Decoupled 4D Reconstruction with Progressive Restoration for Driving View Extrapolation
+2601.00393	NeoVerse	NeoVerse: Enhancing 4D World Model with in-the-wild Monocular Videos
+2609.06948	PRG-Fusion	PRG-Fusion: Orchestrating Generative Priors with Reconstruction Evidence for Driving View Synthesis
+2603.16306	DriveFix	DriveFix: Spatio-Temporally Coherent Driving Scene Restoration
+2604.11797	SyncFix	SyncFix: Fixing 3D Reconstructions via Multi-View Synchronization
+2508.09667	GSFixer	GSFixer: Improving 3D Gaussian Splatting with Reference-Guided Video Diffusion Priors
+2605.09688	ConFixGS	ConFixGS: Learning to Fix Feedforward 3D Gaussian Splatting with Confidence-Aware Diffusion Priors in Driving Scenes
+2511.10647	DA3	Depth Anything 3: Recovering the Visual Space from Any Views
+2502.15635	Para-Lane	Para-Lane: Multi-Lane Dataset Registering Parallel Scans for Benchmarking Novel View Synthesis
+2406.18360	XLD	XLD: A Cross-Lane Dataset for Benchmarking Novel Driving View Synthesis

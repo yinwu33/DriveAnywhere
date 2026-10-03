@@ -38,6 +38,7 @@
 | 计划 E18（测试时适配） | [CogNVS](#cognvs)、[World from Motion](#world-from-motion) | 在本场景视频上自监督微调补全模型 |
 | 计划 D-D1（蒸馏改进） | [DriveX](#drivex)、[FaithFusion](#faithfusion)、[FreeFix](#freefix) | 伪真值渐进更新；逐像素置信度 |
 | 需要云 GPU | [Cosmos-Predict2.5 / Transfer2.5](#cosmos-predict25)、[Lyra 2.0](#lyra-20)、[Voyager](#voyager) | 显存或架构超出本机 A6000 |
+| 计划（E30 之后，[PLAN_AFTER_E30.md](../PLAN_AFTER_E30.md)） | [FreeVS](#freevs)、[DriveExplorer](#driveexplorer)、[NeoVerse](#neoverse)、[PRG-Fusion](#prg-fusion)、[DriveFix](#drivefix)、[SyncFix](#syncfix)、[GSFixer](#gsfixer)、[ConFixGS](#confixgs)、[DA3](#depth-anything-3)、[Para-Lane](#para-lane)、[XLD](#xld) | 一次生成后锁定、逐步外扩（E32）；视频 / 多视角联合修复（E33）；Waymo 侧相机训练对（E34）；尺度对照（D-G1）；横移真值评测（D-Z1） |
 
 ## 条目
 
@@ -392,3 +393,68 @@
 - **做了什么**：不做全局的体素化补全，而是先求出"几何歧义流形"，定位容易被遮挡、几何不确定的局部区域，只在这些区域里实例化并优化高斯。
 - **可借鉴**：只在几何歧义区域补全、确定区域不动，与我们"已观测区域不被生成改写"一致。它的歧义区域定位可以替代我们手工的空洞判断。
 - **状态**：候选（参考）。
+
+### 候选（E30 之后的计划，2026-10-03 加入，见 [PLAN_AFTER_E30.md](../PLAN_AFTER_E30.md)）
+
+迁到 H100 96 GB（Hopper，DECISIONS AA）之后，上表"需要云 GPU"一行里的 Cosmos-Transfer2.5-2B（约 65 GB，需要 Hopper）和 Lyra 2.0（官方说明单张 H100 80 GB）已经可以在本机运行；Cosmos-Predict2.5 的 7 相机多视角推理仍要 8 张 80 GB 的卡。下面的描述只依据摘要和官方仓库页面（2026-10-03 读取），没有读正文的地方写明待查。
+
+#### DriveExplorer
+*DriveExplorer: Images-Only Decoupled 4D Reconstruction with Progressive Restoration for Driving View Extrapolation*，arXiv [2512.23983](https://arxiv.org/abs/2512.23983)（2025-12）
+- **做了什么**：只用图像（位姿可选），不用 LiDAR、3D 框和车道标注。静态点云和逐帧动态点云融合后做可变形 4DGS。先用初始模型的低质量渲染训练一个视频扩散模型，再把渲染逐步向目标视角偏移，每一步用扩散模型修复、把修复结果加回 4DGS 的训练数据。
+- **可借鉴**：逐步外扩，每一步的修复结果成为下一步的输入，对应计划 E32。修复模型用场景自己的渲染训练，接近 CogNVS 的测试时适配。
+- **状态**：候选；代码待查。
+
+#### NeoVerse
+*NeoVerse: Enhancing 4D World Model with in-the-wild Monocular Videos*，arXiv [2601.00393](https://arxiv.org/abs/2601.00393)（2026-01，CVPR 2026）
+- **做了什么**：免位姿的前馈 4D 重建 + 新轨迹视频生成。训练时在线模拟"单目重建在偏离视角下的退化渲染"，所以只用野外单目视频就能训练，不需要多视角数据。
+- **可借鉴**：构造修复模型训练对时，可以模拟退化，不必为每段数据都做一次完整的 3DGS 重建（计划 E34 的便宜版本）。
+- **状态**：候选；代码和单卡可行性待查。
+
+#### PRG-Fusion
+*PRG-Fusion: Orchestrating Generative Priors with Reconstruction Evidence for Driving View Synthesis*，arXiv [2609.06948](https://arxiv.org/abs/2609.06948)（2026-09）
+- **做了什么**：从重建场景里提取逐区域的退化证据，分成"保留 / 修复 / 生成"三类：保留区域用 3DGS 外观，修复区域用 LiDAR 引导的结构校正，生成区域交给视频先验。两阶段训练：先学稀疏 LiDAR 投影的几何控制，再学稠密 3DGS 渲染的外观控制。Waymo 上评测大轨迹偏移。
+- **可借鉴**：只在真正需要想象的地方生成，其余保留。我们没有 LiDAR，"修复"一类要用网格或 MapAnything 深度代替。
+- **状态**：候选（参考）。
+
+#### DriveFix
+*DriveFix: Spatio-Temporally Coherent Driving Scene Restoration*，arXiv [2603.16306](https://arxiv.org/abs/2603.16306)（2026-03）
+- **做了什么**：交错的扩散 Transformer，专门的模块同时建模时间依赖和跨相机的空间一致性，以历史上下文为条件，加几何感知的训练损失。在 Waymo、nuScenes、PandaSet 上评测。
+- **可借鉴**：用视频 / 多视角联合修复代替逐帧 Fixer，正对 R1（逐视角各自想象）。对应计划 E33 的备选。
+- **状态**：候选；代码待查。
+
+#### SyncFix
+*SyncFix: Fixing 3D Reconstructions via Multi-View Synchronization*，arXiv [2604.11797](https://arxiv.org/abs/2604.11797)（2026-04）
+- **做了什么**：把多视角修复写成联合的 latent bridge matching，在整个去噪过程中同步多个视角。只用图像对训练，推理时可推广到任意视角数；没有干净参考图时也优于基线，有参考图时更好。
+- **可借鉴**：同 DriveFix（计划 E33 的备选）。
+- **状态**：候选；代码待查。
+
+#### GSFixer
+*GSFixer: Improving 3D Gaussian Splatting with Reference-Guided Video Diffusion Priors*，arXiv [2508.09667](https://arxiv.org/abs/2508.09667)（2025-08）
+- **做了什么**：DiT 视频扩散模型，用"伪影渲染 / 干净帧"配对训练，以参考视角的 2D 语义特征和 3D 几何特征（来自视觉几何基础模型）为条件。提出 DL3DV-Res 基准。
+- **可借鉴**：把真实 FRONT 帧当参考视角，约束想象的内容与场景语义一致（R2）。
+- **状态**：候选；代码在 GVCLab/GSFixer，权重待查。
+
+#### ConFixGS
+*ConFixGS: Learning to Fix Feedforward 3D Gaussian Splatting with Confidence-Aware Diffusion Priors in Driving Scenes*，arXiv [2605.09688](https://arxiv.org/abs/2605.09688)（2026-05）
+- **做了什么**：对前馈 3DGS 的渲染做扩散修复得到局部伪目标，用对支撑视角的重投影一致性检查生成置信度图，按置信度引导优化、压制不可靠的细节。在 Waymo、nuScenes、KITTI 上评测。
+- **可借鉴**：与我们的几何验收和 D-D1（逐像素置信度）思路一致，可作为 E32 提交前检查的参考。
+- **状态**：候选（参考）。
+
+#### Depth Anything 3
+*Depth Anything 3: Recovering the Visual Space from Any Views*，arXiv [2511.10647](https://arxiv.org/abs/2511.10647)（2025-11）
+- **做了什么**：单个普通 Transformer，以深度 + 射线为统一的预测目标，从任意数量的视角（有无位姿均可）预测一致的几何、相机内参和外参；也可前馈输出 3DGS。摘要报告位姿精度比 VGGT 平均高 35.7%。Lyra 2.0 用它做深度。
+- **对应**：计划 D-G1，与 GLOMAP + MapAnything 对比焦距、尺度和位姿（OPEN_QUESTIONS 15、33）。
+- **状态**：候选。
+
+#### Para-Lane
+*Para-Lane: Multi-Lane Dataset Registering Parallel Scans for Benchmarking Novel View Synthesis*，arXiv [2502.15635](https://arxiv.org/abs/2502.15635)（2025-02）
+- **做了什么**：真实道路上多车道平行扫描，25 组关联序列，1.6 万张前视图、6.4 万张环视图、1.6 万帧 LiDAR，用 LiDAR 建图和多模态 SfM 对齐位姿，动态物体有标注。用来评测换道视角下的新视角合成。
+- **对应**：计划 D-Z1 横移部分的外部真值（只用前视跑我们的流程，在相邻车道评测）。许可和车道间距待查。
+- **状态**：候选。
+
+#### XLD
+*XLD: A Cross-Lane Dataset for Benchmarking Novel Driving View Synthesis*，arXiv [2406.18360](https://arxiv.org/abs/2406.18360)（2024-06）
+- **做了什么**：仿真生成的跨车道新视角合成基准，测试相机相对训练轨迹有不同的横向偏移。
+- **对应**：同 Para-Lane，但是仿真数据，优先级低于 Para-Lane。
+- **状态**：候选（参考）。
+
