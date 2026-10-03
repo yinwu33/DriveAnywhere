@@ -13,5 +13,5 @@ uv pip install torch==2.6.0 torchvision==0.21.0 xformers==0.0.29.post3 --index-u
 if [ ! -d "$SRC" ]; then git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git "$SRC"; fi
 git -C "$SRC" checkout "$DA3_COMMIT"
 uv pip install -e "$SRC"
-uv pip install pytest
+uv pip install addict==2.4.0 pytest  # addict: imported by depth_anything_3 but not in its declared dependencies
 "$VIRTUAL_ENV/bin/python" -c "from huggingface_hub import snapshot_download; print(snapshot_download('depth-anything/DA3NESTED-GIANT-LARGE-1.1'))"
