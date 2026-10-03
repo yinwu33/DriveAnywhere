@@ -11,6 +11,11 @@ pose-glomap_depth-mapanything, DECISIONS L):
 DA3's camera centres come from its predicted world-to-camera extrinsics; is_metric says whether the model's depth
 (and so its translation) is in metres.
 
+With --undistorted_root, DA3 also runs (any-view, no poses) on the undistorted FRONT images the current backend's
+depth was computed on (calib-glomap), and its depth is compared with that depth on the same grid: r = median over
+frames of the per-frame median of DA3 depth / our depth (valid pixels). If DA3's depth is metric, our scale times r
+is 1: the "rescaled" scale says how well DA3 depth alone would fix the current backend's scale, keeping its poses.
+
 Output: --out JSON (per scene and mean) and a printed table.
 
 Example (da3 venv):
@@ -24,6 +29,7 @@ import os
 import sys
 import time
 
+import cv2
 import numpy as np
 import torch
 
@@ -69,6 +75,7 @@ def main() -> None:
     parser.add_argument("--model_id", required=True)
     parser.add_argument("--frame_stride", type=int, required=True)
     parser.add_argument("--process_res", type=int, default=504)
+    parser.add_argument("--undistorted_root", help="calib-glomap undistorted image root (depth-scale check)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     commit = git_commit()
@@ -103,6 +110,22 @@ def main() -> None:
             "focal_gt": float(k_gt[0]), "focal_da3": float(pred.intrinsics[:, 0, 0].mean() * 1920 / w_proc),
             "focal_da3_std": float(pred.intrinsics[:, 0, 0].std() * 1920 / w_proc), "focal_glomap": float(cam["K"][0][0]),
             "da3": compare(gt_c, da3_c), "ours": compare(gt_c, ours_c)}
+        if args.undistorted_root is not None:
+            und = [os.path.join(args.undistorted_root, f"{scene.scene_idx:03d}", "images", f"{t:03d}_0.jpg") for t in frames]
+            pred_u = model.inference(und, process_res=args.process_res)
+            grid = io.read_meta(pose_dir)["depth_grid"]
+            (h_res, w_res), (top, left), (h_d, w_d) = grid["resized_hw"], grid["crop_top_left"], grid["depth_hw"]
+            ratios = []
+            for j, t in enumerate(frames):
+                ours_d = io.read_depth(pose_dir, int(t))
+                da3_d = cv2.resize(pred_u.depth[j], (w_res, h_res), interpolation=cv2.INTER_LINEAR)[top:top + h_d, left:left + w_d]
+                valid = (ours_d > 0) & (da3_d > 0)
+                ratios.append(float(np.median(da3_d[valid] / ours_d[valid])))
+            r_med = float(np.median(ratios))
+            rows[sid]["depth_ratio_da3_over_ours"] = r_med
+            rows[sid]["depth_ratio_frame_iqr"] = [float(np.percentile(ratios, 25)), float(np.percentile(ratios, 75))]
+            rows[sid]["ours_rescaled_scale"] = rows[sid]["ours"]["gt_to_est_scale"] * r_med
+            print(f"[diagnose_da3] {sid}: DA3 / our depth {r_med:.3f}, our scale x ratio = {rows[sid]['ours_rescaled_scale']:.3f}", flush=True)
         r = rows[sid]
         print(f"[diagnose_da3] {sid}: focal GT {r['focal_gt']:.0f} DA3 {r['focal_da3']:.0f} (std {r['focal_da3_std']:.0f}) GLOMAP {r['focal_glomap']:.0f}; "
               f"scale DA3 {r['da3']['gt_to_est_scale']:.3f} ours {r['ours']['gt_to_est_scale']:.3f}; ATE DA3 {r['da3']['ate_rmse_m']:.2f} m "
@@ -111,6 +134,9 @@ def main() -> None:
     for b in ("da3", "ours"):
         mean[f"{b}_scale"] = float(np.mean([r[b]["gt_to_est_scale"] for r in rows.values()]))
         mean[f"{b}_ate_rmse_m"] = float(np.mean([r[b]["ate_rmse_m"] for r in rows.values()]))
+    if args.undistorted_root is not None:
+        mean["ours_rescaled_scale"] = float(np.mean([r["ours_rescaled_scale"] for r in rows.values()]))
+        mean["ours_rescaled_abs_err"] = float(np.mean([abs(r["ours_rescaled_scale"] - 1) for r in rows.values()]))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump({"reads_gt": True, "model_id": args.model_id, "frame_stride": args.frame_stride, "process_res": args.process_res,
