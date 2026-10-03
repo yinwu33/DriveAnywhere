@@ -38,23 +38,22 @@ FUSION_TAG = "pose-glomap_depth-mapanything__mask-gsam2_sky-segformer_img-glomap
 
 
 def fit_plane(pts: np.ndarray, rng: np.random.Generator, iters: int, inlier_dist: float) -> tuple[np.ndarray, float]:
-    """RANSAC plane (unit normal n, offset d with n . x + d = 0) refitted on its inliers by least squares."""
-    best, best_n = None, -1
-    for _ in range(iters):
-        p = pts[rng.choice(len(pts), 3, replace=False)]
-        n = np.cross(p[1] - p[0], p[2] - p[0])
-        if np.linalg.norm(n) < 1e-9:
-            continue
-        n = n / np.linalg.norm(n)
-        d = -n @ p[0]
-        inl = np.abs(pts @ n + d) < inlier_dist
-        if inl.sum() > best_n:
-            best, best_n = inl, int(inl.sum())
-    q = pts[best]
+    """RANSAC plane (unit normal n, offset d with n . x + d = 0) refitted on its inliers by least squares. All ``iters``
+    candidate triplets are scored at once (a (iters, N) distance matrix): numpy's per-call sampling without replacement
+    made the loop version take 0.5 s per iteration on 90k points."""
+    tri = pts[rng.integers(0, len(pts), size=(iters, 3))]  # (iters, 3, 3)
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    norm = np.linalg.norm(n, axis=1)
+    ok = norm > 1e-9
+    n, p0 = n[ok] / norm[ok][:, None], tri[ok, 0]
+    d = -(n * p0).sum(1)
+    dist = np.abs(n @ pts.T + d[:, None])  # (iters, N)
+    best = int(np.argmax((dist < inlier_dist).sum(1)))
+    q = pts[dist[best] < inlier_dist]
     c = q.mean(0)
-    n = np.linalg.svd(q - c)[2][-1]
-    n = n / np.linalg.norm(n)
-    return n, float(-n @ c)
+    n_fit = np.linalg.svd(q - c, full_matrices=False)[2][-1]  # full_matrices would build an (N, N) U
+    n_fit = n_fit / np.linalg.norm(n_fit)
+    return n_fit, float(-n_fit @ c)
 
 
 def main() -> None:
@@ -64,6 +63,7 @@ def main() -> None:
     parser.add_argument("--dashrecon_root", required=True)
     parser.add_argument("--radius", type=float, default=8.0, help="scene units around the camera, horizontally")
     parser.add_argument("--min_points", type=int, default=500)
+    parser.add_argument("--max_points", type=int, default=20000, help="road points per frame after random subsampling")
     parser.add_argument("--ransac_iters", type=int, default=200)
     parser.add_argument("--inlier_dist", type=float, default=0.05)
     parser.add_argument("--prior_height", type=float, required=True, help="generic camera mount height prior, metres")
@@ -88,6 +88,8 @@ def main() -> None:
             near = road[np.linalg.norm((road - c)[:, :2], axis=1) < args.radius]
             if len(near) < args.min_points:
                 continue
+            if len(near) > args.max_points:
+                near = near[rng.choice(len(near), args.max_points, replace=False)]
             n, d = fit_plane(near, rng, args.ransac_iters, args.inlier_dist)
             if n[2] < 0:
                 n, d = -n, -d
