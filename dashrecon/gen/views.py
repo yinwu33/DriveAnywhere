@@ -113,8 +113,49 @@ def training_observers(trainer, dataset, stride: int, device: torch.device) -> l
         ii, ci = to_device(ii, device), to_device(ci, device)
         out = trainer(ii, ci)
         observers.append({"w2c": torch.linalg.inv(trainer._last_cam.camtoworlds), "K": ci["intrinsics"], "depth": out["depth"][..., 0].half(),
-                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5), "rgb": out["rgb"].clamp(0, 1).half()})
+                          "valid": (ii["dynamic_masks"] < 0.5) & (ii["sky_masks"] < 0.5), "rgb": out["rgb"].clamp(0, 1).half(),
+                          "image": ii["pixels"].half()})
     return observers
+
+
+@torch.no_grad()
+def real_targets(outputs: dict, k: torch.Tensor, c2w: torch.Tensor, observers: list, depth_tol: float, res_ratio: float,
+                 max_angle_deg: float):
+    """Pseudo multi-view supervision of a novel view (E36, docs/EXPERIMENTS.md): for every rendered pixel, the real colour
+    of the closest training view that saw its surface point. A training view qualifies when the point projects inside it,
+    agrees with that view's rendered depth within ``depth_tol`` (relative; so it was not occluded there), lands outside
+    its dynamic and sky masks, is at most ``res_ratio`` times farther from it than from the novel camera (comparable
+    resolution) and the two viewing rays differ by less than ``max_angle_deg``. The colour is sampled bilinearly from
+    the real image (observers from training_observers carry it as "image"). Returns (target (H, W, 3) float32 in [0, 1],
+    keep (H, W) bool = pixels with a qualifying view)."""
+    depth = outputs["depth"][..., 0]
+    h, w = depth.shape
+    pts = backproject(depth, k, c2w)
+    dir_novel = torch.nn.functional.normalize(pts - c2w[:3, 3], dim=-1)
+    best_z = torch.full((h * w,), float("inf"), device=pts.device)
+    target = torch.zeros(h * w, 3, device=pts.device)
+    cos_max = math.cos(math.radians(max_angle_deg))
+    for o in observers:
+        oh, ow = o["depth"].shape
+        pc = pts @ o["w2c"][:3, :3].T + o["w2c"][:3, 3]
+        z = pc[:, 2]
+        u = o["K"][0, 0] * pc[:, 0] / z.clamp(min=1e-6) + o["K"][0, 2] - 0.5
+        v = o["K"][1, 1] * pc[:, 1] / z.clamp(min=1e-6) + o["K"][1, 2] - 0.5
+        inside = (z > 1e-3) & (u >= 0) & (u <= ow - 1) & (v >= 0) & (v <= oh - 1)
+        ui, vi = u.round().long().clamp(0, ow - 1), v.round().long().clamp(0, oh - 1)
+        dz = o["depth"][vi, ui].float()
+        centre = -o["w2c"][:3, :3].T @ o["w2c"][:3, 3]
+        dir_obs = torch.nn.functional.normalize(pts - centre, dim=-1)
+        ok = (inside & ((dz - z).abs() < depth_tol * z) & o["valid"][vi, ui] & (z < res_ratio * depth.reshape(-1))
+              & ((dir_obs * dir_novel).sum(-1) > cos_max) & (z < best_z))
+        if not bool(ok.any()):
+            continue
+        grid = torch.stack([u[ok] / (ow - 1) * 2 - 1, v[ok] / (oh - 1) * 2 - 1], -1).reshape(1, 1, -1, 2)
+        col = torch.nn.functional.grid_sample(o["image"].float().permute(2, 0, 1)[None], grid, mode="bilinear", align_corners=True)
+        target[ok] = col[0, :, 0].T
+        best_z[ok] = z[ok]
+    keep = torch.isfinite(best_z)
+    return target.reshape(h, w, 3), keep.reshape(h, w)
 
 
 def front_image_index(dataset, k: int) -> int:

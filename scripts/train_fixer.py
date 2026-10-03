@@ -50,6 +50,11 @@ the detached render, so what is already observed or committed is not re-imagined
 haze and ghosts of E23 / E30 at yaw 20-45, PLAN_AFTER_E30 R1). At each stage end the last round's views are
 committed: rendered by the current model, they become memory observers that vouch for the pixels they filled.
 --bin_w adds bin_w * mean(4 a (1 - a)) of the novel view's rendered opacity a, pushing every pixel to opaque or empty.
+--target real (E36): no generator at all. Each pool view's target is the real colour of the closest training view that saw
+the rendered surface point (dashrecon.gen.views.real_targets: depth-consistent, outside dynamic / sky masks, comparable
+resolution, viewing rays within --real_max_angle degrees), kept only on those pixels. Pseudo multi-view supervision of
+the content FRONT did see but renders hazy from an oblique camera (PLAN_AFTER_E30 R1 vs the geometry of observed
+content). Pool and envelope as --commit_stages (use 1 stage for a uniform envelope).
 --commit_keep uncommitted (E32b): the Fixer target is kept where E23 keeps it (mesh or opacity > --keep_alpha) minus the
 pixels a committed view already saw (dashrecon.gen.views.seen_count over the memory observers only), instead of only on
 holes: E32 left the blurry E20 content that the real views geometrically "saw" untouched (D-Z1 yaw-45 KID 0.149 vs E23
@@ -75,7 +80,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.gen.fixer_client import FIXER_REPO_ID, FIXER_REVISION, FixerClient  # noqa: E402
 from dashrecon.gen.novel import (attach_view_gate, build_trainer, mesh_losses, refined_c2w, to_device,  # noqa: E402
                                  view_gate_path)
-from dashrecon.gen.views import ViewMove, backproject, hole_mask, moved_c2w, render_at, seen_count, training_observers  # noqa: E402
+from dashrecon.gen.views import (ViewMove, backproject, hole_mask, moved_c2w, real_targets, render_at, seen_count,  # noqa: E402
+                                 training_observers)
 from dashrecon.provenance import git_commit  # noqa: E402
 from dashrecon.train.guard import assert_non_oracle  # noqa: E402
 from train_gs import collect_metrics  # noqa: E402
@@ -153,6 +159,8 @@ def main() -> None:
     parser.add_argument("--frontier_weights", type=float, nargs=3, default=[0.5, 0.3, 0.2], help="yaw / lateral / up")
     parser.add_argument("--bin_w", type=float, default=0.0, help="opacity binarisation weight on novel views")
     parser.add_argument("--fixer_pkl", help="fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py) instead of nvidia/Fixer")
+    parser.add_argument("--target", choices=["fixer", "real"], default="fixer", help="pool targets: Fixer output or real reprojection (E36)")
+    parser.add_argument("--real_max_angle", type=float, default=75.0, help="--target real: max viewing-ray difference, degrees")
     parser.add_argument("--commit_keep", choices=["hole", "uncommitted"], default="hole",
                         help="progressive commit: Fixer target on holes only (E32) or on all uncommitted kept pixels (E32b)")
     args = parser.parse_args()
@@ -160,6 +168,7 @@ def main() -> None:
     assert not (args.yaw_uniform and args.yaw_choices), "--yaw_uniform replaces --yaw_choices"
     assert not args.commit_stages or not (args.yaw_uniform or args.yaw_choices or args.up_range != [0.0, 0.0]), \
         "--commit_stages has its own pool"
+    assert args.target == "fixer" or args.commit_stages, "--target real uses the --commit_stages pool"
     commit = git_commit()
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -201,7 +210,7 @@ def main() -> None:
         attach_view_gate(trainer, gate_path)
     trainer.initialize_optimizer()
     base_lr = {g["name"]: g["lr"] for g in trainer.optimizer.param_groups}
-    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"], args.fixer_pkl)
+    fixer = FixerClient(args.timestep, os.path.join(log_dir, "fixer_io"), os.environ["CUDA_HOME"], args.fixer_pkl) if args.target == "fixer" else None
     lpips_vgg = lpips.LPIPS(net="vgg", verbose=False).to(device).eval().requires_grad_(False)
     frozen_params = list(trainer.models["Affine"].parameters()) + list(trainer.models["Sky"].parameters())
     frames = pool_frames(dataset, args.pool_stride, device)
@@ -245,7 +254,11 @@ def main() -> None:
                     c2w = moved_c2w(refined_c2w(trainer, fr["ii"], fr["ci"]), move)
                     hw = (int(ci["height"]), int(ci["width"]))
                     out = render_at(trainer, ii, ci, c2w, ci["intrinsics"], hw)
-                    if args.commit_keep == "hole":
+                    real_target = None
+                    if args.target == "real":
+                        real_target, hole = real_targets(out, ci["intrinsics"], c2w, observers, HOLE["depth_tol"], HOLE["res_ratio"],
+                                                         args.real_max_angle)
+                    elif args.commit_keep == "hole":
                         hole = torch.from_numpy(hole_mask(out, ii["viewdirs"], ci["intrinsics"], c2w, observers, **HOLE)[0]).to(device)
                     else:
                         depth = out["depth"][..., 0]
@@ -255,7 +268,7 @@ def main() -> None:
                         hole = (mesh_valid | (out["opacity"][..., 0] > args.keep_alpha)) & (seen < 1)
                     renders.append(out["rgb"].clamp(0, 1).float().cpu().numpy())
                     pool.append({"ii": ii, "ci": ci, "c2w": c2w, "hw": hw, "hole": hole, "frame": fr["frame"], "offset": move.right,
-                                 "yaw": move.yaw, "up": move.up, "pitch": 0.0})
+                                 "yaw": move.yaw, "up": move.up, "pitch": 0.0, "real_target": real_target})
                 for fr in [] if args.commit_stages else frames:
                     off = float(rng.choice([-1.0, 1.0]) * rng.uniform(lo, hi))
                     yaw = float(rng.uniform(-args.yaw_max, args.yaw_max))
@@ -270,7 +283,7 @@ def main() -> None:
                     renders.append(trainer(fr["ii"], ci, novel_view=True)["rgb"].clamp(0, 1).float().cpu().numpy())
                     pool.append({"ii": fr["ii"], "ci": ci, "frame": fr["frame"], "offset": off, "yaw": yaw, "up": up, "pitch": pitch})
             renders = np.stack(renders)
-            targets = fixer.refine(renders)
+            targets = fixer.refine(renders) if fixer is not None else np.stack([v["real_target"].cpu().numpy() for v in pool])
             excluded = 0.0
             for k, v in enumerate(pool):
                 v["target"] = torch.from_numpy(targets[k]).to(device).half()
@@ -283,7 +296,7 @@ def main() -> None:
                     save_example(os.path.join(log_dir, "gen", f"round{r}_view{k}.jpg"), renders[k], targets[k])
             if args.commit_stages:
                 prev_pool = pool
-            rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0,
+            rounds.append({"round": r, "step": step, "offset_range": [lo, hi], "seconds": time.time() - t0, "target": args.target,
                            "stage": r // rounds_per_stage if args.commit_stages else None, "memory_views": len(memory),
                            "hole_fraction": float(np.mean([float(v["hole"].float().mean()) for v in pool])) if args.commit_stages else None,
                            "mean_abs_change": float(np.abs(targets - renders).mean()), "excluded_fraction": excluded,
@@ -346,7 +359,8 @@ def main() -> None:
                   f"{args.print_every / (time.time() - t_print):.1f} it/s", flush=True)
             running, t_print = {}, time.time()
 
-    fixer.close()
+    if fixer is not None:
+        fixer.close()
     trainer.save_checkpoint(log_dir=log_dir, save_only_model=True, is_final=True)
     eval_args = argparse.Namespace(enable_wandb=False, render_video_postfix=None)
     do_evaluation(step=step, cfg=cfg, trainer=trainer, dataset=dataset, args=eval_args, render_keys=RENDER_KEYS)
@@ -357,12 +371,14 @@ def main() -> None:
     with open(os.path.join(log_dir, "meta.json"), "w") as f:
         json.dump({
             "exp": args.exp, "scene_id": args.scene_id, "init": src_dir, "dashrecon_commit": commit, "torch": torch.__version__,
-            "runtime_s": runtime, "generation_s": fixer.seconds, "generator": fixer.info, "rounds": rounds,
+            "runtime_s": runtime, "generation_s": fixer.seconds if fixer is not None else 0.0,
+            "generator": fixer.info if fixer is not None else "none: real reprojection targets (E36)", "rounds": rounds,
             "pool": rounds[0]["pool"], "example_rounds": example_rounds,
-            "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": True, "uses_oracle": False,
-            "oracle_note": "FRONT images + dashrecon products + frozen NVIDIA Fixer; checked by dashrecon.train.guard",
+            "peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3, "generative": fixer is not None, "uses_oracle": False,
+            "oracle_note": "FRONT images + dashrecon products + frozen NVIDIA Fixer; checked by dashrecon.train.guard" if fixer is not None
+            else "FRONT images + dashrecon products only; novel-view targets are reprojected real FRONT pixels",
         }, f, indent=2)
-    print(f"[train_fixer] {args.scene_id}: {runtime / 60:.1f} min ({fixer.seconds / 60:.1f} min Fixer) -> {log_dir}", flush=True)
+    print(f"[train_fixer] {args.scene_id}: {runtime / 60:.1f} min ({(fixer.seconds if fixer is not None else 0.0) / 60:.1f} min Fixer) -> {log_dir}", flush=True)
 
 
 if __name__ == "__main__":
