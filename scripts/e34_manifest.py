@@ -4,7 +4,8 @@ Scans <pairs_root>/<scene_id>/meta.json of the segments in --segments (data/e34/
 collects the pairs of every accepted segment: per pair the segment, camera, timestep, type ("points" / "gs"), input,
 target and loss mask (255 = leave out: dynamic object or outside the original image).
 
-Split by segment (no segment in both): --test_every-th accepted segment in processing order is "test", the rest "train".
+Split by segment (no segment in both): of the accepted segments in processing order the 1st, (1 + test_every)-th, ... are
+"test", the rest "train", so the test split exists from the first segment on (scripts/e34_train_fixer.py needs both).
 
 Writes
     <pairs_root>/../manifest.json       every pair (paths relative to the manifest's directory), split, per-segment
@@ -15,7 +16,7 @@ Writes
                                         stock loader ignores)
 
 Example (any venv):
-    python scripts/e34_manifest.py --segments data/e34/segments.json --pairs_root data/e34/pairs --test_every 20 \
+    python scripts/e34_manifest.py --segments data/e34/segments.json --pairs_root data/e34/pairs --test_every 10 \
         --prompt "remove degradation"
 """
 import argparse
@@ -53,7 +54,7 @@ def main() -> None:
         row = {"scene_id": s["scene_id"], "idx": s["idx"], "location": s["location"], "accepted": meta["accepted"],
                "reasons": meta["reasons"]}
         if meta["accepted"]:
-            split = "test" if accepted % args.test_every == args.test_every - 1 else "train"
+            split = "test" if accepted % args.test_every == 0 else "train"
             accepted += 1
             row.update({"split": split, "pair_counts": meta["pair_counts"]})
             targets = {(r["cam"], r["t"]): r for r in io.read_json(os.path.join(d, "targets.json"))["targets"]}
@@ -76,7 +77,7 @@ def main() -> None:
         counts[key][p["camera"]] += 1
     with open(os.path.join(root, "manifest.json"), "w") as f:
         json.dump({"root": root, "paths": "relative to root", "prompt": args.prompt,
-                   "split_rule": f"every {args.test_every}-th accepted segment (processing order) is test",
+                   "split_rule": f"accepted segments 1, {1 + args.test_every}, ... in processing order are test",
                    "mask_meaning": "255 = excluded from the loss (dynamic object or outside the original image)",
                    "counts": counts,
                    "timing_s": {k: {"segments": len(v), "median": float(np.median(v)), "total": float(np.sum(v))}

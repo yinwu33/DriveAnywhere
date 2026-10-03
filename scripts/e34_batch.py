@@ -13,12 +13,18 @@ Phase "points" (pair type a), per segment in the order of --segments:
     points     scripts/e34_points_pairs.py        GPU lane (main venv)
     finalize   scripts/e34_finalize.py --cleanup  per-segment meta.json; segments at positions < --keep_first keep
                                                   their reconstruction inputs for phase "gs"
-Phase "gs" (pair type b), for the first --gs_count accepted segments: scripts/run_fusion.py (main venv), run_mesh.py
-(nksr venv), e34_train_gs.py, e34_gs_pairs.py, e34_finalize.py --cleanup; then the other kept segments are cleaned.
+Phase "gs" (pair type b), for the first --gs_count accepted segments among the first --keep_first positions:
+scripts/run_fusion.py (main venv), run_mesh.py (nksr venv), e34_train_gs.py (--train_opts, e.g.
+trainer.optim.num_iters=15000), e34_gs_pairs.py, e34_finalize.py --cleanup, then scripts/e34_manifest.py (so
+<root>/fixer_gs.json is current after every segment); the other kept segments are cleaned as they are finalised by
+phase "points". The lane waits for segments phase "points" has not finished yet, so both phases may run at the same
+time in two runner processes: GPU jobs of all runners are serialised through <root>/gpu_lane.lock (holder pid inside;
+a lock whose holder is gone is stale and taken over).
 
 One GPU job at a time; a GPU job starts only when nvidia-smi reports at least its memory need free (other users share
 the GPU), no other E34 process holds the GPU (a stage started by hand, recognised by "/e34/" or "scripts/e34_" in
-its command line) and <root>/gpu.lock does not exist (create it to keep the GPU lane waiting during manual GPU work).
+its command line), <root>/gpu.lock does not exist (create it to keep the GPU lane waiting during manual GPU work) and
+<root>/gpu_lane.lock is free.
 New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
 failed (stage, log) and the batch goes on; --max_failures failures stop it. Stage output goes to
 <log_root>/e34_<scene_id>.log, the schedule to <log_root>/e34_batch_<phase>.log, the state to <root>/batch_<phase>.json.
@@ -28,6 +34,7 @@ Example (any venv; the stages use the venvs under --venvs):
         --venvs .venvs --cuda_home $HOME/cuda-12.6 --log_root results/_logs \
         --remote onedrive:/Projects/P05_DriveAnywhere/waymo_processed/training --tpslimit 8 --max_raw 12 \
         --calib_jobs 4 --calib_threads 16 --keep_first 30 --gs_count 20 --min_free_gb 150 --max_failures 8
+    python scripts/e34_batch.py --phase gs ... --train_opts trainer.optim.num_iters=15000   # may run alongside
 """
 import argparse
 import json
@@ -164,9 +171,52 @@ class Batch:
                     busy.append(pid)
         return busy
 
+    def lane_lock_holder(self):
+        """pid in <root>/gpu_lane.lock, or None when there is no lock or its holder is gone (stale, removed)."""
+        path = self.p("gpu_lane.lock")
+        if not os.path.exists(path):
+            return None
+        pid = int(open(path).read().strip())
+        if pid == os.getpid() or os.path.exists(f"/proc/{pid}"):
+            return pid
+        os.remove(path)
+        return None
+
+    def acquire_lane(self):
+        """Take <root>/gpu_lane.lock for this runner (waits while another live runner holds it)."""
+        path = self.p("gpu_lane.lock")
+        while True:
+            holder = self.lane_lock_holder()
+            if holder == os.getpid():
+                return
+            if holder is None:
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    time.sleep(1)
+                    continue
+                with os.fdopen(fd, "w") as f:
+                    f.write(str(os.getpid()))
+                return
+            time.sleep(10)
+
+    def release_lane(self):
+        assert self.lane_lock_holder() == os.getpid(), "releasing a GPU lane this runner does not hold"
+        os.remove(self.p("gpu_lane.lock"))
+
     def wait_gpu(self, need):
+        """Hold the GPU lane and wait until the GPU has room: callers release it with release_lane after the job."""
+        self.acquire_lane()
         while self.gpu_free_gb() < need or self.other_e34_gpu_jobs() or os.path.exists(self.p("gpu.lock")):
             time.sleep(20)
+
+    def run_gpu(self, s, stage):
+        """One GPU stage under the GPU lane lock."""
+        self.wait_gpu(GPU_NEED_GB[stage])
+        try:
+            return self.run(s, stage, self.stage_args(s, stage))
+        finally:
+            self.release_lane()
 
     # state tests
     def finished(self, s):
@@ -279,17 +329,14 @@ class Batch:
             kind, pos, s = job
             if kind == "masks":
                 remove(os.path.join(self.work(s), "masks_orig"))  # a half-written earlier try
-                self.wait_gpu(GPU_NEED_GB["masks"])
-                self.run(s, "masks", self.stage_args(s, "masks"))
+                self.run_gpu(s, "masks")
                 continue
             if not os.path.exists(os.path.join(self.work(s), POSE, "meta.json")):
                 remove(os.path.join(self.work(s), POSE))
-                self.wait_gpu(GPU_NEED_GB["pose"])
-                if not self.run(s, "pose", self.stage_args(s, "pose")):
+                if not self.run_gpu(s, "pose"):
                     continue
             remove(os.path.join(self.pairs(s), "points"))
-            self.wait_gpu(GPU_NEED_GB["points"])
-            if not self.run(s, "points", self.stage_args(s, "points")):
+            if not self.run_gpu(s, "points"):
                 continue
             self.finalize(s, keep=pos < self.a.keep_first)
 
@@ -331,43 +378,66 @@ class Batch:
                 self.run(s, "diag", self.stage_args(s, "diag"))
 
     # phase "gs"
+    def run_manifest(self):
+        argv = [self.py("main"), "scripts/e34_manifest.py", "--segments", self.a.segments, "--pairs_root", self.p("pairs"),
+                "--test_every", str(self.a.test_every), "--prompt", self.a.prompt]
+        self.run({"scene_id": "manifest"}, "manifest", argv)
+
+    def accepted_meta(self, s):
+        """The points-phase meta.json of a segment, or None before phase "points" has finalised it."""
+        f = os.path.join(self.pairs(s), "meta.json")
+        return json.load(open(f)) if os.path.exists(f) else None
+
+    def gs_segment(self, s):
+        """fusion, mesh, train, render, finalize for one accepted segment with its reconstruction inputs kept."""
+        w = self.work(s)
+        fusion = os.path.join(w, f"{POSE}__{FRONT_MASKS}")
+        steps = [("fusion", os.path.join(fusion, "meta.json")), ("mesh", os.path.join(fusion, "mesh_nksr.json")),
+                 ("train", os.path.join(w, "gs", "E5f", s["scene_id"], "meta.json")),
+                 ("render", os.path.join(self.pairs(s), "gs.json"))]
+        for stage, marker in steps:
+            if os.path.exists(marker):
+                continue
+            if stage == "train":
+                remove(os.path.join(w, "gs"))
+            if stage == "render":
+                remove(os.path.join(self.pairs(s), "gs"))
+            ok = self.run_gpu(s, stage) if stage in GPU_NEED_GB else self.run(s, stage, self.stage_args(s, stage))
+            if not ok:
+                return False
+        return self.finalize(s, keep=False)
+
     def gs_lane(self):
-        done = 0
-        for pos, s in enumerate(self.segs[: self.a.keep_first]):
-            if self.stop is not None:
-                return
-            meta_f = os.path.join(self.pairs(s), "meta.json")
-            if not os.path.exists(meta_f) or not json.load(open(meta_f))["accepted"]:
+        """gs pairs for the first gs_count accepted segments of the first keep_first positions; the others are cleaned."""
+        todo = self.segs[: self.a.keep_first]
+        attempted = set()
+        while self.stop is None:
+            metas = {s["scene_id"]: self.accepted_meta(s) for s in todo}
+            with_gs = [s for s in todo if metas[s["scene_id"]] is not None and os.path.exists(os.path.join(self.pairs(s), "gs.json"))]
+            pending = [s for s in todo if metas[s["scene_id"]] is None and self.active(s)]
+            job = None
+            for s in todo:
+                m = metas[s["scene_id"]]
+                if m is None or not m["accepted"] or s in with_gs or s["scene_id"] in attempted or not self.active(s):
+                    continue
+                job = s
+                break
+            if len(with_gs) >= self.a.gs_count and job is not None:
+                # enough gs segments: the remaining kept reconstructions are only cleaned
+                if os.path.exists(os.path.join(self.work(job), POSE)):
+                    self.finalize(job, keep=False)
+                attempted.add(job["scene_id"])
                 continue
-            if done >= self.a.gs_count:
-                if os.path.exists(os.path.join(self.work(s), POSE)):
-                    self.finalize(s, keep=False)
-                continue
-            done += 1
-            if os.path.exists(os.path.join(self.pairs(s), "gs.json")):
+            if job is None:
+                if not pending:
+                    return
+                time.sleep(30)
                 continue
             if not self.check_disk():
                 return
-            w = self.work(s)
-            fusion = os.path.join(w, f"{POSE}__{FRONT_MASKS}")
-            steps = [("fusion", os.path.join(fusion, "meta.json")), ("mesh", os.path.join(fusion, "mesh_nksr.json")),
-                     ("train", os.path.join(w, "gs", "E5f", s["scene_id"], "meta.json")),
-                     ("render", os.path.join(self.pairs(s), "gs.json"))]
-            ok = True
-            for stage, marker in steps:
-                if os.path.exists(marker):
-                    continue
-                if stage == "train":
-                    remove(os.path.join(w, "gs"))
-                if stage == "render":
-                    remove(os.path.join(self.pairs(s), "gs"))
-                if stage in GPU_NEED_GB:
-                    self.wait_gpu(GPU_NEED_GB[stage])
-                if not self.run(s, stage, self.stage_args(s, stage)):
-                    ok = False
-                    break
-            if ok:
-                self.finalize(s, keep=False)
+            attempted.add(job["scene_id"])
+            if self.gs_segment(job):
+                self.run_manifest()
 
     def main(self):
         self.commit = git_commit()
@@ -407,6 +477,8 @@ def main() -> None:
     parser.add_argument("--max_failures", type=int, required=True)
     parser.add_argument("--limit", type=int, default=None, help="only the first N selected segments")
     parser.add_argument("--train_opts", nargs="*", default=[], help="OmegaConf overrides for e34_train_gs.py")
+    parser.add_argument("--test_every", type=int, default=10, help="scripts/e34_manifest.py --test_every (phase gs)")
+    parser.add_argument("--prompt", default="remove degradation", help="scripts/e34_manifest.py --prompt (phase gs)")
     args = parser.parse_args()
     args.venvs = os.path.abspath(args.venvs)
     Batch(args).main()
