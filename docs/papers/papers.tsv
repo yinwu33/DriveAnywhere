@@ -54,3 +54,12 @@
 2511.10647	DA3	Depth Anything 3: Recovering the Visual Space from Any Views
 2502.15635	Para-Lane	Para-Lane: Multi-Lane Dataset Registering Parallel Scans for Benchmarking Novel View Synthesis
 2406.18360	XLD	XLD: A Cross-Lane Dataset for Benchmarking Novel Driving View Synthesis
+2412.05256	EUVS	Extrapolated Urban View Synthesis Benchmark
+2608.12442	MV2	MV2: Multi-View Multi-Vehicle Driving Dataset for Novel View Synthesis
+2407.08280	WayveScenes101	WayveScenes101: A Dataset and Benchmark for Novel View Synthesis in Autonomous Driving
+2602.20673	GA-Drive	GA-Drive: Geometry-Appearance Decoupled Modeling for Free-viewpoint Driving Scene Generation
+2508.14041	LongSplat	LongSplat: Robust Unposed 3D Gaussian Splatting for Casual Long Videos
+2403.20309	InstantSplat	InstantSplat: Sparse-view Gaussian Splatting in Seconds
+2607.11184	GeoGS-SLAM	GeoGS-SLAM: Online Monocular Reconstruction Using Gaussian Splatting with Geometric Priors
+2509.23402	WorldSplat	WorldSplat: Gaussian-Centric Feed-Forward 4D Scene Generation for Autonomous Driving
+2409.12753	DrivingForward	DrivingForward: Feed-forward 3D Gaussian Splatting for Driving Scene Reconstruction from Flexible Surround-view Input

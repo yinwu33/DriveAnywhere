@@ -458,3 +458,67 @@
 - **对应**：同 Para-Lane，但是仿真数据，优先级低于 Para-Lane。
 - **状态**：候选（参考）。
 
+
+### 候选（论文基线与评测，2026-10-05 加入，见 [PAPER_PLAN.md](../PAPER_PLAN.md)）
+
+标题和日期 2026-10-05 用 arXiv API 核对；描述只依据摘要和项目页。
+
+#### EUVS
+*Extrapolated Urban View Synthesis Benchmark*，arXiv [2412.05256](https://arxiv.org/abs/2412.05256)（2024-12），[项目页](https://ai4ce.github.io/EUVS-Benchmark/)
+- **做了什么**：用公开自动驾驶数据里的多趟、多车、多相机记录构造外推视角的真值，104 个案例、约 9 万帧，分三个难度等级，另有"训练和测试在不同车道"的纯平移实验。结论是现有方法过拟合训练视角，扩散先验和几何改进在大视角变化下不能根本解决。
+- **对应**：论文的真实横移真值（PAPER_PLAN 第 2 节）。数据 CC BY-SA 4.0，HF 下载。
+- **状态**：候选（评测）。
+
+#### MV2
+*MV2: Multi-View Multi-Vehicle Driving Dataset for Novel View Synthesis*，arXiv [2608.12442](https://arxiv.org/abs/2608.12442)（2026-08，ECCV 2026）
+- **做了什么**：汽车、滑板车、无人机同步采集不同轨迹，50 个场景、1.2 万张图，位姿用 SfM 配准并人工核对对应点。结论：视角差越大性能越差，前馈位姿估计明显不如优化方法。
+- **对应**：远超评测范围的大视角压力测试（可选）。
+- **状态**：候选（评测，可选）。
+
+#### WayveScenes101
+*WayveScenes101: A Dataset and Benchmark for Novel View Synthesis in Autonomous Driving*，arXiv [2407.08280](https://arxiv.org/abs/2407.08280)（2024-07）
+- **做了什么**：101 个驾驶场景，用相对训练视角离轴的留出相机评测泛化。
+- **对应**：与我们用 Waymo 侧前相机做外推真值的做法相同，可在相关工作里引用。
+- **状态**：参考。
+
+#### GA-Drive
+*GA-Drive: Geometry-Appearance Decoupled Modeling for Free-viewpoint Driving Scene Generation*，arXiv [2602.20673](https://arxiv.org/abs/2602.20673)（2026-02）
+- **做了什么**：几何与外观解耦，先用几何生成伪视角，再用扩散模型变成真实感图像。按 ReconDreamer 的协议（Waymo 验证集同样的场景，每帧横移 0.1 m、40 帧共 4 m）报 NTA-IoU 0.558、NTL-IoU 56.83、FID 49.77，并列出 PVG、S³Gaussian、DriveDreamer4D、ReconDreamer 的同协议数字。输入含 LiDAR。
+- **对应**：M4 的协议和可引用的对照数字。
+- **状态**：参考。
+
+#### LongSplat
+*LongSplat: Robust Unposed 3D Gaussian Splatting for Casual Long Videos*，arXiv [2508.14041](https://arxiv.org/abs/2508.14041)（2025-08）
+- **做了什么**：无位姿长视频的 3DGS；对比 NoPe-NeRF、LocalRF、CF-3DGS（长视频 OOM）、MASt3R + Scaffold-GS。
+- **对应**：A 类无位姿基线。
+- **状态**：候选（基线）。
+
+#### InstantSplat
+*InstantSplat: Sparse-view Gaussian Splatting in Seconds*，arXiv [2403.20309](https://arxiv.org/abs/2403.20309)（2024-03）
+- **做了什么**：用 MASt3R / DUSt3R 的点图初始化，联合优化位姿和高斯，免 SfM。
+- **对应**：A 类无位姿基线；长序列可能要分段。
+- **状态**：候选（基线）。
+
+#### GeoGS-SLAM
+*GeoGS-SLAM: Online Monocular Reconstruction Using Gaussian Splatting with Geometric Priors*，arXiv [2607.11184](https://arxiv.org/abs/2607.11184)（2026-07）
+- **做了什么**：几何先验辅助的在线单目 GS-SLAM，在 Waymo 的无标定设定下与 MonoGS、SLAM3R、VGGT-SLAM 对比。
+- **对应**：A 类可选基线（在线单目、无标定，与我们的输入一致）。代码待查。
+- **状态**：候选（基线，可选）。
+
+#### WorldSplat
+*WorldSplat: Gaussian-Centric Feed-Forward 4D Scene Generation for Autonomous Driving*，arXiv [2509.23402](https://arxiv.org/abs/2509.23402)（2025-09，ICLR 2026）
+- **做了什么**：前馈地把生成扩散与显式 3D 重建结合，生成动态 4D 高斯，沿任意相机轨迹（包括偏移的 ego 轨迹）渲染，不做逐场景优化。
+- **对应**：B 类前馈对照；输入是否支持单个前视相机待查。
+- **状态**：参考。
+
+#### DrivingForward
+*DrivingForward: Feed-forward 3D Gaussian Splatting for Driving Scene Reconstruction from Flexible Surround-view Input*，arXiv [2409.12753](https://arxiv.org/abs/2409.12753)（2024-09，AAAI 2025）
+- **做了什么**：联合训练位姿、深度和高斯网络，从环视多帧输入前馈重建驾驶场景。
+- **对应**：B 类前馈对照；只给 FRONT 能否运行待查。
+- **状态**：参考。
+
+#### AnySplat
+*AnySplat: Feed-forward 3D Gaussian Splatting from Unconstrained Views*，ACM TOG（[DOI 10.1145/3763326](https://dl.acm.org/doi/10.1145/3763326)）
+- **做了什么**：无位姿、无标定多视图的前馈 3DGS，零样本下与需要位姿的方法相当。
+- **对应**：B 类前馈基线（零样本、输入与我们一致）。arXiv 编号未核对，未加入 papers.tsv。
+- **状态**：候选（基线）。
