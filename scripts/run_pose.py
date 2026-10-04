@@ -80,6 +80,8 @@ def main() -> None:
     parser.add_argument("--scale", required=True, choices=SCALE_STRATEGIES)
     parser.add_argument("--max_views", type=int, required=True)
     parser.add_argument("--resolution_set", type=int, default=518)
+    parser.add_argument("--minibatch_size", type=int, default=None,
+                        help="fixed MapAnything dense-head minibatch (bounds GPU memory); default: adaptive to free memory")
     args = parser.parse_args()
 
     commit = git_commit()  # at start: later edits must not change what this run records
@@ -92,7 +94,7 @@ def main() -> None:
     if args.backend == "mapanything":
         from dashrecon.pose.mapanything import MapAnythingBackend
 
-        backend = MapAnythingBackend(args.model_id, args.max_views, args.resolution_set)
+        backend = MapAnythingBackend(args.model_id, args.max_views, args.resolution_set, minibatch_size=args.minibatch_size)
     extra = {}
     if args.camera_dir is None:
         result = backend.estimate(paths, intrinsics=None, poses_c2w=None)

@@ -57,9 +57,32 @@ MT_SCENES = (
 )
 MULTI_TRAVERSALS = {"mt1": ("mt1a", "mt1b")}
 
+# E34 (docs/E34_DATA.md): Waymo training segments that become repair-model training pairs, addressed as
+# "wt<idx:03d>", idx = line index in data/waymo_train_list.txt (the drivestudio processed-scene index). Their FRONT
+# image tree is the undistorted, renumbered one of scripts/e34_calib.py (frames counted from 0 there), so the scene
+# always spans all of its images.
+TRAINING_LIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "waymo_train_list.txt")
+TRAINING_PREFIX = "wt"
+
+
+def training_scene_id(idx: int) -> str:
+    """Scene id of the Waymo training segment on line ``idx`` of data/waymo_train_list.txt (E34)."""
+    assert 0 <= idx < 1000, idx
+    return f"{TRAINING_PREFIX}{idx:03d}"
+
+
+def training_scene(scene_id: str) -> Scene:
+    """Scene of an E34 training segment id ``wt<idx:03d>``."""
+    assert len(scene_id) == len(TRAINING_PREFIX) + 3 and scene_id[len(TRAINING_PREFIX):].isdigit(), scene_id
+    idx = int(scene_id[len(TRAINING_PREFIX):])
+    names = [line.strip() for line in open(TRAINING_LIST) if line.strip()]
+    return Scene(scene_id, "training", idx, names[idx], "e34_training", "E34 repair-model training segment", 0, -1)
+
 
 def get_scene(scene_id: str) -> Scene:
-    """Look up a development or multi-traversal scene by id."""
+    """Look up a development, multi-traversal or E34 training scene by id."""
+    if scene_id.startswith(TRAINING_PREFIX):
+        return training_scene(scene_id)
     known = DEV_SCENES + MT_SCENES
     matches = [s for s in known if s.scene_id == scene_id]
     assert len(matches) == 1, f"unknown scene_id {scene_id}; known: {[s.scene_id for s in known]}"

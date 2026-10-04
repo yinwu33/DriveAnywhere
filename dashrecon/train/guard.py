@@ -10,8 +10,13 @@ IMAGE_ROOTS = ("data/waymo/processed/validation", "data/dashrecon/_undistorted/c
                "data/dashrecon/_undistorted/calib-glomap-mt1")
 
 
-def assert_non_oracle(cfg: OmegaConf) -> None:
-    """Fail loudly if a merged drivestudio config could read GT pose, LiDAR, boxes, calibration or GT masks."""
+def assert_non_oracle(cfg: OmegaConf, image_roots: tuple = IMAGE_ROOTS, product_roots: tuple = (DASHRECON_ROOT,)) -> None:
+    """Fail loudly if a merged drivestudio config could read GT pose, LiDAR, boxes, calibration or GT masks.
+
+    ``image_roots`` / ``product_roots``: where FRONT images and dashrecon products may come from. The defaults are the
+    repository's development data; E34 (scripts/e34_train_gs.py) passes its own undistorted FRONT-only tree and product
+    directory, which hold nothing else either.
+    """
     d, ps = cfg.data, cfg.data.pixel_source
     assert d.lidar_source.load_lidar is False, "LiDAR must not be loaded"
     assert d.frames_from_images is True, "frame count must come from images, not ego_pose/"
@@ -19,7 +24,7 @@ def assert_non_oracle(cfg: OmegaConf) -> None:
     assert list(ps.cameras) == [0], f"FRONT camera only, got {list(ps.cameras)}"
     assert ps.load_objects is False and ps.load_smpl is False, "GT boxes must not be loaded"
     assert ps.undistort is False, "undistortion would use Waymo calibration"
-    assert d.data_root in IMAGE_ROOTS, f"images must come from {IMAGE_ROOTS}, got {d.data_root}"
+    assert d.data_root in image_roots, f"images must come from {image_roots}, got {d.data_root}"
     assert set(cfg.model.keys()) <= ALLOWED_MODELS, f"only static background models allowed: {set(cfg.model.keys())}"
     init = cfg.model.Background.init
     assert "from_lidar" not in init, "LiDAR initialisation is oracle"
@@ -28,4 +33,4 @@ def assert_non_oracle(cfg: OmegaConf) -> None:
     if "mesh" in cfg.trainer.losses:
         paths.append(cfg.trainer.losses.mesh.path)
     for p in paths:
-        assert str(p).startswith(DASHRECON_ROOT), f"non-oracle inputs must be dashrecon products: {p}"
+        assert str(p).startswith(product_roots), f"non-oracle inputs must be dashrecon products under {product_roots}: {p}"
