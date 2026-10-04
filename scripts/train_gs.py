@@ -14,6 +14,9 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
     E40  E5f with the depth of Depth Anything 3 at 1008 px for the GLOMAP poses (scripts/run_depth_da3.py,
          pose-glomap_depth-da3) instead of MapAnything's 518 px: fusion, NKSR mesh, depth supervision all from it
          (docs/EXPERIMENTS.md E39 / E40: depth accuracy, not point density, limits the observed surfaces).
+    E41  E5f with the dynamic mask reduced to the moving objects (scripts/refine_dynamic_masks.py: per-region multi-view
+         depth consistency, people and two-wheelers always masked): parked vehicles are fused, meshed and supervised
+         like the rest of the static scene instead of being excluded everywhere (docs/EXPERIMENTS.md E41).
     MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
          traversal); novel views get the first traversal's appearance.
     MT1e / MT1x / MT1m  MT1 / MT1app / MTGS-style (per-traversal higher SH bands, one sky per traversal), all three with
@@ -51,11 +54,12 @@ PIPELINES = {
     "glomap-mt1": ("pose-glomap-mt1_depth-mapanything", "mask-gsam2_sky-segformer_img-glomap-mt1",
                    "data/dashrecon/_undistorted/calib-glomap-mt1"),
     "glomap-da3": ("pose-glomap_depth-da3", "mask-gsam2_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
+    "glomap-mv": ("pose-glomap_depth-mapanything", "mask-gsam2mv_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
                "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
-               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3"}
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv"}
 MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
 # per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
 TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
@@ -92,7 +96,7 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "E40") + MT1_EXPS:
+    if exp in ("E5f", "E40", "E41") + MT1_EXPS:
         opts += E5F_REG
     if exp in MT1_EXPS:
         # drivestudio's front_center_interp video would interpolate across the jump between traversals, and its rays
