@@ -24,7 +24,7 @@ a lock whose holder is gone is stale and taken over).
 One GPU job at a time; a GPU job starts only when nvidia-smi reports at least its memory need free (other users share
 the GPU), no other E34 process holds the GPU (a stage started by hand, recognised by "/e34/" or "scripts/e34_" in
 its command line), <root>/gpu.lock does not exist (create it to keep the GPU lane waiting during manual GPU work) and
-<root>/gpu_lane.lock is free.
+<root>/gpu_lane.lock is free; phase gs has priority over phase points for the lane (<root>/gpu_lane.want.gs).
 New work stops when /home has less than --min_free_gb free. A stage that exits non-zero marks the segment
 failed (stage, log) and the batch goes on; --max_failures failures stop it. Stage output goes to
 <log_root>/e34_<scene_id>.log, the schedule to <log_root>/e34_batch_<phase>.log, the state to <root>/batch_<phase>.json.
@@ -207,18 +207,38 @@ class Batch:
     def gpu_ready(self, need):
         return self.gpu_free_gb() >= need and not self.other_e34_gpu_jobs() and not os.path.exists(self.p("gpu.lock"))
 
+    def gs_runner_waiting(self):
+        """True while a live phase-gs runner has announced that it wants the GPU lane (<root>/gpu_lane.want.gs)."""
+        path = self.p("gpu_lane.want.gs")
+        if not os.path.exists(path):
+            return False
+        pid = int(open(path).read().strip())
+        if os.path.exists(f"/proc/{pid}"):
+            return True
+        os.remove(path)
+        return False
+
     def wait_gpu(self, need):
         """Wait until the GPU has room, then take the GPU lane (re-checking the room while holding it): callers release
         it with release_lane after the job. The lane is never held while waiting for memory, so a job that needs much
-        (MapAnything, 30 GB) does not block a small one of the other runner during the parent's large GPU jobs."""
-        while True:
-            while not self.gpu_ready(need):
-                time.sleep(20)
-            self.acquire_lane()
-            if self.gpu_ready(need):
-                return
-            self.release_lane()
-            time.sleep(5)
+        (MapAnything, 30 GB) does not block a small one of the other runner during the parent's large GPU jobs.
+        Phase gs has priority: it announces its wait in <root>/gpu_lane.want.gs and phase points does not take the
+        lane while that file belongs to a live runner (the points runner's back-to-back jobs starved the gs runner
+        for an hour otherwise; the gs pairs are wanted first)."""
+        want = self.p(f"gpu_lane.want.{self.a.phase}")
+        with open(want, "w") as f:
+            f.write(str(os.getpid()))
+        try:
+            while True:
+                while not self.gpu_ready(need) or (self.a.phase == "points" and self.gs_runner_waiting()):
+                    time.sleep(20)
+                self.acquire_lane()
+                if self.gpu_ready(need):
+                    return
+                self.release_lane()
+                time.sleep(5)
+        finally:
+            os.remove(want)
 
     def run_gpu(self, s, stage):
         """One GPU stage under the GPU lane lock."""
