@@ -30,12 +30,13 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--timestep", type=int, required=True)
     parser.add_argument("--batch", type=int, required=True)
-    parser.add_argument("--cuda_home", default="/usr/local/cuda-12.1")
+    parser.add_argument("--cuda_home", required=True, help="CUDA 12.x toolkit (DECISIONS AA: ~/cuda-12.6 on the H100)")
+    parser.add_argument("--fixer_pkl", help="fine-tuned Fixer weights (E34, scripts/e34_train_fixer.py) instead of nvidia/Fixer")
     args = parser.parse_args()
     os.makedirs(os.path.join(args.out, "renders"), exist_ok=False)
     os.symlink(os.path.abspath(os.path.join(args.src, "refs")), os.path.join(args.out, "refs"))
     names = sorted(os.listdir(os.path.join(args.src, "renders")))
-    fixer = FixerClient(args.timestep, os.path.join(args.out, "fixer_work"), args.cuda_home)
+    fixer = FixerClient(args.timestep, os.path.join(args.out, "fixer_work"), args.cuda_home, args.fixer_pkl)
     t0 = time.time()
     by_cam = {}
     for n in names:  # <t:03d>_<cam>.png; the cameras render at different sizes
@@ -52,7 +53,7 @@ def main() -> None:
             Image.fromarray((np.clip(f, 0, 1) * 255).round().astype(np.uint8)).save(os.path.join(args.out, "renders", n))
     fixer.close()
     with open(os.path.join(args.out, "fix_renders.json"), "w") as f:
-        json.dump({"src": args.src, "frames": len(names), "timestep": args.timestep, "generator": FIXER_REPO_ID,
+        json.dump({"src": args.src, "frames": len(names), "timestep": args.timestep, "generator": FIXER_REPO_ID if args.fixer_pkl is None else args.fixer_pkl,
                    "generator_revision": FIXER_REVISION, "generative": True, "kind": "render-time per-frame enhancement",
                    "runtime_s": time.time() - t0, "dashrecon_commit": git_commit()}, f, indent=2)
     print(f"[fix_renders] {len(names)} frames of {args.src} -> {args.out} ({time.time() - t0:.0f} s)", flush=True)
