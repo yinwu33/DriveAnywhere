@@ -6,7 +6,8 @@ Inputs: --runs label=dir, each dir with renders/<t>_<cam>.png and refs/<t>_<cam>
 <t>_<cam>.png on the GT grid). For every image the real reference is segmented with SegFormer-B5 Cityscapes (the Phase 4
 model) and every pixel gets a class and a region (seen / unseen). Per run, per region and per class: the pixel share
 and the mean absolute colour error (after the per-channel affine colour fit on the seen pixels, as eval_cross_camera),
-and each cell's share of the total error. The real image is the only reference, so this measures fidelity, not realism:
+each cell's share of the total error, and the mean local SSIM of the grey images (Gaussian window, sigma 1.5): structure
+the mean error barely sees, such as lane markings broken into fragments or blurred (E42). The real image is the only reference, so this measures fidelity, not realism:
 it says which content (near road, parked cars, buildings, vegetation, sky) dominates the remaining error.
 
 Output: --out JSON and a printed table (cells with >= 2 % of the error).
@@ -24,11 +25,22 @@ import sys
 import numpy as np
 import torch
 from PIL import Image
+from scipy.ndimage import gaussian_filter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dashrecon.provenance import git_commit  # noqa: E402
 from eval_cross_camera import colour_fit  # noqa: E402
+
+
+def ssim_map(a: np.ndarray, b: np.ndarray, sigma: float = 1.5) -> np.ndarray:
+    """Per-pixel SSIM of two grey images in [0, 1] (Wang et al. 2004 constants, Gaussian window)."""
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    mu_a, mu_b = gaussian_filter(a, sigma), gaussian_filter(b, sigma)
+    va = gaussian_filter(a * a, sigma) - mu_a ** 2
+    vb = gaussian_filter(b * b, sigma) - mu_b ** 2
+    cov = gaussian_filter(a * b, sigma) - mu_a * mu_b
+    return ((2 * mu_a * mu_b + c1) * (2 * cov + c2)) / ((mu_a ** 2 + mu_b ** 2 + c1) * (va + vb + c2))
 
 
 def main() -> None:
@@ -65,13 +77,17 @@ def main() -> None:
     for label, d in runs.items():
         err = np.zeros((2, len(labels)))
         cnt = np.zeros((2, len(labels)))
+        sim = np.zeros((2, len(labels)))
         for n in names:
             ref, ren = load(os.path.join(d, "refs", n)), load(os.path.join(d, "renders", n))
             assert np.array_equal(ref, load(os.path.join(first, "refs", n))), f"{label}: other reference for {n}"
             fitted = colour_fit(ren, ref, ~unseen[n])
             e = np.abs(fitted - ref).mean(-1)
+            grey = np.array([0.299, 0.587, 0.114], np.float32)
+            sm = ssim_map(np.clip(fitted, 0, 1) @ grey, ref @ grey)
             for region, m in ((0, ~unseen[n]), (1, unseen[n])):
                 np.add.at(err[region], classes[n][m], e[m])
+                np.add.at(sim[region], classes[n][m], sm[m])
                 np.add.at(cnt[region], classes[n][m], 1)
         total = err.sum()
         cells = []
@@ -80,7 +96,8 @@ def main() -> None:
                 if cnt[region, c] == 0:
                     continue
                 cells.append({"region": rname, "class": cname, "pixel_share": float(cnt[region, c] / cnt.sum()),
-                              "mean_abs_err": float(err[region, c] / cnt[region, c]), "error_share": float(err[region, c] / total)})
+                              "mean_abs_err": float(err[region, c] / cnt[region, c]), "error_share": float(err[region, c] / total),
+                              "mean_ssim": float(sim[region, c] / cnt[region, c])})
         cells.sort(key=lambda x: -x["error_share"])
         out[label] = {"mean_abs_err": float(total / cnt.sum()), "unseen_pixel_share": float(cnt[1].sum() / cnt.sum()),
                       "unseen_error_share": float(err[1].sum() / total), "cells": cells}
@@ -88,7 +105,7 @@ def main() -> None:
               f"pixels, {out[label]['unseen_error_share']:.0%} of the error", flush=True)
         for c in cells:
             if c["error_share"] >= 0.02:
-                print(f"    {c['region']:6s} {c['class']:14s} pixels {c['pixel_share']:6.1%}  |err| {c['mean_abs_err']:.3f}  error {c['error_share']:6.1%}", flush=True)
+                print(f"    {c['region']:6s} {c['class']:14s} pixels {c['pixel_share']:6.1%}  |err| {c['mean_abs_err']:.3f}  error {c['error_share']:6.1%}  ssim {c['mean_ssim']:.3f}", flush=True)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump({"reads_gt": True, "runs": runs, "cams": args.cams, "images": len(names), "unseen_dir": args.unseen_dir,
