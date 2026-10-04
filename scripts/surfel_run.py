@@ -8,6 +8,9 @@ same scene, e.g. the sky-completed E5fs) and replacing its Background Gaussians:
 loader config stay; CamPose embeddings are zeroed (the cloud was built with the loader's own poses). The evaluation
 scripts (eval_front_heldout, eval_view_range, eval_cross_camera, vis_freeview, view_gs) then run unchanged.
 
+--sh_degree0 stores the colour as logit(rgb) with no higher SH bands (model.Background.ctrl.sh_degree 0 in the copied
+config): 14 instead of 59 floats per point, so tens of millions of surfels fit on the GPU.
+
 The question it answers (user, 10-04): is 3DGS needed for the observed content, or is a dense coloured point cloud
 with real pixels better than the optimised Gaussians (the haze and floaters of yaw 20-45 come from the optimisation)?
 
@@ -24,6 +27,7 @@ import time
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from scipy.spatial import cKDTree
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -75,6 +79,7 @@ def main() -> None:
     parser.add_argument("--thickness", type=float, default=0.1, help="normal-axis scale as a fraction of the radius")
     parser.add_argument("--opacity", type=float, default=0.99)
     parser.add_argument("--max_points", type=int, default=0, help="random subset (0 = all)")
+    parser.add_argument("--sh_degree0", action="store_true", help="logit colours, no SH bands (memory for > 20M points)")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     os.makedirs(args.out_log_dir, exist_ok=False)
@@ -101,12 +106,20 @@ def main() -> None:
     bg["_means"] = f32(xyz)
     bg["_scales"] = f32(np.log(np.stack([radius, radius, radius * args.thickness], 1)))
     bg["_quats"] = f32(rotation_from_normals(nrm))
-    bg["_features_dc"] = f32((rgb - 0.5) / C0)
-    bg["_features_rest"] = torch.zeros(n, 15, 3)
+    if args.sh_degree0:
+        bg["_features_dc"] = f32(np.log(np.clip(rgb, 1e-4, 1 - 1e-4) / (1 - np.clip(rgb, 1e-4, 1 - 1e-4))))
+        bg["_features_rest"] = torch.zeros(n, 0, 3)
+    else:
+        bg["_features_dc"] = f32((rgb - 0.5) / C0)
+        bg["_features_rest"] = torch.zeros(n, 15, 3)
     bg["_opacities"] = torch.full((n, 1), float(np.log(args.opacity / (1 - args.opacity))))
     state["models"]["CamPose"]["embeds.weight"].zero_()
     torch.save(state, os.path.join(args.out_log_dir, "checkpoint_final.pth"))
-    shutil.copyfile(os.path.join(args.template, "config.yaml"), os.path.join(args.out_log_dir, "config.yaml"))
+    cfg = OmegaConf.load(os.path.join(args.template, "config.yaml"))
+    if args.sh_degree0:
+        assert int(cfg.model.Background.ctrl.sh_degree) == 3, cfg.model.Background.ctrl.sh_degree
+        cfg.model.Background.ctrl.sh_degree = 0
+    OmegaConf.save(cfg, os.path.join(args.out_log_dir, "config.yaml"))
     with open(os.path.join(args.out_log_dir, "meta.json"), "w") as f:
         json.dump({"exp": args.exp, "kind": "fixed surfels from a fused point cloud, no optimisation; Sky / Affine from the template",
                    "ply": os.path.abspath(args.ply), "template": os.path.abspath(args.template), "points": n, **vars(args),
