@@ -48,8 +48,9 @@ def main() -> None:
     labels = [seg.config.id2label[i] for i in range(seg.config.num_labels)]
     runs = dict(r.split("=", 1) for r in args.runs)
     first = next(iter(runs.values()))
-    names = sorted(n for n in os.listdir(os.path.join(first, "renders")) if int(n.split("_")[1].split(".")[0]) in args.cams)
-    assert names, "no renders of these cameras"
+    names = sorted(n for n in os.listdir(os.path.join(first, "renders")) if int(n.split("_")[1].split(".")[0]) in args.cams
+                   and os.path.exists(os.path.join(args.unseen_dir, n)))  # the unseen masks exist every 5th frame only
+    assert names, "no renders of these cameras with an unseen mask"
     load = lambda p: np.asarray(Image.open(p).convert("RGB"), dtype=np.float32) / 255.0  # noqa: E731
     classes, unseen = {}, {}
     with torch.no_grad():
