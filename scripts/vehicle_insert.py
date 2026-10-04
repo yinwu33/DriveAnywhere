@@ -3,7 +3,7 @@
 Per vehicle of --instances (scripts/vehicle_instances.py) with an asset (a 3DGS PLY: x y z, f_dc_*, opacity logit,
 scale_* log, rot_* wxyz; from TRELLIS or SAM 3D Objects, step 2) the asset is fitted to the vehicle with a similarity
 transform about world z (up): its up axis (--asset_up) to z, its longest ground axis along the vehicle's length axis,
-its bottom on the vehicle's ground height, and yaw (both directions of the axis, then a fine search), scale and ground
+its bottom on the vehicle's ground height (with --asset_up auto, each axis is tried as up and the best fit kept), and yaw (both directions of the axis, then a fine search), scale and ground
 position chosen by the mean silhouette IoU against the vehicle's own instance masks (--inst_dir) in up to --fit_frames
 of its detections not touching the image border (asset centres projected with the loader's poses and intrinsics at
 1/--fit_down resolution, splatted as discs of their screen-space size). The vehicle's instance masks only show what is
@@ -98,7 +98,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for a in ("--log_dir", "--instances", "--inst_dir", "--pose_dir", "--assets_dir", "--out_log_dir", "--exp"):
         parser.add_argument(a, required=True)
-    parser.add_argument("--asset_up", choices=list(AXES), required=True)
+    parser.add_argument("--asset_up", choices=list(AXES) + ["auto"], required=True, help="auto: the axis with the best fit")
     parser.add_argument("--fit_frames", type=int, default=12)
     parser.add_argument("--fit_down", type=int, default=4)
     parser.add_argument("--fit_points", type=int, default=6000)
@@ -131,8 +131,6 @@ def main() -> None:
         if not paths:
             continue
         asset = read_gs_ply(paths[0])
-        r_can, lo, hi = canonical(asset, args.asset_up)
-        length, width, height = hi - lo
         # fit frames: the vehicle's own detections not touching the border, spread over the track
         dets = [(f, i) for f, i in inst["detections"]]
         ok = []
@@ -152,71 +150,82 @@ def main() -> None:
         ks[:, :2] /= args.fit_down
         w2c = torch.tensor(np.stack([np.linalg.inv(poses[fidx[f]]) for f, _, _ in ok]), dtype=torch.float32, device=dev)
 
-        # canonical asset points (opaque centres), footprint centred, bottom at 0
-        op = 1 / (1 + np.exp(-asset["opacity"]))
-        pts = (asset["xyz"][op > 0.5] @ r_can.T)
-        pts = pts - np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
-        sel = np.random.default_rng(0).choice(len(pts), min(args.fit_points, len(pts)), replace=False)
-        p_can = torch.tensor(pts[sel], dtype=torch.float32, device=dev)
         ax = np.array(inst["axis"][:2])
         perp = np.array([-ax[1], ax[0]])
         c0 = np.array(inst["centre"][:2])
-        s_len = inst["extent"][0] / length
-        s_h = inst["extent"][2] / height
 
-        def score(yaw, s, da, dp):
-            """Mean silhouette IoU of candidates (tensors of equal length)."""
-            n = yaw.shape[0]
-            cy, sy = torch.cos(yaw), torch.sin(yaw)
-            a = torch.tensor(ax, dtype=torch.float32, device=dev)
-            b = torch.tensor(perp, dtype=torch.float32, device=dev)
-            # world xy of the canonical x / y axes: rotate (ax, perp) by yaw
-            ex = cy[:, None] * a + sy[:, None] * b
-            ey = -sy[:, None] * a + cy[:, None] * b
-            ctr = torch.tensor(c0, dtype=torch.float32, device=dev) + da[:, None] * a + dp[:, None] * b
-            xy = ctr[:, None] + s[:, None, None] * (p_can[None, :, 0:1] * ex[:, None] + p_can[None, :, 1:2] * ey[:, None])
-            z = inst["ground_z"] + s[:, None] * p_can[None, :, 2]
-            world = torch.cat([xy, z[..., None]], -1)  # (n, P, 3)
-            ious = torch.zeros(n, device=dev)
-            for j in range(len(ok)):
-                pc = world @ w2c[j, :3, :3].T + w2c[j, :3, 3]
-                zc = pc[..., 2].clamp(min=1e-3)
-                u = (ks[j, 0, 0] * pc[..., 0] / zc + ks[j, 0, 2]).round().long()
-                v = (ks[j, 1, 1] * pc[..., 1] / zc + ks[j, 1, 2]).round().long()
-                inside = (pc[..., 2] > 0.05) & (u >= 0) & (u < wd) & (v >= 0) & (v < hd)
-                occ = torch.zeros(n, hd * wd, device=dev)
-                idx = (v.clamp(0, hd - 1) * wd + u.clamp(0, wd - 1))
-                occ.scatter_(1, idx, inside.float())
-                occ = F.max_pool2d(occ.view(n, 1, hd, wd), 5, 1, 2).view(n, -1) > 0
-                m = masks[j].view(1, -1)
-                inter = (occ & m).sum(1).float()
-                union = (occ | m).sum(1).float().clamp(min=1)
-                ious += inter / union
-            return ious / len(ok)
+        def fit_up(up):
+            """Best (IoU, yaw, scale, shift along, shift across) with the asset's up axis ``up``."""
+            r_can, lo, hi = canonical(asset, up)
+            length, width, height = hi - lo
+            # canonical asset points (opaque centres), footprint centred, bottom at 0
+            op = 1 / (1 + np.exp(-asset["opacity"]))
+            pts = (asset["xyz"][op > 0.5] @ r_can.T)
+            pts = pts - np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
+            sel = np.random.default_rng(0).choice(len(pts), min(args.fit_points, len(pts)), replace=False)
+            p_can = torch.tensor(pts[sel], dtype=torch.float32, device=dev)
+            s_len = inst["extent"][0] / length
+            s_h = inst["extent"][2] / height
 
-        best = None
-        s_grid = torch.tensor([s_len * f for f in (0.85, 0.92, 1.0, 1.08, 1.16)] + [s_h], device=dev)
-        for base_yaw in (0.0, math.pi):
-            yaws = torch.tensor([base_yaw + math.radians(d) for d in range(-12, 13, 4)], device=dev)
-            da = torch.linspace(-0.3, 0.3, 7, device=dev)
-            dp = torch.linspace(-0.2, 0.5, 8, device=dev) * float(np.sign((c0 - poses[fidx[ok[0][0]]][:2, 3]) @ perp) or 1.0)
-            grid = torch.stack(torch.meshgrid(yaws, s_grid, da, dp, indexing="ij"), -1).view(-1, 4)
-            for chunk in grid.split(256):
-                sc = score(chunk[:, 0], chunk[:, 1], chunk[:, 2], chunk[:, 3])
+            def score(yaw, s, da, dp):
+                """Mean silhouette IoU of candidates (tensors of equal length)."""
+                n = yaw.shape[0]
+                cy, sy = torch.cos(yaw), torch.sin(yaw)
+                a = torch.tensor(ax, dtype=torch.float32, device=dev)
+                b = torch.tensor(perp, dtype=torch.float32, device=dev)
+                # world xy of the canonical x / y axes: rotate (ax, perp) by yaw
+                ex = cy[:, None] * a + sy[:, None] * b
+                ey = -sy[:, None] * a + cy[:, None] * b
+                ctr = torch.tensor(c0, dtype=torch.float32, device=dev) + da[:, None] * a + dp[:, None] * b
+                xy = ctr[:, None] + s[:, None, None] * (p_can[None, :, 0:1] * ex[:, None] + p_can[None, :, 1:2] * ey[:, None])
+                z = inst["ground_z"] + s[:, None] * p_can[None, :, 2]
+                world = torch.cat([xy, z[..., None]], -1)  # (n, P, 3)
+                ious = torch.zeros(n, device=dev)
+                for j in range(len(ok)):
+                    pc = world @ w2c[j, :3, :3].T + w2c[j, :3, 3]
+                    zc = pc[..., 2].clamp(min=1e-3)
+                    u = (ks[j, 0, 0] * pc[..., 0] / zc + ks[j, 0, 2]).round().long()
+                    v = (ks[j, 1, 1] * pc[..., 1] / zc + ks[j, 1, 2]).round().long()
+                    inside = (pc[..., 2] > 0.05) & (u >= 0) & (u < wd) & (v >= 0) & (v < hd)
+                    occ = torch.zeros(n, hd * wd, device=dev)
+                    idx = (v.clamp(0, hd - 1) * wd + u.clamp(0, wd - 1))
+                    occ.scatter_(1, idx, inside.float())
+                    occ = F.max_pool2d(occ.view(n, 1, hd, wd), 5, 1, 2).view(n, -1) > 0
+                    m = masks[j].view(1, -1)
+                    inter = (occ & m).sum(1).float()
+                    union = (occ | m).sum(1).float().clamp(min=1)
+                    ious += inter / union
+                return ious / len(ok)
+
+            best = None
+            s_grid = torch.tensor([s_len * f for f in (0.85, 0.92, 1.0, 1.08, 1.16)] + [s_h], device=dev)
+            for base_yaw in (0.0, math.pi):
+                yaws = torch.tensor([base_yaw + math.radians(d) for d in range(-12, 13, 4)], device=dev)
+                da = torch.linspace(-0.3, 0.3, 7, device=dev)
+                dp = torch.linspace(-0.2, 0.5, 8, device=dev) * float(np.sign((c0 - poses[fidx[ok[0][0]]][:2, 3]) @ perp) or 1.0)
+                grid = torch.stack(torch.meshgrid(yaws, s_grid, da, dp, indexing="ij"), -1).view(-1, 4)
+                for chunk in grid.split(256):
+                    sc = score(chunk[:, 0], chunk[:, 1], chunk[:, 2], chunk[:, 3])
+                    k = int(sc.argmax())
+                    if best is None or float(sc[k]) > best[0]:
+                        best = (float(sc[k]), *[float(x) for x in chunk[k]])
+            # local refinement
+            for step in (0.5, 0.25):
+                yaw0, s0, da0, dp0 = best[1:]
+                cand = torch.tensor([[yaw0 + math.radians(4 * step * i), s0 * (1 + 0.04 * step * j), da0 + 0.06 * step * a, dp0 + 0.06 * step * b]
+                                     for i in (-1, 0, 1) for j in (-1, 0, 1) for a in (-1, 0, 1) for b in (-1, 0, 1)], device=dev)
+                sc = score(cand[:, 0], cand[:, 1], cand[:, 2], cand[:, 3])
                 k = int(sc.argmax())
-                if best is None or float(sc[k]) > best[0]:
-                    best = (float(sc[k]), *[float(x) for x in chunk[k]])
-        # local refinement
-        for step in (0.5, 0.25):
-            yaw0, s0, da0, dp0 = best[1:]
-            cand = torch.tensor([[yaw0 + math.radians(4 * step * i), s0 * (1 + 0.04 * step * j), da0 + 0.06 * step * a, dp0 + 0.06 * step * b]
-                                 for i in (-1, 0, 1) for j in (-1, 0, 1) for a in (-1, 0, 1) for b in (-1, 0, 1)], device=dev)
-            sc = score(cand[:, 0], cand[:, 1], cand[:, 2], cand[:, 3])
-            k = int(sc.argmax())
-            if float(sc[k]) > best[0]:
-                best = (float(sc[k]), *[float(x) for x in cand[k]])
+                if float(sc[k]) > best[0]:
+                    best = (float(sc[k]), *[float(x) for x in cand[k]])
+            return best, r_can, lo, hi, pts
+
+        fits = {up: fit_up(up) for up in (AXES if args.asset_up == "auto" else [args.asset_up])}
+        up_best = max(fits, key=lambda u: fits[u][0][0])
+        best, r_can, lo, hi, pts = fits[up_best]
+        length, width, height = hi - lo
         iou, yaw, s, da, dp = best
-        rec = {"id": inst["id"], "iou": iou, "yaw_deg": math.degrees(yaw), "scale": s, "shift_along": da, "shift_perp": dp,
+        rec = {"id": inst["id"], "iou": iou, "asset_up": up_best, "iou_per_up": {u: fits[u][0][0] for u in fits}, "yaw_deg": math.degrees(yaw), "scale": s, "shift_along": da, "shift_perp": dp,
                "fit_frames": [f for f, _, _ in ok], "asset_extent": [float(length), float(width), float(height)]}
         print(f"[vehicle_insert] vehicle {inst['id']}: IoU {iou:.3f}, scale {s:.4f}, yaw {math.degrees(yaw):.1f} deg "
               f"({time.time() - t0:.0f} s)", flush=True)

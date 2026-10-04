@@ -4,7 +4,9 @@ training frames; every other parameter (all geometry, the other Gaussians, Sky, 
 The surfels of scripts/road_surfel_composite.py carry raw pixel colours, but the run renders through its per-image
 Affine colour transform, so raw colours come out shifted (E42: darker, bluer road). Fitting the band-0 colour of the
 appended surfels (index >= --first, from the composite's meta.json when omitted) with the run's own photometric loss
-puts them in the run's colour space without moving anything. No densification or pruning: the Gaussian set and the
+puts them in the run's colour space without moving anything. --reg pulls each fitted colour towards its starting (raw
+pixel) colour (mean squared band-0 change): surfels the training frames hardly see keep their raw colour instead of
+drifting (E42c: teal patches on a cross street seen only at grazing angles). No densification or pruning: the Gaussian set and the
 view gate stay valid.
 
 Output: --out_log_dir with checkpoint_final.pth, config.yaml (view gate unchanged), meta.json.
@@ -37,6 +39,7 @@ def main() -> None:
     parser.add_argument("--first", type=int, default=None, help="first fitted Gaussian (default: the composite's kept count)")
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--lr", type=float, required=True)
+    parser.add_argument("--reg", type=float, default=0.0, help="weight of the pull towards the starting colours")
     parser.add_argument("--print_every", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -63,7 +66,11 @@ def main() -> None:
     n = dc.shape[0]
     assert 0 < first < n, (first, n)
     dc.requires_grad_(True)
+    # the training-mode renderer keeps the screen-space gradient of the means (densification statistics): let it flow
+    # to the means, which no optimizer steps
+    trainer.models["Background"]._means.requires_grad_(True)
     opt = torch.optim.Adam([dc], lr=args.lr, eps=1e-15)
+    dc0 = dc.detach()[first:].clone()
     print(f"[fit_surfel_colours] fitting the colours of Gaussians {first:,}..{n - 1:,} of {n:,} for {args.steps} steps", flush=True)
     trainer.set_train()
     running = {}
@@ -74,6 +81,8 @@ def main() -> None:
         outputs = trainer(ii, ci)
         losses = trainer.compute_losses(outputs=outputs, image_infos=ii, cam_infos=ci)
         loss = losses["rgb_loss"] + losses["ssim_loss"]
+        if args.reg > 0:
+            loss = loss + args.reg * ((dc[first:] - dc0) ** 2).mean()
         loss.backward()
         dc.grad[:first] = 0
         opt.step()

@@ -14,6 +14,10 @@ thickness --thickness x radius, opacity --opacity, colour as SH band 0, higher b
 (other Gaussians, Sky, Affine, CamPose, its view gate restricted to the kept Gaussians) is unchanged. Gaussians added
 after the surfels are never gated (they are appended after the gated ones).
 
+With --feather > 0 the surfels fade out over the last --feather scene units before the edge of their coverage (ground
+grid of twice the surfel spacing, gaps closed, distance to the nearest uncovered cell), and the run's road Gaussians are only removed
+where the surfels are fully opaque, so the edge is a blend, not a seam (E42c, camera raised 2 m).
+
 Output: --out_log_dir with checkpoint_final.pth, config.yaml (view_gate -> the restricted gate), view_gate.pt,
 meta.json (counts). The evaluation scripts run on it unchanged.
 
@@ -54,6 +58,7 @@ def main() -> None:
     parser.add_argument("--radius_knn", type=float, default=0.7)
     parser.add_argument("--thickness", type=float, default=0.1)
     parser.add_argument("--opacity", type=float, default=0.99)
+    parser.add_argument("--feather", type=float, default=0.0, help="fade-out width at the coverage edge (scene units)")
     args = parser.parse_args()
     os.makedirs(args.out_log_dir, exist_ok=False)
     commit = git_commit()
@@ -73,6 +78,19 @@ def main() -> None:
     along = (d * nrm[nn]).sum(1)
     in_plane = np.linalg.norm(d - along[:, None] * nrm[nn], axis=1)
     is_road = (in_plane < args.max_plane_dist) & (along > -args.below) & (along < args.above)
+    edge_dist = np.full(len(xyz), np.inf)
+    if args.feather > 0:
+        from scipy.ndimage import binary_closing, distance_transform_edt
+
+        # coverage on a grid of twice the surfel spacing, small gaps closed, then the distance to uncovered cells
+        cell = 2 * float(np.median(tree.query(xyz[:20000], k=2)[0][:, 1]))
+        ij = np.floor(xyz[:, :2] / cell).astype(np.int64)
+        ij -= ij.min(0) - 2
+        occ = np.zeros(ij.max(0) + 3, bool)
+        occ[ij[:, 0], ij[:, 1]] = True
+        occ = binary_closing(occ, np.ones((3, 3), bool))
+        edge_dist = distance_transform_edt(occ)[ij[:, 0], ij[:, 1]] * cell
+        is_road &= edge_dist[nn] >= args.feather  # keep the run's own road where the surfels fade
     keep = np.nonzero(~is_road)[0]
     print(f"[road_surfel_composite] {len(means):,} Gaussians, {int(is_road.sum()):,} on the road removed; {len(xyz):,} road surfels "
           f"({time.time() - t0:.0f} s)", flush=True)
@@ -86,7 +104,8 @@ def main() -> None:
     surf = {"_means": f32(xyz), "_scales": f32(np.log(np.stack([radius, radius, radius * args.thickness], 1))),
             "_quats": f32(rotation_from_normals(nrm)), "_features_dc": f32((rgb - 0.5) / C0),
             "_features_rest": torch.zeros((n_s,) + tuple(rest_shape)),
-            "_opacities": torch.full((n_s, 1), float(np.log(args.opacity / (1 - args.opacity))))}
+            "_opacities": f32(np.log(np.clip(args.opacity * np.clip(edge_dist / max(args.feather, 1e-9), 0, 1), 1e-4, args.opacity)
+                                     / (1 - np.clip(args.opacity * np.clip(edge_dist / max(args.feather, 1e-9), 0, 1), 1e-4, args.opacity)))[:, None])}
     assert set(bg.keys()) == set(surf.keys()), bg.keys()
     for k in surf:
         bg[k] = torch.cat([bg[k][kt], surf[k]], 0)
