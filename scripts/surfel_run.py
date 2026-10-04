@@ -8,7 +8,7 @@ same scene, e.g. the sky-completed E5fs) and replacing its Background Gaussians:
 loader config stay; CamPose embeddings are zeroed (the cloud was built with the loader's own poses). The evaluation
 scripts (eval_front_heldout, eval_view_range, eval_cross_camera, vis_freeview, view_gs) then run unchanged.
 
---sh_degree0 stores the colour as logit(rgb) with no higher SH bands (model.Background.ctrl.sh_degree 0 in the copied
+--sh_degree0 stores the colour as logit(rgb) with no higher SH bands (trainer.gaussian_ctrl_general_cfg.sh_degree 0 in the copied
 config): 14 instead of 59 floats per point, so tens of millions of surfels fit on the GPU.
 
 The question it answers (user, 10-04): is 3DGS needed for the observed content, or is a dense coloured point cloud
@@ -117,8 +117,8 @@ def main() -> None:
     torch.save(state, os.path.join(args.out_log_dir, "checkpoint_final.pth"))
     cfg = OmegaConf.load(os.path.join(args.template, "config.yaml"))
     if args.sh_degree0:
-        assert int(cfg.model.Background.ctrl.sh_degree) == 3, cfg.model.Background.ctrl.sh_degree
-        cfg.model.Background.ctrl.sh_degree = 0
+        assert int(cfg.trainer.gaussian_ctrl_general_cfg.sh_degree) == 3, cfg.trainer.gaussian_ctrl_general_cfg.sh_degree
+        cfg.trainer.gaussian_ctrl_general_cfg.sh_degree = 0
     OmegaConf.save(cfg, os.path.join(args.out_log_dir, "config.yaml"))
     with open(os.path.join(args.out_log_dir, "meta.json"), "w") as f:
         json.dump({"exp": args.exp, "kind": "fixed surfels from a fused point cloud, no optimisation; Sky / Affine from the template",
