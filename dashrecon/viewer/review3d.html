@@ -1,0 +1,561 @@
+<meta charset="utf-8">
+<title>val056 三维复查</title>
+<style>
+/* Layout: full-height WebGL viewport with a docked control rail (right on desktop, below on phones); dark instrument look. */
+:root {
+  --ground: #0e1114;
+  --panel: #161b20;
+  --panel-2: #1d242b;
+  --line: #2a333c;
+  --ink: #e7ecef;
+  --ink-dim: #93a1ac;
+  --accent: #f2b33d;      /* sodium street-lamp amber */
+  --accent-ink: #1b1406;
+  --good: #6cc49a;
+  --warn: #e98b5a;
+  --font-ui: "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif;
+  --font-cn: "Noto Sans SC", "IBM Plex Sans", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--ground); color: var(--ink); font-family: var(--font-cn); margin: 0; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: 100%; }
+.stage { position: relative; min-width: 0; min-height: 0; background: #000; }
+#view { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#view.dragging { cursor: grabbing; }
+.hud { position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.chip { font-family: var(--font-data); font-size: 12px; background: rgba(14,17,20,.72); border: 1px solid var(--line); color: var(--ink);
+  padding: 4px 8px; border-radius: 4px; font-variant-numeric: tabular-nums; width: fit-content; }
+.chip.gen { color: var(--accent); border-color: rgba(242,179,61,.5); }
+.chip.out { color: var(--warn); border-color: rgba(233,139,90,.55); }
+#minimap { position: absolute; right: 12px; bottom: 12px; width: 190px; height: 190px; background: rgba(14,17,20,.78);
+  border: 1px solid var(--line); border-radius: 6px; }
+.loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.loading[hidden] { display: none !important; }
+.loading-card { background: rgba(14,17,20,.86); border: 1px solid var(--line); padding: 14px 18px; border-radius: 6px; font-family: var(--font-data);
+  font-size: 13px; min-width: 220px; }
+.bar { height: 4px; background: var(--panel-2); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.rail { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding-block: 16px; padding-inline: 16px;
+  display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+h1 { font-family: var(--font-ui); font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .01em; text-wrap: balance; }
+.sub { color: var(--ink-dim); font-size: 12.5px; line-height: 1.55; margin: 4px 0 0; }
+.label { font-family: var(--font-ui); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-dim); margin: 0 0 8px; }
+.models { display: flex; flex-direction: column; gap: 8px; }
+.model { text-align: left; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+  cursor: pointer; font: inherit; display: grid; gap: 4px; }
+.model:hover { border-color: #3c4955; }
+.model[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.model .name { font-family: var(--font-data); font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.model .tag { font-family: var(--font-cn); font-size: 11.5px; font-weight: 400; color: var(--ink-dim); }
+.model .desc { font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+.model .nums { font-family: var(--font-data); font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; display: flex; gap: 10px; flex-wrap: wrap; }
+.model .nums b { font-weight: 500; color: var(--ink-dim); }
+.ctl { display: grid; grid-template-columns: 64px minmax(0, 1fr) 64px; gap: 8px; align-items: center; font-size: 12.5px; }
+.ctl output { font-family: var(--font-data); text-align: right; font-variant-numeric: tabular-nums; }
+.ctl input[type=range] { width: 100%; accent-color: var(--accent); }
+.ctls { display: grid; gap: 10px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.btn:hover { border-color: #3c4955; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.presets .btn { font-family: var(--font-data); font-size: 11.5px; padding: 6px 4px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.45; }
+.check input { accent-color: var(--accent); margin-top: 2px; }
+.note { font-size: 11.5px; color: var(--ink-dim); line-height: 1.55; border-top: 1px solid var(--line); padding-top: 12px; }
+.note p { margin: 0 0 6px; }
+kbd { font-family: var(--font-data); font-size: 11px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; background: var(--panel-2); }
+.err { color: var(--warn); font-size: 12.5px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 820px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(320px, 58vh) auto; height: auto; }
+  .rail { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  #minimap { width: 130px; height: 130px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;600&family=Noto+Sans+SC:wght@400;600&display=swap">
+
+<div class="app">
+  <div class="stage">
+    <canvas id="view" aria-label="三维高斯场景视图"></canvas>
+    <div class="hud">
+      <span class="chip" id="hud-model">—</span>
+      <span class="chip" id="hud-pose">—</span>
+      <span class="chip" id="hud-range" hidden>超出评价范围（横移 ±3 m、转向 ±45°、升高 0–2 m）</span>
+      <span class="chip" id="hud-perf">—</span>
+    </div>
+    <canvas id="minimap" width="380" height="380" aria-label="俯视轨迹图"></canvas>
+    <div class="loading" id="loading">
+      <div class="loading-card"><div id="loading-text">加载中…</div><div class="bar"><i id="loading-bar"></i></div></div>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <div>
+      <h1>val056 街景三维复查</h1>
+      <p class="sub">Waymo 验证段 val056，只用 FRONT 单目视频重建（非 oracle）。拖动画面转向，滑块按 DECISIONS Z 的评价范围移动相机：横移 ±3 m、转向 ±45°、升高 0–2 m。</p>
+    </div>
+
+    <section>
+      <p class="label">模型</p>
+      <div class="models" id="models"></div>
+    </section>
+
+    <section class="ctls">
+      <p class="label">相机（相对该帧 FRONT 相机）</p>
+      <div class="ctl"><label for="frame">帧</label><input id="frame" type="range" min="0" max="196" step="1" value="100"><output id="frame-out">100</output></div>
+      <div class="ctl"><label for="lat">横移</label><input id="lat" type="range" min="-5" max="5" step="0.1" value="0"><output id="lat-out">0.0 m</output></div>
+      <div class="ctl"><label for="yaw">转向</label><input id="yaw" type="range" min="-180" max="180" step="1" value="0"><output id="yaw-out">0°</output></div>
+      <div class="ctl"><label for="up">升高</label><input id="up" type="range" min="0" max="4" step="0.1" value="0"><output id="up-out">0.0 m</output></div>
+      <div class="ctl"><label for="pitch">俯仰</label><input id="pitch" type="range" min="-30" max="20" step="1" value="0"><output id="pitch-out">0°</output></div>
+      <div class="row">
+        <button class="btn primary" id="play" type="button">播放</button>
+        <button class="btn" id="reset" type="button">回到 FRONT</button>
+      </div>
+      <div>
+        <p class="label">评价网格的视角</p>
+        <div class="presets" id="presets"></div>
+      </div>
+      <label class="check"><input type="checkbox" id="gate" checked> <span>视角屏蔽（E20 起的模型带有：只在观测视角锥内显示 FRONT 依赖的离网格高斯，与评测渲染一致）</span></label>
+    </section>
+
+    <div class="note">
+      <p>操作：左键拖动转向，右键或 <kbd>Shift</kbd>+拖动平移，滚轮前后，<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动，<kbd>Q</kbd><kbd>E</kbd> 升降。动过之后点"回到 FRONT"回到滑块控制的位置。</p>
+      <p>网页里每个高斯只有一个颜色：取离它最近、能看到它的训练帧方向上的球谐颜色，不随视角变化。E35 / E5fs 按可见面积保留了部分高斯。与完整 3DGS 渲染对比（帧 100，正前 / 左转 45°）PSNR 32.1 / 30.5 dB，几何一致。米制按评测侧 GT 轨迹换算（1 m = 0.430 场景单位），只用于标注滑块。</p>
+      <p>编号见仓库 <span style="font-family:var(--font-data)">docs/EXPERIMENTS.md</span>：E35、E5fs、E39。</p>
+    </div>
+    <p class="err" id="err" hidden></p>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const MODELS = [
+  { id: "E35", name: "E35", tag: "主模型 · 含生成", gen: true,
+    desc: "E5f → 视角屏蔽 + ±45° GEN3C → Fixer 渐进蒸馏（E23 / E29）→ 天空补全。",
+    nums: [["FRONT", "32.54"], ["KID 20°", "0.060"], ["KID 45°", "0.095"], ["全组", "0.049"]] },
+  { id: "E5fs", name: "E5fs", tag: "起点 · 不含生成", gen: false,
+    desc: "只用 FRONT 的 3DGS（网格初始化 + flatten / 大尺寸正则）+ 天空补全。没拍到的地方没有补。",
+    nums: [["FRONT", "31.36"], ["KID 20°", "0.077"], ["KID 45°", "0.140"], ["全组", "0.072"]] },
+  { id: "E39", name: "E39", tag: "点云直接渲染 · 不优化", gen: false,
+    desc: "MapAnything 深度融合的点云（126 万点，5 cm 体素）直接当固定面元，颜色取真实像素。没有雾，但空洞多，深度误差直接可见。",
+    nums: [["FRONT", "16.8"], ["KID 20°", "0.204"], ["KID 45°", "0.313"], ["全组", "0.216"]] },
+];
+const $ = (id) => document.getElementById(id);
+const canvas = $("view");
+const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: true, alpha: true, preserveDrawingBuffer: true });
+function fail(msg) { const e = $("err"); e.textContent = msg; e.hidden = false; $("loading").hidden = true; }
+if (!gl) { fail("这个浏览器不支持 WebGL2，无法显示三维场景。"); throw new Error("no webgl2"); }
+
+// ---------- shaders ----------
+const VS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp usampler2D u_tex;
+uniform mat4 u_proj, u_view;
+uniform vec2 u_focal, u_viewport;
+uniform vec3 u_campos;
+uniform int u_gate; uniform float u_margin, u_fade;
+in vec2 a_pos; in int a_index;
+out vec4 v_color; out vec2 v_pos;
+ivec2 tx(int i, int j) { return ivec2(((i & 1023) << 2) | j, i >> 10); }
+void main() {
+  uvec4 t0 = texelFetch(u_tex, tx(a_index, 0), 0);
+  vec3 c = uintBitsToFloat(t0.xyz);
+  vec4 cam = u_view * vec4(c, 1.0);
+  vec4 p = u_proj * cam;
+  float clip = 1.2 * p.w;
+  if (cam.z <= 0.05 || p.x < -clip || p.x > clip || p.y < -clip || p.y > clip) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  float alpha = float(t0.w >> 24) / 255.0;
+  uvec4 t2 = texelFetch(u_tex, tx(a_index, 2), 0);
+  if (u_gate == 1 && (t2.y & 1u) != 0u) {
+    if ((t2.y & 2u) == 0u) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    vec3 ax = vec3(float(int(t2.x << 24) >> 24), float(int(t2.x << 16) >> 24), float(int(t2.x << 8) >> 24)) / 127.0;
+    float half_angle = float(t2.x >> 24);
+    float ang = degrees(acos(clamp(dot(normalize(c - u_campos), normalize(ax)), -1.0, 1.0)));
+    float excess = max(ang - half_angle, 0.0);
+    float g = clamp(1.0 - (excess - u_margin) / u_fade, 0.0, 1.0);
+    if (g <= 0.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    alpha *= g;
+  }
+  uvec4 t1 = texelFetch(u_tex, tx(a_index, 1), 0);
+  vec2 u1 = unpackHalf2x16(t1.x), u2 = unpackHalf2x16(t1.y), u3 = unpackHalf2x16(t1.z);
+  mat3 V = mat3(u1.x, u1.y, u2.x, u1.y, u2.y, u3.x, u2.x, u3.x, u3.y);
+  mat3 J = mat3(u_focal.x / cam.z, 0.0, -(u_focal.x * cam.x) / (cam.z * cam.z),
+                0.0, -u_focal.y / cam.z, (u_focal.y * cam.y) / (cam.z * cam.z),
+                0.0, 0.0, 0.0);
+  mat3 T = transpose(mat3(u_view)) * J;
+  mat3 cov = transpose(T) * V * T;
+  cov[0][0] += 0.3; cov[1][1] += 0.3;
+  float mid = (cov[0][0] + cov[1][1]) / 2.0;
+  float rad = length(vec2((cov[0][0] - cov[1][1]) / 2.0, cov[0][1]));
+  float l1 = mid + rad, l2 = mid - rad;
+  if (l2 < 0.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  vec2 dv = normalize(vec2(cov[0][1], l1 - cov[0][0]));
+  vec2 major = min(sqrt(2.0 * l1), 1024.0) * dv;
+  vec2 minor = min(sqrt(2.0 * l2), 1024.0) * vec2(dv.y, -dv.x);
+  v_color = vec4(float(t0.w & 255u), float((t0.w >> 8) & 255u), float((t0.w >> 16) & 255u), 255.0) / 255.0;
+  v_color.a = alpha;
+  v_pos = a_pos;
+  vec2 ctr = p.xy / p.w;
+  gl_Position = vec4(ctr + 2.0 * (a_pos.x * major + a_pos.y * minor) / u_viewport, 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec4 v_color; in vec2 v_pos; out vec4 o;
+void main() {
+  float A = -dot(v_pos, v_pos);
+  if (A < -4.0) discard;
+  float B = exp(A) * v_color.a;
+  o = vec4(B * v_color.rgb, B);
+}`;
+const SKY_VS = `#version 300 es
+in vec2 a_xy; void main() { gl_Position = vec4(a_xy, 0.0, 1.0); }`;
+const SKY_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_sky; uniform mat3 u_rot; uniform vec2 u_focal, u_center, u_viewport;
+out vec4 o;
+void main() {
+  vec2 px = vec2(gl_FragCoord.x, u_viewport.y - gl_FragCoord.y);
+  vec3 d = normalize(u_rot * vec3((px.x - u_center.x) / u_focal.x, (px.y - u_center.y) / u_focal.y, 1.0));
+  float az = atan(d.y, d.x), el = asin(clamp(d.z, -1.0, 1.0));
+  vec2 uv = vec2((az + 3.14159265) / 6.2831853, (1.5707963 - el) / 3.14159265);
+  o = vec4(texture(u_sky, uv).rgb, 1.0);
+}`;
+function shader(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function program(vs, fs) { const p = gl.createProgram(); gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+const prog = program(VS, FS), skyProg = program(SKY_VS, SKY_FS);
+const U = (p, n) => gl.getUniformLocation(p, n);
+const loc = { proj: U(prog, "u_proj"), view: U(prog, "u_view"), focal: U(prog, "u_focal"), viewport: U(prog, "u_viewport"),
+  campos: U(prog, "u_campos"), gate: U(prog, "u_gate"), margin: U(prog, "u_margin"), fade: U(prog, "u_fade"), tex: U(prog, "u_tex") };
+const sloc = { sky: U(skyProg, "u_sky"), rot: U(skyProg, "u_rot"), focal: U(skyProg, "u_focal"), center: U(skyProg, "u_center"), viewport: U(skyProg, "u_viewport") };
+
+const quadVao = gl.createVertexArray(); gl.bindVertexArray(quadVao);
+const quadBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-2, -2, 2, -2, 2, 2, -2, 2]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, "a_pos"); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+const indexBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf);
+const aIdx = gl.getAttribLocation(prog, "a_index"); gl.enableVertexAttribArray(aIdx); gl.vertexAttribIPointer(aIdx, 1, gl.INT, false, 0, 0);
+gl.vertexAttribDivisor(aIdx, 1);
+gl.bindVertexArray(null);
+const skyVao = gl.createVertexArray(); gl.bindVertexArray(skyVao);
+const skyBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, skyBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+const aXy = gl.getAttribLocation(skyProg, "a_xy"); gl.enableVertexAttribArray(aXy); gl.vertexAttribPointer(aXy, 2, gl.FLOAT, false, 0, 0);
+gl.bindVertexArray(null);
+
+// ---------- sorting worker (depth counting sort, front to back) ----------
+const workerSrc = `
+let pos = null, n = 0, gen = 0, lastKey = "";
+onmessage = (e) => {
+  const d = e.data;
+  if (d.pos) { pos = d.pos; n = pos.length / 3; gen = d.gen; lastKey = ""; return; }
+  if (!pos || d.gen !== gen) return;
+  const v = d.view, key = v.map((x) => x.toFixed(3)).join(",");
+  if (key === lastKey && !d.force) return;
+  lastKey = key;
+  const depth = new Int32Array(n), live = new Int32Array(n); let m = 0, mn = 2147483647, mx = -2147483647;
+  const a = v[2], b = v[6], c = v[10], t = v[14];
+  for (let i = 0; i < n; i++) {
+    const z = a * pos[3*i] + b * pos[3*i+1] + c * pos[3*i+2] + t;
+    if (z <= 0.05) continue;  // behind the camera: culled by the vertex shader anyway
+    const q = Math.min(z * 4096, 2e9) | 0; depth[m] = q; live[m++] = i; if (q < mn) mn = q; if (q > mx) mx = q;
+  }
+  const B = 65536, scale = (B - 1) / Math.max(1, mx - mn);
+  const counts = new Uint32Array(B), key16 = new Uint16Array(m);
+  for (let j = 0; j < m; j++) { const k = ((depth[j] - mn) * scale) | 0; key16[j] = k; counts[k]++; }
+  const starts = new Uint32Array(B); for (let k = 1; k < B; k++) starts[k] = starts[k-1] + counts[k-1];
+  const order = new Int32Array(m);
+  for (let j = 0; j < m; j++) order[starts[key16[j]]++] = live[j];  // ascending depth: front to back
+  postMessage({ order, n: m, gen }, [order.buffer]);
+};`;
+const worker = new Worker(URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" })));
+let drawCount = 0, sortPending = false, gen = 0;
+worker.onmessage = (e) => {
+  if (e.data.gen !== gen) return;  // a sort of the previous model
+  gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf); gl.bufferData(gl.ARRAY_BUFFER, e.data.order, gl.DYNAMIC_DRAW);
+  drawCount = e.data.n; sortPending = false; needsDraw = true;
+};
+
+// ---------- data ----------
+function f2h(v) { // float32 -> float16 bits
+  const f = new Float32Array(1), u = new Uint32Array(f.buffer); f[0] = v; const x = u[0];
+  const sign = (x >> 16) & 0x8000; let exp = ((x >> 23) & 0xff) - 127 + 15; let mant = x & 0x7fffff;
+  if (exp <= 0) { if (exp < -10) return sign; mant = (mant | 0x800000) >> (1 - exp); return sign | ((mant + 0x1000) >> 13); }
+  if (exp >= 31) return sign | 0x7bff;
+  return sign | (exp << 10) | ((mant + 0x1000) >> 13);
+}
+function h2f(h) { const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * Math.pow(2, -14) * (m / 1024); if (e === 31) return s * 65504; return s * Math.pow(2, e - 15) * (1 + m / 1024); }
+// The splat records are stored as RGB PNGs (3 bytes per pixel, row-major, zero padded): artifact hosting serves images,
+// not raw binary. The byte sum mod 2^32 from scene.json catches any colour management on the way.
+async function pngBytes(url, info) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url}: HTTP ${resp.status}`);
+  const bmp = await createImageBitmap(await resp.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  const c = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(bmp.width, bmp.height)
+    : Object.assign(document.createElement("canvas"), { width: bmp.width, height: bmp.height });
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0);
+  const px = g.getImageData(0, 0, bmp.width, bmp.height).data;
+  if (bmp.close) bmp.close();
+  const n = info.bytes, out = new Uint8Array(n);
+  let i = 0, j = 0, sum = 0;
+  for (; i + 3 <= n; i += 3, j += 4) { out[i] = px[j]; out[i + 1] = px[j + 1]; out[i + 2] = px[j + 2]; }
+  for (let c2 = 0; i < n; i++, c2++) out[i] = px[j + c2];
+  for (let k = 0; k < n; k++) sum = (sum + out[k]) >>> 0;
+  if (sum !== info.sum32) throw new Error(`${url}: decoded bytes differ from the export (sum ${sum} vs ${info.sum32})`);
+  return out;
+}
+const cache = new Map();
+async function loadModel(id, onProgress) {
+  if (cache.has(id)) return cache.get(id);
+  const meta = await (await fetch(`${id}/scene.json`)).json();
+  const n = meta.splats;
+  const raw = new Uint8Array(n * 32);
+  let off = 0;
+  for (let k = 0; k < meta.files.length; k++) {
+    const buf = await pngBytes(`${id}/${meta.files[k]}`, meta.file_info[k]); raw.set(buf, off); off += buf.length;
+    onProgress((k + 1) / meta.files.length);
+  }
+  if (off !== n * 32) throw new Error(`${id}: expected ${n * 32} bytes, got ${off}`);
+  const dv = new DataView(raw.buffer);
+  const H = Math.ceil(n / 1024), tex = new Uint32Array(4096 * H * 4), f32 = new Float32Array(tex.buffer);
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const o = i * 32;
+    const x = dv.getFloat32(o, true), y = dv.getFloat32(o + 4, true), z = dv.getFloat32(o + 8, true);
+    pos[3*i] = x; pos[3*i+1] = y; pos[3*i+2] = z;
+    const sx = Math.min(h2f(dv.getUint16(o + 12, true)), 150), sy = Math.min(h2f(dv.getUint16(o + 14, true)), 150), sz = Math.min(h2f(dv.getUint16(o + 16, true)), 150);
+    const r = raw[o+18], g = raw[o+19], b = raw[o+20], a = raw[o+21];
+    let qw = (raw[o+22] - 128) / 128, qx = (raw[o+23] - 128) / 128, qy = (raw[o+24] - 128) / 128, qz = (raw[o+25] - 128) / 128;
+    const qn = Math.hypot(qw, qx, qy, qz) || 1; qw /= qn; qx /= qn; qy /= qn; qz /= qn;
+    // R (rows) from the quaternion (w, x, y, z), M = R * diag(s), Sigma = M M^T
+    const R = [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy),
+               2*(qx*qy + qw*qz), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qw*qx),
+               2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx*qx + qy*qy)];
+    const M = [R[0]*sx, R[1]*sy, R[2]*sz, R[3]*sx, R[4]*sy, R[5]*sz, R[6]*sx, R[7]*sy, R[8]*sz];
+    const s00 = M[0]*M[0] + M[1]*M[1] + M[2]*M[2], s01 = M[0]*M[3] + M[1]*M[4] + M[2]*M[5], s02 = M[0]*M[6] + M[1]*M[7] + M[2]*M[8];
+    const s11 = M[3]*M[3] + M[4]*M[4] + M[5]*M[5], s12 = M[3]*M[6] + M[4]*M[7] + M[5]*M[8], s22 = M[6]*M[6] + M[7]*M[7] + M[8]*M[8];
+    const base = ((i >> 10) * 4096 + ((i & 1023) << 2)) * 4;
+    f32[base] = x; f32[base + 1] = y; f32[base + 2] = z;
+    tex[base + 3] = (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
+    tex[base + 4] = (f2h(s00) | (f2h(s01) << 16)) >>> 0;
+    tex[base + 5] = (f2h(s02) | (f2h(s11) << 16)) >>> 0;
+    tex[base + 6] = (f2h(s12) | (f2h(s22) << 16)) >>> 0;
+    tex[base + 8] = (raw[o+26] | (raw[o+27] << 8) | (raw[o+28] << 16) | (raw[o+29] << 24)) >>> 0;
+    tex[base + 9] = raw[o+30];
+  }
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, 4096, H, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, tex);
+  const img = new Image(); img.src = `${id}/sky.jpg`; await img.decode();
+  const sky = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, sky);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+  const model = { id, meta, n, tex: t, sky, pos, texData: tex };
+  cache.set(id, model);
+  return model;
+}
+
+// ---------- camera ----------
+let cur = null, cams = null, metreToUnits = 0.43;
+let free = null; // free-fly camera {R: 3x3 rows (c2w rotation), t: [3]} or null on the rail
+const st = { frame: 100, lat: 0, yaw: 0, up: 0, pitch: 0 };
+const mat3mul = (A, B) => { const C = new Array(9).fill(0); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) C[3*i+j] += A[3*i+k] * B[3*k+j]; return C; };
+function railPose() {
+  const c = cams[st.frame], P = c.c2w;
+  const R = [P[0][0], P[0][1], P[0][2], P[1][0], P[1][1], P[1][2], P[2][0], P[2][1], P[2][2]];
+  const t = [P[0][3], P[1][3], P[2][3]];
+  const r = st.lat * metreToUnits, u = st.up * metreToUnits;
+  for (let i = 0; i < 3; i++) t[i] += r * R[3*i] - u * R[3*i+1];
+  const a = st.yaw * Math.PI / 180, b = st.pitch * Math.PI / 180;
+  const Ry = [Math.cos(a), 0, Math.sin(a), 0, 1, 0, -Math.sin(a), 0, Math.cos(a)];
+  const Rx = [1, 0, 0, 0, Math.cos(b), -Math.sin(b), 0, Math.sin(b), Math.cos(b)];
+  return { R: mat3mul(mat3mul(R, Ry), Rx), t };
+}
+const pose = () => free || railPose();
+function viewMatrix(p) { // w2c column-major
+  const R = p.R, t = p.t;
+  const tx = -(R[0]*t[0] + R[3]*t[1] + R[6]*t[2]), ty = -(R[1]*t[0] + R[4]*t[1] + R[7]*t[2]), tz = -(R[2]*t[0] + R[5]*t[1] + R[8]*t[2]);
+  return [R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, tx, ty, tz, 1];
+}
+function intrinsics() { const c = cams[st.frame], W = canvas.width, Hh = canvas.height, s = Math.max(W / c.w, Hh / c.h);
+  return { fx: c.fx * s, fy: c.fy * s, cx: W / 2, cy: Hh / 2 }; }
+function projMatrix(k) { const zn = 0.05, zf = 1000, W = canvas.width, Hh = canvas.height;
+  return [2 * k.fx / W, 0, 0, 0, 0, -2 * k.fy / Hh, 0, 0, 0, 0, zf / (zf - zn), 1, 0, 0, -(zf * zn) / (zf - zn), 0]; }
+
+// ---------- draw ----------
+let needsDraw = true, frames = 0, lastFps = performance.now(), fps = 0;
+function resize() { const dpr = Math.min(window.devicePixelRatio || 1, 1.5), r = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needsDraw = true; } }
+function requestSort(force) { if (!cur) return; const v = viewMatrix(pose()); sortPending = true; worker.postMessage({ view: v, force: !!force, gen }); }
+function draw() {
+  resize();
+  if (!cur || !needsDraw) return;
+  needsDraw = false;
+  const p = pose(), k = intrinsics(), view = viewMatrix(p);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ONE_MINUS_DST_ALPHA, gl.ONE); gl.blendEquation(gl.FUNC_ADD);
+  if (drawCount > 0) {
+    gl.useProgram(prog); gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, cur.tex); gl.uniform1i(loc.tex, 0);
+    gl.uniformMatrix4fv(loc.proj, false, projMatrix(k)); gl.uniformMatrix4fv(loc.view, false, view);
+    gl.uniform2f(loc.focal, k.fx, k.fy); gl.uniform2f(loc.viewport, canvas.width, canvas.height);
+    gl.uniform3f(loc.campos, p.t[0], p.t[1], p.t[2]);
+    const g = cur.meta.gate; gl.uniform1i(loc.gate, g && $("gate").checked ? 1 : 0);
+    gl.uniform1f(loc.margin, g ? g.margin : 0); gl.uniform1f(loc.fade, g ? g.fade : 1);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, drawCount);
+  }
+  gl.useProgram(skyProg); gl.bindVertexArray(skyVao);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, cur.sky); gl.uniform1i(sloc.sky, 0);
+  gl.uniformMatrix3fv(sloc.rot, false, [p.R[0], p.R[3], p.R[6], p.R[1], p.R[4], p.R[7], p.R[2], p.R[5], p.R[8]]);
+  gl.uniform2f(sloc.focal, k.fx, k.fy); gl.uniform2f(sloc.center, k.cx, k.cy); gl.uniform2f(sloc.viewport, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindVertexArray(null);
+  frames++;
+  hud(p);
+  drawMinimap(p);
+}
+function loop() { draw(); const now = performance.now(); if (now - lastFps > 1000) { fps = frames * 1000 / (now - lastFps); frames = 0; lastFps = now;
+  $("hud-perf").textContent = `共 ${(cur ? cur.n : 0).toLocaleString()} 个高斯 · 相机前方 ${drawCount.toLocaleString()}`; } requestAnimationFrame(loop); }
+function changed() { needsDraw = true; requestSort(false); }
+function hud(p) {
+  const m = MODELS.find((x) => x.id === cur.id);
+  const el = $("hud-model"); el.textContent = `${m.name} · ${m.tag}`; el.className = "chip" + (m.gen ? " gen" : "");
+  if (free) { $("hud-pose").textContent = `自由视角 · 帧 ${cams[st.frame].frame}`; $("hud-range").hidden = true; return; }
+  $("hud-pose").textContent = `帧 ${cams[st.frame].frame} · 横移 ${st.lat.toFixed(1)} m · 转向 ${st.yaw}° · 升高 ${st.up.toFixed(1)} m`;
+  const out = Math.abs(st.lat) > 3.0001 || Math.abs(st.yaw) > 45 || st.up > 2.0001;
+  const r = $("hud-range"); r.hidden = !out; r.className = "chip out";
+}
+const mm = $("minimap"), mctx = mm.getContext("2d");
+let mmBase = null, mmFrame = null;
+function minimapFrame() { // trajectory bounds -> canvas: world x (forward) up, world y (left) left
+  const xs = cams.map((c) => c.c2w[0][3]), ys = cams.map((c) => c.c2w[1][3]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 10) * 1.3;
+  const W = mm.width, Hm = mm.height;
+  return (x, y) => [W / 2 - (y - cy) / span * W, Hm / 2 - (x - cx) / span * Hm];
+}
+function buildMinimapBase(m) { // top-down scatter of a subset of the splats, coloured
+  mmFrame = minimapFrame();
+  const c = document.createElement("canvas"); c.width = mm.width; c.height = mm.height;
+  const g = c.getContext("2d"), img = g.createImageData(c.width, c.height), acc = new Float32Array(c.width * c.height * 4);
+  const dv = new DataView(m.texData.buffer), step = Math.max(1, Math.floor(m.n / 200000));
+  for (let i = 0; i < m.n; i += step) {
+    const [u, v] = mmFrame(m.pos[3*i], m.pos[3*i+1]); const ui = u | 0, vi = v | 0;
+    if (ui < 0 || vi < 0 || ui >= c.width || vi >= c.height) continue;
+    const base = ((i >> 10) * 4096 + ((i & 1023) << 2)) * 4, w = dv.getUint32((base + 3) * 4, true);
+    const o = (vi * c.width + ui) * 4; acc[o] += w & 255; acc[o+1] += (w >> 8) & 255; acc[o+2] += (w >> 16) & 255; acc[o+3]++;
+  }
+  for (let k = 0; k < acc.length; k += 4) if (acc[k+3]) { img.data[k] = acc[k] / acc[k+3]; img.data[k+1] = acc[k+1] / acc[k+3]; img.data[k+2] = acc[k+2] / acc[k+3]; img.data[k+3] = 210; }
+  g.putImageData(img, 0, 0); mmBase = c;
+}
+function drawMinimap(p) {
+  const W = mm.width, Hm = mm.height; mctx.clearRect(0, 0, W, Hm);
+  if (mmBase) mctx.drawImage(mmBase, 0, 0);
+  const sx = mmFrame;
+  mctx.strokeStyle = "rgba(231,236,239,.85)"; mctx.lineWidth = 3; mctx.beginPath();
+  cams.forEach((c, i) => { const [u, v] = sx(c.c2w[0][3], c.c2w[1][3]); i ? mctx.lineTo(u, v) : mctx.moveTo(u, v); }); mctx.stroke();
+  const [u, v] = sx(p.t[0], p.t[1]);
+  const fwd = [p.R[2], p.R[5]]; const ang = Math.atan2(-fwd[1], fwd[0]);
+  mctx.save(); mctx.translate(u, v); mctx.rotate(ang);
+  mctx.fillStyle = "rgba(242,179,61,.35)"; mctx.beginPath(); mctx.moveTo(0, 0); mctx.arc(0, 0, 46, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5); mctx.closePath(); mctx.fill();
+  mctx.fillStyle = "#f2b33d"; mctx.beginPath(); mctx.arc(0, 0, 7, 0, Math.PI * 2); mctx.fill(); mctx.restore();
+  mctx.fillStyle = "#93a1ac"; mctx.font = "22px IBM Plex Mono, monospace"; mctx.fillText("俯视 · 前方向上", 12, 30);
+}
+
+// ---------- UI ----------
+const modelsEl = $("models");
+for (const m of MODELS) {
+  const b = document.createElement("button"); b.type = "button"; b.className = "model"; b.id = `model-${m.id}`; b.setAttribute("aria-pressed", "false");
+  b.innerHTML = `<span class="name">${m.name}<span class="tag">${m.tag}</span></span><span class="desc">${m.desc}</span>` +
+    `<span class="nums">${m.nums.map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join("")}</span>`;
+  b.addEventListener("click", () => select(m.id));
+  modelsEl.appendChild(b);
+}
+const presets = [["0", 0, 0, 0], ["横移 −3", -3, 0, 0], ["横移 +3", 3, 0, 0], ["转向 −20°", 0, -20, 0], ["转向 +20°", 0, 20, 0], ["升高 2 m", 0, 0, 2],
+  ["转向 −45°", 0, -45, 0], ["转向 +45°", 0, 45, 0], ["+3 m +45°", 3, 45, 0]];
+for (const [label, lat, yaw, up] of presets) {
+  const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = label;
+  b.addEventListener("click", () => { free = null; setSlider("lat", lat); setSlider("yaw", yaw); setSlider("up", up); setSlider("pitch", 0); changed(); });
+  $("presets").appendChild(b);
+}
+function setSlider(id, v) { $(id).value = v; st[id] = Number(v); out(id); }
+function out(id) { const v = st[id]; $(`${id}-out`).textContent = id === "frame" ? `${cams ? cams[v].frame : v}` : (id === "yaw" || id === "pitch") ? `${v}°` : `${v.toFixed(1)} m`; }
+for (const id of ["frame", "lat", "yaw", "up", "pitch"]) {
+  $(id).addEventListener("input", () => { if (id === "frame") { setFrame(Number($(id).value)); return; }
+    st[id] = Number($(id).value); out(id); free = null; changed(); });
+}
+$("gate").addEventListener("change", () => { needsDraw = true; });
+$("reset").addEventListener("click", () => { free = null; for (const id of ["lat", "yaw", "up", "pitch"]) setSlider(id, 0); changed(); });
+let playing = null;
+function setFrame(f) { // a free camera moves along with the FRONT camera
+  const a = free ? railPose().t : null;
+  st.frame = f; $("frame").value = f; out("frame");
+  if (free) { const b = railPose().t; for (let i = 0; i < 3; i++) free.t[i] += b[i] - a[i]; }
+  changed();
+}
+$("play").addEventListener("click", () => {
+  if (playing) { clearInterval(playing); playing = null; $("play").textContent = "播放"; return; }
+  $("play").textContent = "暂停";
+  playing = setInterval(() => setFrame((st.frame + 1) % cams.length), 100);
+});
+async function select(id) {
+  for (const m of MODELS) $(`model-${m.id}`).setAttribute("aria-pressed", m.id === id ? "true" : "false");
+  $("loading").hidden = false; $("loading-text").textContent = `加载 ${id}…`; $("loading-bar").style.width = "0%";
+  try {
+    const m = await loadModel(id, (f) => { $("loading-bar").style.width = `${Math.round(f * 100)}%`; });
+    cur = m; cams = m.meta.cameras; metreToUnits = m.meta.metre_to_units;
+    $("frame").max = cams.length - 1; if (st.frame >= cams.length) st.frame = cams.length - 1; out("frame");
+    gen++; drawCount = 0; worker.postMessage({ pos: m.pos.slice(), gen }); requestSort(true);
+    $("gate").disabled = !m.meta.gate; buildMinimapBase(m);
+    try { localStorage.setItem("val056-3d-model", id); } catch (e) { /* storage unavailable */ }
+  } catch (e) { fail(`加载 ${id} 失败：${e.message}`); return; }
+  $("loading").hidden = true; needsDraw = true;
+}
+
+// ---------- free-fly controls ----------
+let drag = null;
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("pointerdown", (e) => { if (!cams) return; canvas.setPointerCapture(e.pointerId); canvas.classList.add("dragging");
+  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey }; if (!free) free = railPose(); });
+canvas.addEventListener("pointerup", (e) => { drag = null; canvas.classList.remove("dragging"); });
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) { const s = 0.01; for (let i = 0; i < 3; i++) free.t[i] += -dx * s * free.R[3*i] - dy * s * free.R[3*i+1]; }
+  else { // grab the scene: yaw about world up (z), pitch about the camera x axis
+    const a = dx * 0.004, b = dy * 0.004;
+    const Rz = [Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a), 0, 0, 0, 1];
+    const Rx = [1, 0, 0, 0, Math.cos(b), -Math.sin(b), 0, Math.sin(b), Math.cos(b)];
+    free.R = mat3mul(mat3mul(Rz, free.R), Rx);
+  }
+  changed();
+});
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); if (!cams) return; if (!free) free = railPose();
+  const s = -e.deltaY * 0.004; for (let i = 0; i < 3; i++) free.t[i] += s * free.R[3*i+2]; changed(); }, { passive: false });
+const keys = new Set();
+window.addEventListener("keydown", (e) => { if (e.target.tagName === "INPUT") return; const k = e.key.toLowerCase(); if ("wasdqe".includes(k) && k.length === 1) { keys.add(k); e.preventDefault(); } });
+window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+setInterval(() => { if (!keys.size || !cams) return; if (!free) free = railPose(); const s = 0.08, R = free.R;
+  const mv = [(keys.has("d") ? 1 : 0) - (keys.has("a") ? 1 : 0), (keys.has("q") ? 1 : 0) - (keys.has("e") ? 1 : 0), (keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0)];
+  for (let i = 0; i < 3; i++) free.t[i] += s * (mv[0] * R[3*i] + mv[1] * R[3*i+1] + mv[2] * R[3*i+2]); changed(); }, 30);
+window.addEventListener("resize", () => { needsDraw = true; });
+
+let start = "E35";
+try { const s = localStorage.getItem("val056-3d-model"); if (MODELS.some((m) => m.id === s)) start = s; } catch (e) { /* storage unavailable */ }
+const q = new URLSearchParams(location.search);
+if (MODELS.some((m) => m.id === q.get("m"))) start = q.get("m");
+for (const [k, id] of [["f", "frame"], ["lat", "lat"], ["yaw", "yaw"], ["up", "up"], ["pitch", "pitch"]]) if (q.has(k)) { st[id] = Number(q.get(k)); $(id).value = st[id]; }
+for (const id of ["frame", "lat", "yaw", "up", "pitch"]) out(id);
+select(start);
+requestAnimationFrame(loop);
+</script>
