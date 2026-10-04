@@ -1,10 +1,11 @@
 """E43 step 1 (docs/EXPERIMENTS.md): parked vehicles of a scene as 3D instances with their best image crops, without GT.
 
-Static vehicle pixels are those of the Grounded-SAM-2 vehicle mask (--mask_dir) that scripts/refine_dynamic_masks.py
-released as static (not in --refined_dir), eroded by --erode_px against depth bleeding at the silhouettes. Their
-estimated depth (--pose_dir, depth grid) is back-projected in every training frame, the points are voxelised
-(--voxel) and clustered with DBSCAN (--eps, --min_voxels); a cluster seen in at least --min_frames frames is one
-vehicle. World z is up (val056: mean road normal (0.01, 0.02, 1.00)). Per vehicle: the ground-plane principal axis
+Detections are the per-instance Grounded-SAM-2 masks (--inst_dir, scripts/run_instance_masks.py) of every training
+frame. A detection is static when at least half of it lies in the pixels scripts/refine_dynamic_masks.py released as
+static (in the vehicle mask --mask_dir, not in --refined_dir). Its pixels, eroded by --erode_px against depth bleeding
+at the silhouette, are back-projected with the estimated depth (--pose_dir, depth grid) and summarised by their median
+point; the medians of all static detections are clustered with DBSCAN (--eps) and a cluster with detections in at least
+--min_frames frames is one vehicle (a track). Its points are the union of its detections' points, voxelised (--voxel). World z is up (val056: mean road normal (0.01, 0.02, 1.00)). Per vehicle: the ground-plane principal axis
 (length direction), extents (2nd-98th percentiles; the side facing away from the camera is never seen, so width is a
 lower bound), the ground height (median z of the fused road points within --ground_ring of the footprint), and up to
 --crops crops: the frames whose view of it is largest without touching the image border, picked greedily so that the
@@ -12,7 +13,8 @@ viewing directions differ by at least --min_view_sep degrees. A crop is the vehi
 cut out on a white background, square and padded (TRELLIS input).
 
 Output --out_dir: instances.json (per vehicle: id, points, frames, centre, axis, extents, ground z, crops with frame,
-pixel box and viewing direction), points_<id>.npy (voxel centres), crops/<id>_<frame>.png (RGBA), overview.jpg.
+pixel box and viewing direction; detections as (frame, instance id)), points_<id>.npy (voxel centres),
+crops/<id>_<frame>.png (RGBA), overview.jpg.
 GT is not read.
 
 Example (main venv):
@@ -20,9 +22,10 @@ Example (main venv):
         --pose_dir data/dashrecon/val056/pose-glomap_depth-mapanything \\
         --mask_dir data/dashrecon/val056/mask-gsam2_sky-segformer_img-glomap \\
         --refined_dir data/dashrecon/val056/mask-gsam2mv_sky-segformer_img-glomap \\
+        --inst_dir data/dashrecon/val056/inst-gsam2_img-glomap \\
         --fused_ply data/dashrecon/val056/pose-glomap_depth-mapanything__mask-gsam2mv_sky-segformer_img-glomap/points_fused.ply \\
         --processed_root data/dashrecon/_undistorted/calib-glomap --out_dir results/E43/val056/instances \\
-        --test_stride 10 --max_depth 40 --erode_px 6 --voxel 0.05 --eps 0.2 --min_voxels 60 --min_frames 5 \\
+        --test_stride 10 --max_depth 40 --erode_px 6 --min_px 400 --voxel 0.05 --eps 0.35 --min_frames 5 \\
         --ground_ring 0.6 --crops 4 --min_view_sep 20 --crop_size 518
 """
 import argparse
@@ -64,14 +67,14 @@ def square_crop(img: np.ndarray, mask: np.ndarray, size: int, pad: float = 0.1) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    for a in ("--scene_id", "--pose_dir", "--mask_dir", "--refined_dir", "--fused_ply", "--processed_root", "--out_dir"):
+    for a in ("--scene_id", "--pose_dir", "--mask_dir", "--refined_dir", "--inst_dir", "--fused_ply", "--processed_root", "--out_dir"):
         parser.add_argument(a, required=True)
     parser.add_argument("--test_stride", type=int, required=True)
     parser.add_argument("--max_depth", type=float, required=True)
     parser.add_argument("--erode_px", type=int, required=True)
     parser.add_argument("--voxel", type=float, required=True)
     parser.add_argument("--eps", type=float, required=True)
-    parser.add_argument("--min_voxels", type=int, required=True)
+    parser.add_argument("--min_px", type=int, required=True, help="smallest detection (pixels) used")
     parser.add_argument("--min_frames", type=int, required=True)
     parser.add_argument("--ground_ring", type=float, required=True)
     parser.add_argument("--crops", type=int, required=True)
@@ -89,53 +92,40 @@ def main() -> None:
     train = train_frame_mask(frames, scene.start_timestep, args.test_stride)
     img_dir = os.path.join(args.processed_root, f"{scene.scene_idx:03d}", "images")
 
-    # static vehicle points, with the frame and the full-resolution mask component they come from
-    pts_l, fr_l, comp_l, comps = [], [], [], {}
-    st = np.ones((3, 3), bool)
+    # static detections: back-projected points and their median
+    dets, st, inst_maps = [], np.ones((3, 3), bool), {}
     for i in np.nonzero(train)[0]:
         t = int(frames[i])
+        inst_map = np.asarray(Image.open(os.path.join(args.inst_dir, "inst", f"{t:06d}.png")))
         static = io.read_mask(args.mask_dir, "dynamic", t) & ~io.read_mask(args.refined_dir, "dynamic", t)
-        static = ndimage.binary_erosion(static, st, args.erode_px)
-        if not static.any():
-            continue
-        lab, n = ndimage.label(io.read_mask(args.mask_dir, "dynamic", t) & ~io.read_mask(args.refined_dir, "dynamic", t))
-        comps[t] = lab
-        small = io.mask_to_depth_grid(static, grid)
         d = io.read_depth(args.pose_dir, t)
-        valid = small & (d > 0) & (d < args.max_depth)
-        if not valid.any():
-            continue
-        p = backproject(d, ks[i], poses[i], valid)
-        # component label of each point at full resolution (depth grid -> image coordinates)
-        v, u = np.nonzero(valid)
-        (h_img, w_img), (h_res, w_res) = grid["image_hw"], grid["resized_hw"]
-        top, left = grid["crop_top_left"]
-        ui = np.clip(((u + left + 0.5) * w_img / w_res).astype(int), 0, w_img - 1)
-        vi = np.clip(((v + top + 0.5) * h_img / h_res).astype(int), 0, h_img - 1)
-        pts_l.append(p)
-        fr_l.append(np.full(len(p), t))
-        comp_l.append(lab[vi, ui])
-    pts, fr, comp = np.concatenate(pts_l), np.concatenate(fr_l), np.concatenate(comp_l)
-    print(f"[vehicle_instances] {len(pts):,} static vehicle points from {len(comps)} frames ({time.time() - t0:.0f} s)", flush=True)
-
-    vkey = np.floor(pts / args.voxel).astype(np.int64)
-    uniq, inv = np.unique(vkey, axis=0, return_inverse=True)
-    inv = inv.ravel()
-    centres = np.zeros((len(uniq), 3))
-    np.add.at(centres, inv, pts)
-    centres /= np.bincount(inv, minlength=len(uniq))[:, None]
-    lab_v = DBSCAN(eps=args.eps, min_samples=4).fit_predict(centres)
-    lab_p = lab_v[inv]
+        inst_maps[t] = inst_map
+        for j in np.unique(inst_map):
+            m = inst_map == j
+            if j == 0 or m.sum() < args.min_px or (m & static).sum() < 0.5 * m.sum():
+                continue
+            small = io.mask_to_depth_grid(ndimage.binary_erosion(m, st, args.erode_px), grid)
+            valid = small & (d > 0) & (d < args.max_depth)
+            if valid.sum() < 10:
+                continue
+            p = backproject(d, ks[i], poses[i], valid)
+            ys, xs = np.nonzero(m)
+            dets.append({"frame": t, "inst": int(j), "i": int(i), "points": p, "median": np.median(p, 0), "area": int(m.sum()),
+                         "box": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+                         "border": bool(ys.min() <= 2 or xs.min() <= 2 or ys.max() >= m.shape[0] - 3 or xs.max() >= m.shape[1] - 3)})
+    print(f"[vehicle_instances] {len(dets)} static vehicle detections ({time.time() - t0:.0f} s)", flush=True)
+    lab = DBSCAN(eps=args.eps, min_samples=2).fit_predict(np.stack([x["median"] for x in dets]))
 
     fused = io.read_ply(args.fused_ply)
     road = fused["xyz"][fused["labels"] == 1]
     instances = []
-    for c in sorted(set(lab_v) - {-1}):
-        vox = centres[lab_v == c]
-        in_c = lab_p == c
-        fr_c = np.unique(fr[in_c])
-        if len(vox) < args.min_voxels or len(fr_c) < args.min_frames:
+    for c in sorted(set(lab) - {-1}):
+        track = sorted((dets[k] for k in np.nonzero(lab == c)[0]), key=lambda x: x["frame"])
+        fr_c = sorted({x["frame"] for x in track})
+        if len(fr_c) < args.min_frames:
             continue
+        pts = np.concatenate([x["points"] for x in track])
+        vox = np.unique(np.floor(pts / args.voxel).astype(np.int64), axis=0) * args.voxel + args.voxel / 2
         xy = vox[:, :2]
         mu = xy.mean(0)
         evals, evecs = np.linalg.eigh(np.cov((xy - mu).T))
@@ -147,29 +137,19 @@ def main() -> None:
                     & (np.abs((road[:, :2] - mu) @ perp) < (hi_b - lo_b) / 2 + args.ground_ring)]
         ground = float(np.median(near[:, 2])) if len(near) >= 20 else float(np.percentile(vox[:, 2], 2))
         centre = np.array([*(mu + ax * (lo_a + hi_a) / 2 + perp * (lo_b + hi_b) / 2), ground])
-        inst = {"id": len(instances), "voxels": int(len(vox)), "frames": [int(x) for x in fr_c], "centre": centre.round(4).tolist(),
+        inst = {"id": len(instances), "voxels": int(len(vox)), "frames": fr_c, "centre": centre.round(4).tolist(),
+                "detections": [[x["frame"], x["inst"]] for x in track],
                 "axis": [float(ax[0]), float(ax[1]), 0.0], "extent": [float(hi_a - lo_a), float(hi_b - lo_b), float(np.percentile(vox[:, 2], 98) - ground)],
                 "ground_z": ground, "ground_points": int(len(near))}
         np.save(os.path.join(args.out_dir, f"points_{inst['id']}.npy"), vox.astype(np.float32))
 
-        # crops: per frame the mask component holding most of this vehicle's points
+        # crops: the largest detections not touching the image border, with differing viewing directions
         cands = []
-        for t in fr_c:
-            sel = in_c & (fr == t)
-            labs, cnt = np.unique(comp[sel], return_counts=True)
-            keep = labs > 0
-            if not keep.any():
-                continue
-            lab_id = int(labs[keep][np.argmax(cnt[keep])])
-            m = comps[int(t)] == lab_id
-            ys, xs = np.nonzero(m)
-            border = ys.min() <= 2 or xs.min() <= 2 or ys.max() >= m.shape[0] - 3 or xs.max() >= m.shape[1] - 3
-            i = int(np.nonzero(frames == t)[0][0])
-            view = centre - poses[i][:3, 3]
+        for x in track:
+            view = centre - poses[x["i"]][:3, 3]
             view[2] = 0.0
             ang = float(np.degrees(np.arctan2(view @ np.array([*perp, 0.0]), view @ np.array([*ax, 0.0]))))
-            cands.append({"frame": int(t), "area": int(m.sum()), "border": bool(border), "component": lab_id,
-                          "box": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())], "view_deg": ang})
+            cands.append({"frame": x["frame"], "inst": x["inst"], "area": x["area"], "border": x["border"], "box": x["box"], "view_deg": ang})
         cands.sort(key=lambda x: (x["border"], -x["area"]))
         chosen = []
         for cd in cands:
@@ -181,9 +161,8 @@ def main() -> None:
                 break
         for cd in chosen:
             img = np.asarray(Image.open(os.path.join(img_dir, f"{cd['frame']:03d}_{FRONT_CAM_ID}.jpg")).convert("RGB"))
-            m = comps[cd["frame"]] == cd["component"]
             name = f"{inst['id']}_{cd['frame']:03d}.png"
-            square_crop(img, m, args.crop_size).save(os.path.join(args.out_dir, "crops", name))
+            square_crop(img, inst_maps[cd["frame"]] == cd["inst"], args.crop_size).save(os.path.join(args.out_dir, "crops", name))
             cd["crop"] = f"crops/{name}"
         inst["crops"] = chosen
         instances.append(inst)
