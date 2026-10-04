@@ -13,7 +13,9 @@ SRC="$ROOT/.venvs/src/TRELLIS"
 uv venv "$VIRTUAL_ENV" --python 3.10
 uv pip install torch==2.5.0 torchvision==0.20.0 xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu124
 uv pip install pillow imageio imageio-ffmpeg tqdm easydict opencv-python-headless scipy ninja rembg onnxruntime trimesh \
-    xatlas igraph transformers plyfile spconv-cu124 huggingface_hub safetensors
+    xatlas igraph transformers plyfile spconv-cu124 huggingface_hub safetensors open3d
+# kaolin: imported by TRELLIS's FlexiCubes at module load
+uv pip install kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.0_cu124.html
 uv pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
 if [ ! -d "$SRC" ]; then git clone --recurse-submodules https://github.com/microsoft/TRELLIS.git "$SRC"; fi
 git -C "$SRC" checkout "$TRELLIS_COMMIT"
