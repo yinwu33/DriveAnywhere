@@ -79,6 +79,38 @@ class GroundedSam2Backend(MaskBackend):
                     counts[p] += 1
         return {"dynamic": dilate(mask, self.dilate_px)}, {"num_boxes": len(boxes), "counts": counts}
 
+    @torch.no_grad()
+    def predict_instances(self, image: Image.Image, nms_iou: float) -> tuple[np.ndarray, list[dict]]:
+        """One SAM 2.1 mask per Grounding DINO box (boxes overlapping a higher-scoring one by IoU > ``nms_iou``
+        dropped). Returns an (H, W) uint16 instance map (0 = none; overlaps go to the higher score, no dilation) and
+        per instance its id, box, score and label."""
+        from torchvision.ops import nms
+
+        w, h = image.size
+        det_in = self.det_proc(images=image, text=self.text, return_tensors="pt").to(self.device)
+        det_out = self.det(**det_in)
+        dets = self.det_proc.post_process_grounded_object_detection(
+            det_out, det_in.input_ids, threshold=self.box_threshold, text_threshold=self.text_threshold,
+            target_sizes=[(h, w)],
+        )[0]
+        inst = np.zeros((h, w), dtype=np.uint16)
+        if len(dets["boxes"]) == 0:
+            return inst, []
+        keep = nms(dets["boxes"].float().cpu(), dets["scores"].float().cpu(), nms_iou).tolist()
+        boxes = [dets["boxes"][k].cpu().tolist() for k in keep]
+        scores = [float(dets["scores"][k]) for k in keep]
+        labels = [dets["text_labels"][k] for k in keep]
+        sam_in = self.sam_proc(images=image, input_boxes=[boxes], return_tensors="pt").to(self.device)
+        sam_out = self.sam(**sam_in, multimask_output=False)
+        masks = self.sam_proc.post_process_masks(sam_out.pred_masks.cpu(), sam_in["original_sizes"].cpu())[0][:, 0].numpy()
+        info = []
+        for j in np.argsort(scores):  # ascending, so the higher score paints last
+            inst[masks[j]] = j + 1
+        for j in range(len(boxes)):
+            info.append({"id": j + 1, "box": [round(x, 1) for x in boxes[j]], "score": round(scores[j], 3), "label": labels[j],
+                         "area": int((inst == j + 1).sum())})
+        return inst, info
+
     def meta(self) -> dict:
         import transformers
 
