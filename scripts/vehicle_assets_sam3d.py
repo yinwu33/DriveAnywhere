@@ -34,6 +34,7 @@ def main() -> None:
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
     sys.path.insert(0, os.path.join(os.path.abspath(args.sam3d_root), "notebook"))
+    os.environ.setdefault("CONDA_PREFIX", os.environ["CUDA_HOME"])  # notebook/inference.py sets CUDA_HOME from it (conda env)
     import torch
     from inference import Inference
 

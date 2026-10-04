@@ -19,7 +19,7 @@ printf 'torch==2.5.1+cu121\ntorchvision==0.20.1+cu121\nxformers==0.0.28.post3\n'
 export UV_CONSTRAINT="$C" UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121 UV_INDEX_STRATEGY=unsafe-best-match
 uv pip install hydra-core==1.3.2 omegaconf loguru easydict einops timm==0.9.16 roma==1.5.1 open3d==0.18.0 opencv-python==4.9.0.80 \
     scikit-image==0.23.1 trimesh scipy seaborn==0.13.2 matplotlib safetensors "huggingface-hub[cli]<1.0" spconv-cu121==2.3.8 \
-    lightning==2.3.3 pymeshfix==0.17.0 igraph==0.11.8 optree==0.14.1 plotly xatlas pyvista plyfile imageio astor ninja setuptools wheel
+    lightning==2.3.3 pymeshfix==0.17.0 igraph==0.11.8 optree==0.14.1 plotly xatlas pyvista plyfile imageio astor ninja "setuptools<70" wheel
 uv pip install kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html
 uv pip install "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
 uv pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
