@@ -3,15 +3,21 @@
 Per vehicle of --instances (scripts/vehicle_instances.py) with an asset (a 3DGS PLY: x y z, f_dc_*, opacity logit,
 scale_* log, rot_* wxyz; from TRELLIS or SAM 3D Objects, step 2) the asset is fitted to the vehicle with a similarity
 transform about world z (up): its up axis (--asset_up) to z, its longest ground axis along the vehicle's length axis,
-its bottom on the vehicle's ground height (with --asset_up auto, each axis is tried as up and the best fit kept), and yaw (both directions of the axis, then a fine search), scale and ground
+its bottom on the vehicle's ground height (with --asset_up auto, each axis is tried as up and the best fit kept), and yaw (full circle in 6 degree steps, then a fine search), scale and ground
 position chosen by the mean silhouette IoU against the vehicle's own instance masks (--inst_dir) in up to --fit_frames
-of its detections not touching the image border (asset centres projected with the loader's poses and intrinsics at
-1/--fit_down resolution, splatted as discs of their screen-space size). The vehicle's instance masks only show what is
+of its detections (asset centres projected with the loader's poses and intrinsics at
+1/--fit_down resolution, splatted as small discs), using its --fit_frames largest detections. The vehicle's instance masks only show what is
 not occluded; the same occluders affect every candidate, so the ranking holds.
 
 The run's Gaussians inside the fitted box (asset extent x --box_margin, up to the asset's height x --box_margin) are
 removed: they are the vehicle's own blurred Gaussians (E35: vehicles never supervised, then repainted by the
-generators). The asset's Gaussians are appended (colour band 0 from the asset, higher bands zero, opacity and scales
+generators, which also paint them a little off the real car: --box_margin around 1.4). With --clean_votes n, the run's Gaussians within --clean_radius
+that land inside the vehicle's instance mask, between --clean_front in front of the fitted asset and --clean_back behind its far side,
+in at least n of the vehicle's own frames are removed too: the real frames see only the vehicle there, so anything else
+is a remnant (E35 paints its invented cars a little off the real ones, outside any box). Two fitted vehicles whose footprints
+overlap by more than 30 % (of either) are one vehicle tracked twice; the better fit is kept. The fit score is the mean
+IoU minus --yaw_prior x |sin| of the heading off the observed length axis (parked cars are mostly parallel to it; the
+silhouettes of far views are nearly symmetric). The asset's Gaussians are appended (colour band 0 from the asset, higher bands zero, opacity and scales
 as stored, scales x the fitted scale), with a contact shadow under it: flat black discs on the ground over the
 footprint, opacity --shadow_opacity in the middle fading to 0 --shadow_fade beyond the footprint edge (an asset has no
 shadow of its own and looks afloat without one; 0 disables). The run's view gate is restricted to the kept Gaussians
@@ -49,6 +55,7 @@ from dashrecon.gen.floaters import ViewGate  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
 
 AXES = {"x": 0, "y": 1, "z": 2}
+C0 = 0.28209479177387814
 
 
 def read_gs_ply(path: str) -> dict:
@@ -103,9 +110,16 @@ def main() -> None:
     parser.add_argument("--fit_down", type=int, default=4)
     parser.add_argument("--fit_points", type=int, default=6000)
     parser.add_argument("--box_margin", type=float, default=1.15)
+    parser.add_argument("--box_height_margin", type=float, default=1.3)
     parser.add_argument("--shadow_opacity", type=float, default=0.6)
     parser.add_argument("--shadow_fade", type=float, default=0.15)
     parser.add_argument("--shadow_step", type=float, default=0.03)
+    parser.add_argument("--clean_votes", type=int, default=0, help="remove the run's Gaussians on the vehicle in this many of its frames (0 off)")
+    parser.add_argument("--clean_radius", type=float, default=4.0)
+    parser.add_argument("--clean_front", type=float, default=1.0, help="how far in front of the vehicle (scene units) counts as on it")
+    parser.add_argument("--clean_back", type=float, default=0.05, help="how far behind the vehicle's far side counts as on it")
+    parser.add_argument("--affine_inverse", action="store_true", help="put asset colours through the inverse of the run's mean Affine")
+    parser.add_argument("--yaw_prior", type=float, default=0.05, help="IoU cost of a heading 90 degrees off the observed axis")
     parser.add_argument("--min_iou", type=float, default=0.3, help="vehicles whose best fit is below this keep their Gaussians")
     args = parser.parse_args()
     os.makedirs(os.path.join(args.out_log_dir, "fit"), exist_ok=False)
@@ -122,25 +136,33 @@ def main() -> None:
 
     state = torch.load(os.path.join(args.log_dir, "checkpoint_final.pth"), map_location="cpu", weights_only=False)
     bg = state["models"]["Background"]
+    # the run renders through its Affine colour model (identity + an MLP of a per-image embedding; novel views use the
+    # mean embedding): asset colours are real pixel colours, so they get its inverse
+    aff = None
+    if args.affine_inverse and "Affine" in state["models"]:
+        st_a = state["models"]["Affine"]
+        e = st_a["embedding.weight"].mean(0, keepdim=True)
+        h = torch.relu(e @ st_a["decoder.0.weight"].T + st_a["decoder.0.bias"])
+        d = (h @ st_a["decoder.2.weight"].T + st_a["decoder.2.bias"]).view(3, 4).double().numpy()
+        aff = (np.linalg.inv(np.eye(3) + d[:, :3]), d[:, 3])
     means = bg["_means"].double().numpy()
     remove = np.zeros(len(means), bool)
     add = {k: [] for k in bg}
-    report = []
+    report, cands = [], []
     for inst in meta_in["instances"]:
         paths = glob.glob(os.path.join(args.assets_dir, f"asset_{inst['id']}.ply"))
         if not paths:
             continue
         asset = read_gs_ply(paths[0])
-        # fit frames: the vehicle's own detections not touching the border, spread over the track
-        dets = [(f, i) for f, i in inst["detections"]]
+        # fit frames: the vehicle's largest detections (close views constrain yaw and scale; a view cut by the image
+        # border is fine, the projected silhouette is cut the same way)
         ok = []
-        for f, i in dets:
+        for f, i in inst["detections"]:
             m = np.asarray(Image.open(os.path.join(args.inst_dir, "inst", f"{f:06d}.png"))) == i
-            ys, xs = np.nonzero(m)
-            if len(ys) and ys.min() > 2 and xs.min() > 2 and ys.max() < m.shape[0] - 3 and xs.max() < m.shape[1] - 3:
+            if m.any():
                 ok.append((f, i, m))
-        if len(ok) > args.fit_frames:
-            ok = [ok[int(j)] for j in np.linspace(0, len(ok) - 1, args.fit_frames).round()]
+        ok = sorted(ok, key=lambda x: -int(x[2].sum()))[:args.fit_frames]
+        ok.sort(key=lambda x: x[0])
         if not ok:
             continue
         h, w = ok[0][2].shape
@@ -195,12 +217,13 @@ def main() -> None:
                     inter = (occ & m).sum(1).float()
                     union = (occ | m).sum(1).float().clamp(min=1)
                     ious += inter / union
-                return ious / len(ok)
+                # prior: parallel to the observed length axis (either way) unless the silhouettes clearly say otherwise
+                return ious / len(ok) - args.yaw_prior * torch.sin(yaw).abs()
 
             best = None
-            s_grid = torch.tensor([s_len * f for f in (0.85, 0.92, 1.0, 1.08, 1.16)] + [s_h], device=dev)
-            for base_yaw in (0.0, math.pi):
-                yaws = torch.tensor([base_yaw + math.radians(d) for d in range(-12, 13, 4)], device=dev)
+            s_grid = torch.tensor([float(s_len * f) for f in (0.85, 0.92, 1.0, 1.08, 1.16)] + [float(s_h)], dtype=torch.float32, device=dev)
+            for base_yaw in (0.0,):  # full circle: the observed points give only a biased axis (one side seen)
+                yaws = torch.tensor([math.radians(d) for d in range(0, 360, 6)], dtype=torch.float32, device=dev)
                 da = torch.linspace(-0.3, 0.3, 7, device=dev)
                 dp = torch.linspace(-0.2, 0.5, 8, device=dev) * float(np.sign((c0 - poses[fidx[ok[0][0]]][:2, 3]) @ perp) or 1.0)
                 grid = torch.stack(torch.meshgrid(yaws, s_grid, da, dp, indexing="ij"), -1).view(-1, 4)
@@ -224,7 +247,8 @@ def main() -> None:
         up_best = max(fits, key=lambda u: fits[u][0][0])
         best, r_can, lo, hi, pts = fits[up_best]
         length, width, height = hi - lo
-        iou, yaw, s, da, dp = best
+        _, yaw, s, da, dp = best
+        iou = float(best[0] + args.yaw_prior * abs(math.sin(yaw)))  # report the IoU itself
         rec = {"id": inst["id"], "iou": iou, "asset_up": up_best, "iou_per_up": {u: fits[u][0][0] for u in fits}, "yaw_deg": math.degrees(yaw), "scale": s, "shift_along": da, "shift_perp": dp,
                "fit_frames": [f for f, _, _ in ok], "asset_extent": [float(length), float(width), float(height)]}
         print(f"[vehicle_insert] vehicle {inst['id']}: IoU {iou:.3f}, scale {s:.4f}, yaw {math.degrees(yaw):.1f} deg "
@@ -245,12 +269,15 @@ def main() -> None:
         # remove the run's Gaussians inside the box
         loc = (means - ctr) @ r_w  # canonical-axis coordinates (scaled)
         half = np.array([length, width]) * s * args.box_margin / 2
-        inside = (np.abs(loc[:, 0]) < half[0]) & (np.abs(loc[:, 1]) < half[1]) & (loc[:, 2] > -0.05) & (loc[:, 2] < height * s * args.box_margin)
-        remove |= inside
+        inside = (np.abs(loc[:, 0]) < half[0]) & (np.abs(loc[:, 1]) < half[1]) & (loc[:, 2] > -0.05) & (loc[:, 2] < height * s * args.box_height_margin)
         q = quat_from_matrix(rot)
         rq = asset["rot"] / np.linalg.norm(asset["rot"], axis=1, keepdims=True)
         n_a = len(xyz)
-        parts = {"_means": xyz, "_scales": asset["scale"] + math.log(s), "_quats": quat_mul(q, rq), "_features_dc": asset["dc"],
+        dc_a = asset["dc"]
+        if aff is not None:
+            col = (dc_a * C0 + 0.5 - aff[1]) @ aff[0].T
+            dc_a = (col - 0.5) / C0
+        parts = {"_means": xyz, "_scales": asset["scale"] + math.log(s), "_quats": quat_mul(q, rq), "_features_dc": dc_a,
                  "_opacities": asset["opacity"][:, None]}
         # contact shadow: flat black discs over the footprint (and the fade ring)
         sh = []
@@ -265,15 +292,11 @@ def main() -> None:
             pos = ctr + A[keep][:, None] * np.array([*ex, 0.0]) + B[keep][:, None] * np.array([*ey, 0.0]) + np.array([0, 0, 0.01])
             a_ = np.clip(alpha[keep], 1e-4, 1 - 1e-4)
             sh = {"_means": pos, "_scales": np.log(np.tile([args.shadow_step * 0.8, args.shadow_step * 0.8, args.shadow_step * 0.05], (len(pos), 1))),
-                  "_quats": np.tile(quat_from_matrix(r_w), (len(pos), 1)), "_features_dc": np.full((len(pos), 3), (0.02 - 0.5) / 0.28209479177387814),
+                  "_quats": np.tile(quat_from_matrix(r_w), (len(pos), 1)), "_features_dc": np.full((len(pos), 3), (0.02 - 0.5) / C0),
                   "_opacities": np.log(a_ / (1 - a_))[:, None]}
-        for blk in [parts] + ([sh] if len(sh) else []):
-            n_b = len(blk["_means"])
-            for k in add:
-                if k == "_features_rest":
-                    add[k].append(torch.zeros((n_b,) + tuple(bg[k].shape[1:])))
-                else:
-                    add[k].append(torch.from_numpy(np.ascontiguousarray(blk[k])).float())
+        cands.append({"rec": rec, "blocks": [parts] + ([sh] if len(sh) else []), "inside": inside, "ctr": ctr, "r_w": r_w,
+                      "half": np.array([length, width]) * s / 2, "pts_world": (pts[::max(1, len(pts) // 5000)] * s) @ r_w.T + ctr,
+                      "dets": [(f, i) for f, i in inst["detections"]]})
         rec.update({"inserted": True, "removed": int(inside.sum()), "asset_gaussians": n_a, "shadow_gaussians": int(len(sh["_means"])) if len(sh) else 0,
                     "centre": ctr.tolist(), "rotation": rot.tolist()})
         report.append(rec)
@@ -293,6 +316,51 @@ def main() -> None:
                 tiles.append(img)
             Image.fromarray(np.concatenate(tiles, 1)).save(os.path.join(args.out_log_dir, "fit", f"{inst['id']}.jpg"))
 
+    # one vehicle per place: a fitted vehicle whose centre lies in the footprint of a better-fitting one (or the other
+    # way round) is a duplicate track of the same vehicle
+    accepted = []
+    for c in sorted(cands, key=lambda c: -c["rec"]["iou"]):
+        def overlap(a, b):
+            """Share of b's footprint inside a's footprint (grid samples)."""
+            g = np.stack(np.meshgrid(np.linspace(-1, 1, 9), np.linspace(-1, 1, 5), indexing="ij"), -1).reshape(-1, 2) * b["half"]
+            pts = b["ctr"][:2] + g @ b["r_w"][:2, :2].T
+            loc = (pts - a["ctr"][:2]) @ a["r_w"][:2, :2]
+            return float(((np.abs(loc[:, 0]) < a["half"][0]) & (np.abs(loc[:, 1]) < a["half"][1])).mean())
+        dup = [a["rec"]["id"] for a in accepted if max(overlap(a, c), overlap(c, a)) > 0.3]
+        if dup:
+            c["rec"].update({"inserted": False, "duplicate_of": dup[0]})
+            continue
+        accepted.append(c)
+        remove |= c["inside"]
+        if args.clean_votes > 0:  # the run's Gaussians the vehicle's own frames see on the vehicle (or just in front)
+            near = np.nonzero(~remove & (np.linalg.norm(means - c["ctr"], axis=1) < args.clean_radius))[0]
+            votes = np.zeros(len(near), np.int32)
+            mt = torch.tensor(means[near], dtype=torch.float32, device=dev)
+            pw = torch.tensor(c["pts_world"], dtype=torch.float32, device=dev)
+            for f, i in c["dets"]:
+                m = torch.from_numpy(np.asarray(Image.open(os.path.join(args.inst_dir, "inst", f"{f:06d}.png"))) == i).to(dev)
+                k = torch.tensor(k_img[fidx[f]], dtype=torch.float32, device=dev)
+                w2c_f = torch.tensor(np.linalg.inv(poses[fidx[f]]), dtype=torch.float32, device=dev)
+                za = (pw @ w2c_f[:3, :3].T + w2c_f[:3, 3])[:, 2]
+                pc = mt @ w2c_f[:3, :3].T + w2c_f[:3, 3]
+                z = pc[:, 2]
+                u = (k[0, 0] * pc[:, 0] / z.clamp(min=1e-3) + k[0, 2]).round().long()
+                v = (k[1, 1] * pc[:, 1] / z.clamp(min=1e-3) + k[1, 2]).round().long()
+                ok_ = (z > 0.05) & (u >= 0) & (u < m.shape[1]) & (v >= 0) & (v < m.shape[0])
+                hit = torch.zeros_like(ok_)
+                hit[ok_] = m[v[ok_], u[ok_]]
+                hit &= (z > za.min() - args.clean_front) & (z < za.max() + args.clean_back)
+                votes += hit.cpu().numpy().astype(np.int32)
+            gone = near[votes >= args.clean_votes]
+            remove[gone] = True
+            c["rec"]["removed_by_views"] = int(len(gone))
+        for blk in c["blocks"]:
+            n_b = len(blk["_means"])
+            for k in add:
+                if k == "_features_rest":
+                    add[k].append(torch.zeros((n_b,) + tuple(bg[k].shape[1:])))
+                else:
+                    add[k].append(torch.from_numpy(np.ascontiguousarray(blk[k])).float())
     keep = np.nonzero(~remove)[0]
     kt = torch.from_numpy(keep)
     n_keep = len(keep)
@@ -300,6 +368,9 @@ def main() -> None:
     for blk_m in add["_means"]:
         ranges.append([start, start + len(blk_m)])
         start += len(blk_m)
+    for c in cands:
+        if c["rec"].get("inserted") and c not in accepted:
+            c["rec"]["inserted"] = False
     for k in bg:
         bg[k] = torch.cat([bg[k][kt]] + add[k], 0) if add[k] else bg[k][kt]
     torch.save(state, os.path.join(args.out_log_dir, "checkpoint_final.pth"))

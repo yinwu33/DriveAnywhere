@@ -31,3 +31,4 @@ accelerate==1.1.1
 huggingface_hub==0.26.5
 # KID / FID in scripts/eval_realism.py and scripts/eval_view_range.py (torchmetrics image metrics); its deps are already above
 torch-fidelity==0.4.0
+plyfile==1.1.2  # E43: 3DGS PLY assets (scripts/vehicle_insert.py)
