@@ -5,7 +5,9 @@ Gaussians: the Background model's Gaussians with one colour each, opacity, scale
 in its image (the nearest camera at all if none has): the colour training supervised, where the SH band 0 alone (--colour
 dc) can be far off (green road patches on val056 E35, corrected by the higher bands). SH degree 0 runs store one colour. Plus the run's view gate (dashrecon.gen.floaters.ViewGate, E14 / E20) so the page can apply the
 same observation-cone opacity factor the evaluation renderer applies to every novel view. At most --max_splats are
-kept, ranked by opacity x sqrt(largest x middle scale) (the visible footprint); --check_frames renders the run with and
+kept, ranked by opacity x sqrt(largest x middle scale) (the visible footprint); with --range_budget, every index range
+of the run's meta.json "generated_ranges" (scripts/vehicle_insert.py: one per inserted vehicle and its shadow) keeps its
+own best --range_budget, since a generated vehicle is many tiny Gaussians the global ranking would drop first; --check_frames renders the run with and
 without the dropped Gaussians at a few FRONT poses (straight and turned) and reports the PSNR between the two, so the
 cut is chosen knowingly. Binary layout, little endian, 32 bytes per splat, written in chunks of --chunk splats:
     float32 x, y, z | float16 sx, sy, sz (linear scales) | uint8 r, g, b, a | uint8 qw, qx, qy, qz (q / |q| * 128 + 128)
@@ -91,6 +93,7 @@ def main() -> None:
     parser.add_argument("--gt_root", required=True)
     parser.add_argument("--max_splats", type=int, required=True)
     parser.add_argument("--chunk", type=int, default=400000)
+    parser.add_argument("--range_budget", type=int, default=0, help="Gaussians kept per generated range (0: global ranking only)")
     parser.add_argument("--sky_hw", type=int, nargs=2, default=[512, 1024])
     parser.add_argument("--check_frames", type=int, nargs="*", default=[50, 100, 150])
     parser.add_argument("--colour", choices=["nearest_view", "dc"], default="nearest_view")
@@ -122,8 +125,19 @@ def main() -> None:
     gate = ViewGate.load(gate_file, device) if gate_file is not None else None
     srt = scales.sort(dim=1, descending=True).values
     importance = opac * torch.sqrt(srt[:, 0] * srt[:, 1])
-    keep = torch.argsort(importance, descending=True)[:args.max_splats]
-    keep = keep.sort().values  # keep the original order (the gate covers the first n)
+    ranges = []
+    if args.range_budget > 0:
+        ranges = json.load(open(os.path.join(args.log_dir, "meta.json"))).get("generated_ranges", [])
+    in_range = torch.zeros(n_all, dtype=torch.bool, device=importance.device)
+    picked = []
+    for a, b in ranges:
+        in_range[a:b] = True
+        picked.append(a + torch.argsort(importance[a:b], descending=True)[:args.range_budget])
+    rest = torch.nonzero(~in_range)[:, 0]
+    budget = args.max_splats - sum(len(x) for x in picked)
+    assert budget > 0, (args.max_splats, sum(len(x) for x in picked))
+    picked.append(rest[torch.argsort(importance[rest], descending=True)[:budget]])
+    keep = torch.cat(picked).sort().values  # keep the original order (the gate covers the first n)
     print(f"[export_web_scene] {args.label}: {n_all:,} Gaussians, keeping {len(keep):,}", flush=True)
 
     # quality check of the cut: render with the dropped Gaussians made transparent

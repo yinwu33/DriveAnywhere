@@ -128,7 +128,7 @@ kbd { font-family: var(--font-data); font-size: 11px; border: 1px solid var(--li
 
     <div class="note">
       <p>操作：左键拖动转向，右键或 <kbd>Shift</kbd>+拖动平移，滚轮前后，<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动，<kbd>Q</kbd><kbd>E</kbd> 升降。动过之后点"回到 FRONT"回到滑块控制的位置。</p>
-      <p>网页里每个高斯只有一个颜色：取离它最近、能看到它的训练帧方向上的球谐颜色，不随视角变化。E35 / E5fs 按可见面积保留了部分高斯。与完整 3DGS 渲染对比（帧 100，正前 / 左转 45°）PSNR 32.1 / 30.5 dB，几何一致。米制按评测侧 GT 轨迹换算（1 m = 0.430 场景单位），只用于标注滑块。</p>
+      <p>网页里每个高斯只有一个颜色：取离它最近、能看到它的训练帧方向上的球谐颜色，不随视角变化。高斯多的模型按可见面积保留了一部分（E43 每辆车单独保留 4 万个）。与完整 3DGS 渲染对比（帧 100，正前 / 左转 45°）PSNR 32.1 / 30.5 dB，几何一致。米制按评测侧 GT 轨迹换算（1 m = 0.430 场景单位），只用于标注滑块。</p>
       <p>编号见仓库 <span style="font-family:var(--font-data)">docs/EXPERIMENTS.md</span>：E35、E5fs、E39。</p>
     </div>
     <p class="err" id="err" hidden></p>
@@ -138,9 +138,18 @@ kbd { font-family: var(--font-data); font-size: 11px; border: 1px solid var(--li
 <script>
 "use strict";
 const MODELS = [
+  { id: "E43", name: "E43", tag: "E35 + 车辆资产 · 含生成", gen: true,
+    desc: "E35 的 17 辆停放车辆换成 SAM 3D 从单帧真实图像生成的完整三维车辆，按多帧轮廓拟合位置、朝向和尺寸，删掉原来的模糊车辆，加接地阴影。车辆是生成内容。",
+    nums: [["FRONT", "31.98"], ["KID 20°", "0.051"], ["KID 45°", "0.087"], ["全组", "0.042"]] },
   { id: "E35", name: "E35", tag: "主模型 · 含生成", gen: true,
     desc: "E5f → 视角屏蔽 + ±45° GEN3C → Fixer 渐进蒸馏（E23 / E29）→ 天空补全。",
     nums: [["FRONT", "32.54"], ["KID 20°", "0.060"], ["KID 45°", "0.095"], ["全组", "0.049"]] },
+  { id: "E42d", name: "E42d", tag: "E35 + 固定路面 · 含生成", gen: true,
+    desc: "E35 的路面换成贴在融合路面上的固定面元（颜色取真实像素，再按训练帧微调），横移时车道线不碎；覆盖边缘渐隐。",
+    nums: [["FRONT", "31.71"], ["KID 20°", "0.063"], ["KID 45°", "0.098"], ["全组", "0.053"]] },
+  { id: "E41s", name: "E41s", tag: "停放车辆参与训练 · 不含生成", gen: false,
+    desc: "停着的车不再被掩掉：用多视角深度一致性只掩掉真正在动的物体（和行人），停放车辆参与融合、网格和训练。再补天空。",
+    nums: [["FRONT", "33.88"], ["KID 20°", "0.056"], ["KID 45°", "0.119"], ["全组", "0.056"]] },
   { id: "E5fs", name: "E5fs", tag: "起点 · 不含生成", gen: false,
     desc: "只用 FRONT 的 3DGS（网格初始化 + flatten / 大尺寸正则）+ 天空补全。没拍到的地方没有补。",
     nums: [["FRONT", "31.36"], ["KID 20°", "0.077"], ["KID 45°", "0.140"], ["全组", "0.072"]] },
@@ -629,7 +638,7 @@ setInterval(() => { if (!keys.size || !cams) return; if (!free) free = railPose(
   for (let i = 0; i < 3; i++) free.t[i] += s * (mv[0] * R[3*i] + mv[1] * R[3*i+1] + mv[2] * R[3*i+2]); changed(); }, 30);
 window.addEventListener("resize", () => { needsDraw = true; });
 
-let start = "E35";
+let start = "E43";
 try { const s = localStorage.getItem("val056-3d-model"); if (MODELS.some((m) => m.id === s)) start = s; } catch (e) { /* storage unavailable */ }
 const q = new URLSearchParams(location.search);
 if (MODELS.some((m) => m.id === q.get("m"))) start = q.get("m");
