@@ -10,12 +10,16 @@ Per run (--runs label=log_dir), at the D-Z1 moves (--moves, every --frame_stride
 LiDAR) and at the real FRONT_LEFT / FRONT_RIGHT placements:
     LiDAR depth: the aggregated points projected and z-buffered on the render grid, then a --min_filter_px minimum
         filter (thin far points leaking between near ones);
-    floater rate: share of the pixels with LiDAR depth where the render is opaque (alpha > 0.5) and its depth is less
-        than (1 - --floater_rel) x the LiDAR depth: something rendered in front of every real surface;
-    depth AbsRel: |render - LiDAR| / LiDAR over the same opaque pixels.
+    scale ratio: median render depth / LiDAR depth over the opaque pixels (alpha > 0.5) of the view. The trajectory
+        Sim(3) scale does not fix the reconstruction's own depth scale (val056 E41s: renders are 1.2-1.3 x deeper than
+        the LiDAR placed with it, more near the camera), so depths are compared after dividing by this ratio;
+    floater rate: share of the pixels with LiDAR depth where the render is opaque and its depth is less than
+        (1 - --floater_rel) x ratio x the LiDAR depth: something rendered in front of every real surface;
+    depth AbsRel: scale-invariant, |render / ratio - LiDAR| / LiDAR over the opaque pixels.
 Road height: LiDAR ground points (Waymo ground label) give a median ground height per --cell grid cell; per run, the
-opacity-weighted distribution of (Gaussian z - LiDAR ground z) for Gaussians within 0.6 units of the ground (the road
-layer's offset and thickness), in metres; with --planes also (height field - LiDAR ground) of scripts/fit_planes.py.
+opacity-weighted distribution of (Gaussian z - LiDAR ground z) for Gaussians between 0.6 units under and 0.15 units over
+the ground (above that sit cars and kerbs), in metres; its p90 - p10 is the thickness of the road layer (the offset
+carries the depth-scale mismatch above); with --planes also (height field - LiDAR ground) of scripts/fit_planes.py.
 
 Output: --out json and a printed table.
 
@@ -151,16 +155,16 @@ def main() -> None:
         op = torch.sigmoid(bg._opacities.detach()[:, 0]).cpu().numpy()
         gzm = ground_at(m[:, :2])
         dz = m[:, 2] - gzm
-        near = np.isfinite(dz) & (np.abs(dz) < 0.6)
+        near = np.isfinite(dz) & (dz > -0.6) & (dz < 0.15)
         wq = lambda x, w, q: float(np.interp(q, np.cumsum(w[np.argsort(x)]) / w.sum(), np.sort(x)))  # noqa: E731
-        road = {"gaussians_near_ground": int(near.sum()),
-                "offset_m_p10_p50_p90": [wq(dz[near], op[near], q) / s_ref for q in (0.1, 0.5, 0.9)]}
+        qs = [wq(dz[near], op[near], q) / s_ref for q in (0.1, 0.5, 0.9)]
+        road = {"gaussians_near_ground": int(near.sum()), "offset_m_p10_p50_p90": qs, "thickness_m_p90_p10": qs[2] - qs[0]}
         # depth / floaters at the moves
         per_move = {}
         with torch.no_grad():
             for spec_m in args.moves:
                 mv = ViewMove.parse(spec_m)
-                fl, n_px, absrel = 0, 0, []
+                fl, n_px, absrel, ratios = 0, 0, [], []
                 for i in range(0, len(frames), args.frame_stride):
                     ii, ci = ds.full_image_set.get_image(front_image_index(ds, i), 1)
                     ii, ci = to_device(ii, dev), to_device(ci, dev)
@@ -172,14 +176,18 @@ def main() -> None:
                     d_l = lidar_depth(pts_t, torch.linalg.inv(c2w), ci["intrinsics"], h, w, args.min_filter_px)
                     has = d_l > 0
                     opq = has & (a_r > 0.5)
-                    fl += int((opq & (d_r < (1 - args.floater_rel) * d_l)).sum())
+                    if opq.sum() < 100:
+                        continue
+                    ratio = float((d_r[opq] / d_l[opq]).median())
+                    ratios.append(ratio)
+                    fl += int((opq & (d_r < (1 - args.floater_rel) * ratio * d_l)).sum())
                     n_px += int(has.sum())
-                    if opq.any():
-                        absrel.append(float(((d_r[opq] - d_l[opq]).abs() / d_l[opq]).mean()))
-                per_move[spec_m] = {"floater_rate": fl / max(n_px, 1), "depth_absrel": float(np.mean(absrel)) if absrel else None}
+                    absrel.append(float(((d_r[opq] / ratio - d_l[opq]).abs() / d_l[opq]).mean()))
+                per_move[spec_m] = {"floater_rate": fl / max(n_px, 1), "depth_absrel_si": float(np.mean(absrel)) if absrel else None,
+                                    "scale_ratio_median": float(np.median(ratios)) if ratios else None}
         results[label] = {"log_dir": log_dir, "road_layer": road, "moves": per_move}
         print(f"[eval_floaters] {label}: road layer offset p10/p50/p90 " + " / ".join(f"{x:+.2f}" for x in road["offset_m_p10_p50_p90"])
-              + " m; floater rate " + "  ".join(f"{k} {v['floater_rate']:.3f}" for k, v in per_move.items()), flush=True)
+              + f" m (thickness {road['thickness_m_p90_p10']:.2f} m); scale ratio {per_move[args.moves[0]]['scale_ratio_median']:.3f}; floater rate " + "  ".join(f"{k} {v['floater_rate']:.3f}" for k, v in per_move.items()), flush=True)
         del tr, ds
         torch.cuda.empty_cache()
     planes = None
