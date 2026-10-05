@@ -1,4 +1,4 @@
-"""M7 (docs/PAPER_PLAN.md) for E45 (docs/EXPERIMENTS.md): floaters and road height against LiDAR. EVALUATION CODE: reads GT
+"""M7 (docs/PAPER_PLAN.md), D-F2 and E45 (docs/EXPERIMENTS.md): floaters and road height against LiDAR. EVALUATION CODE: reads GT
 LiDAR, ego poses and calibration.
 
 LiDAR of every --lidar_stride-th frame is put into the run's world the way scripts/eval_cross_camera.py places the
