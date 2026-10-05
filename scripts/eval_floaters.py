@@ -133,7 +133,8 @@ def main() -> None:
             order = np.argsort(flat)
             uniq, start, cnt = np.unique(flat[order], return_index=True, return_counts=True)
             gz = np.full(shape[0] * shape[1], np.nan)
-            gz[uniq] = [np.median(g[order][a:a + c, 2]) for a, c in zip(start, cnt)]
+            gzs = g[order, 2]
+            gz[uniq] = [np.median(gzs[a:a + c]) for a, c in zip(start, cnt)]
             ground_ref = (org, gz.reshape(shape), s)
             print(f"[eval_floaters] {len(pts):,} LiDAR points ({int(gnd.sum()):,} ground) in the run world, scale {s:.4f} ({time.time() - t0:.0f} s)", flush=True)
         org, gz, s_ref = ground_ref
