@@ -10,12 +10,14 @@ Per run (--runs label=log_dir), at the D-Z1 moves (--moves, every --frame_stride
 LiDAR) and at the real FRONT_LEFT / FRONT_RIGHT placements:
     LiDAR depth: the aggregated points projected and z-buffered on the render grid, then a --min_filter_px minimum
         filter (thin far points leaking between near ones);
-    scale ratio: median render depth / LiDAR depth over the opaque pixels (alpha > 0.5) of the view. The trajectory
-        Sim(3) scale does not fix the reconstruction's own depth scale (val056 E41s: renders are 1.2-1.3 x deeper than
-        the LiDAR placed with it, more near the camera), so depths are compared after dividing by this ratio;
-    floater rate: share of the pixels with LiDAR depth where the render is opaque and its depth is less than
-        (1 - --floater_rel) x ratio x the LiDAR depth: something rendered in front of every real surface;
-    depth AbsRel: scale-invariant, |render / ratio - LiDAR| / LiDAR over the opaque pixels.
+    depth calibration: the trajectory Sim(3) scale does not fix the reconstruction's own depth scale, and the mismatch
+        depends on depth (val056 E41s: renders 1.2-1.35 x deeper than the LiDAR near the camera, 1.06-1.16 x far away).
+        Per frame, log(render depth) = a + b log(LiDAR depth) is fitted on the frame's own FRONT view (opaque pixels,
+        two passes, residuals over 0.2 dropped) and every moved view of that frame is compared with
+        d_hat = exp(a) LiDAR^b, so what is measured is the extra error of moving, not the reconstruction's scale;
+    floater rate: share of the pixels with LiDAR depth where the render is opaque (alpha > 0.5) and its depth is less
+        than (1 - --floater_rel) x d_hat: something rendered in front of every real surface;
+    depth AbsRel: |render - d_hat| / d_hat over the opaque pixels.
 Road height: LiDAR ground points (Waymo ground label) give a median ground height per --cell grid cell; per run, the
 opacity-weighted distribution of (Gaussian z - LiDAR ground z) for Gaussians between 0.6 units under and 0.15 units over
 the ground (above that sit cars and kerbs), in metres; its p90 - p10 is the thickness of the road layer (the offset
@@ -159,12 +161,30 @@ def main() -> None:
         wq = lambda x, w, q: float(np.interp(q, np.cumsum(w[np.argsort(x)]) / w.sum(), np.sort(x)))  # noqa: E731
         qs = [wq(dz[near], op[near], q) / s_ref for q in (0.1, 0.5, 0.9)]
         road = {"gaussians_near_ground": int(near.sum()), "offset_m_p10_p50_p90": qs, "thickness_m_p90_p10": qs[2] - qs[0]}
+        # per-frame depth calibration on the frame's own FRONT view
+        calib = {}
+        with torch.no_grad():
+            for i in range(0, len(frames), args.frame_stride):
+                ii, ci = ds.full_image_set.get_image(front_image_index(ds, i), 1)
+                ii, ci = to_device(ii, dev), to_device(ci, dev)
+                c2w = torch.tensor(est[i], dtype=torch.float32, device=dev)
+                h, w = int(ci["height"]), int(ci["width"])
+                out = render_at(tr, ii, ci, c2w, ci["intrinsics"], (h, w))
+                d_l = lidar_depth(pts_t, torch.linalg.inv(c2w), ci["intrinsics"], h, w, args.min_filter_px)
+                m = (d_l > 0) & (out["opacity"][..., 0] > 0.5)
+                x, y = torch.log(d_l[m]), torch.log(out["depth"][..., 0][m].clamp(min=1e-3))
+                keep = torch.ones_like(x, dtype=torch.bool)
+                for _ in range(2):
+                    A = torch.stack([torch.ones_like(x[keep]), x[keep]], 1)
+                    sol = torch.linalg.lstsq(A, y[keep][:, None]).solution[:, 0]
+                    keep = (y - (sol[0] + sol[1] * x)).abs() < 0.2
+                calib[i] = (float(sol[0]), float(sol[1]))
         # depth / floaters at the moves
         per_move = {}
         with torch.no_grad():
             for spec_m in args.moves:
                 mv = ViewMove.parse(spec_m)
-                fl, n_px, absrel, ratios = 0, 0, [], []
+                fl, n_px, absrel = 0, 0, []
                 for i in range(0, len(frames), args.frame_stride):
                     ii, ci = ds.full_image_set.get_image(front_image_index(ds, i), 1)
                     ii, ci = to_device(ii, dev), to_device(ci, dev)
@@ -178,16 +198,15 @@ def main() -> None:
                     opq = has & (a_r > 0.5)
                     if opq.sum() < 100:
                         continue
-                    ratio = float((d_r[opq] / d_l[opq]).median())
-                    ratios.append(ratio)
-                    fl += int((opq & (d_r < (1 - args.floater_rel) * ratio * d_l)).sum())
+                    a_c, b_c = calib[i]
+                    d_hat = torch.exp(a_c + b_c * torch.log(d_l.clamp(min=1e-3)))
+                    fl += int((opq & (d_r < (1 - args.floater_rel) * d_hat)).sum())
                     n_px += int(has.sum())
-                    absrel.append(float(((d_r[opq] / ratio - d_l[opq]).abs() / d_l[opq]).mean()))
-                per_move[spec_m] = {"floater_rate": fl / max(n_px, 1), "depth_absrel_si": float(np.mean(absrel)) if absrel else None,
-                                    "scale_ratio_median": float(np.median(ratios)) if ratios else None}
+                    absrel.append(float(((d_r[opq] - d_hat[opq]).abs() / d_hat[opq]).mean()))
+                per_move[spec_m] = {"floater_rate": fl / max(n_px, 1), "depth_absrel_calibrated": float(np.mean(absrel)) if absrel else None}
         results[label] = {"log_dir": log_dir, "road_layer": road, "moves": per_move}
         print(f"[eval_floaters] {label}: road layer offset p10/p50/p90 " + " / ".join(f"{x:+.2f}" for x in road["offset_m_p10_p50_p90"])
-              + f" m (thickness {road['thickness_m_p90_p10']:.2f} m); scale ratio {per_move[args.moves[0]]['scale_ratio_median']:.3f}; floater rate " + "  ".join(f"{k} {v['floater_rate']:.3f}" for k, v in per_move.items()), flush=True)
+              + f" m (thickness {road['thickness_m_p90_p10']:.2f} m); calibration exponent median {np.median([c[1] for c in calib.values()]):.3f}; floater rate " + "  ".join(f"{k} {v['floater_rate']:.3f}" for k, v in per_move.items()), flush=True)
         del tr, ds
         torch.cuda.empty_cache()
     planes = None
