@@ -17,6 +17,9 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
     E41  E5f with the dynamic mask reduced to the moving objects (scripts/refine_dynamic_masks.py: per-region multi-view
          depth consistency, people and two-wheelers always masked): parked vehicles are fused, meshed and supervised
          like the rest of the static scene instead of being excluded everywhere (docs/EXPERIMENTS.md E41).
+    E45  E41 with the planar proxies of scripts/fit_planes.py (road and sidewalk height fields; vertical patches where
+         the reconstruction has thin walls) as a hard constraint (dashrecon.train.planar): Background Gaussians near a
+         proxy are snapped onto it every 10 steps (docs/EXPERIMENTS.md E45).
     MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
          traversal); novel views get the first traversal's appearance.
     MT1e / MT1x / MT1m  MT1 / MT1app / MTGS-style (per-traversal higher SH bands, one sky per traversal), all three with
@@ -59,7 +62,7 @@ PIPELINES = {
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
                "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
-               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv"}
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv"}
 MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
 # per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
 TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
@@ -96,8 +99,11 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "E40", "E41") + MT1_EXPS:
+    if exp in ("E5f", "E40", "E41", "E45") + MT1_EXPS:
         opts += E5F_REG
+    if exp == "E45":
+        opts += [f"trainer.planar.path={fusion_dir}/planes.npz", "trainer.planar.every=10", "trainer.planar.start=500",
+                 "trainer.planar.below=0.6", "trainer.planar.above=0.05", "trainer.planar.band=0.1", "trainer.planar.thickness=0.01"]
     if exp in MT1_EXPS:
         # drivestudio's front_center_interp video would interpolate across the jump between traversals, and its rays
         # for all frames are precomputed on the GPU (16 GB for the 395 frames of mt1)

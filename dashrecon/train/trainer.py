@@ -12,6 +12,10 @@ Without the key the class behaves exactly like MultiTrainer (E3/E4).
 
 Config (``trainer.losses.mesh``): path, depth_w, normal_w, min_alpha, near, far.
 
+``trainer.planar`` (E45, dashrecon.train.planar): planar proxies of scripts/fit_planes.py as a hard constraint; after
+every densification step whose number is a multiple of ``every`` (from ``start`` on), Background Gaussians near a proxy
+are snapped onto it. Keys: path, every, start, below, above, band, thickness.
+
 ``trainer.traversal`` (combined multi-traversal scenes with per-traversal appearance, dashrecon.train.traversal):
 ``starts`` (first virtual frame of every traversal) and ``novel`` (the traversal whose appearance novel views get, -1 =
 the shared average). Before every render the Background and Sky models get ``current_traversal`` from the image's frame
@@ -32,8 +36,14 @@ from models.trainers.scene_graph import MultiTrainer
 class DashreconTrainer(MultiTrainer):
     """MultiTrainer + optional mesh depth/normal regularisation."""
 
-    def __init__(self, traversal=None, **kwargs) -> None:
+    def __init__(self, traversal=None, planar=None, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.planar = None
+        if planar is not None:
+            from dashrecon.train.planar import PlanarConstraint
+
+            self.planar = PlanarConstraint(planar.path, int(planar.every), int(planar.start), float(planar.below), float(planar.above),
+                                           float(planar.band), float(planar.thickness), self.device)
         self.traversal_starts = None if traversal is None else list(traversal.starts)
         self.traversal_novel = None if traversal is None else int(traversal.novel)
         self.mesh_cfg = self.losses_dict.mesh if "mesh" in self.losses_dict else None
@@ -117,6 +127,13 @@ class DashreconTrainer(MultiTrainer):
             near_plane=self.render_cfg.near_plane, far_plane=self.render_cfg.far_plane,
         )
         return {"gs_normal": F.normalize(renders[0], dim=-1), "gs_normal_alpha": alphas[0, ..., 0]}
+
+    def postprocess_per_train_step(self, step: int) -> None:
+        super().postprocess_per_train_step(step)
+        if self.planar is not None and step >= self.planar.start and step % self.planar.every == 0:
+            counts = self.planar.snap(self.models["Background"])
+            if step % 1000 == 0:
+                print(f"[planar] step {step}: snapped {counts.get('snapped', 0):,} of {counts.get('of', 0):,} Background Gaussians", flush=True)
 
     def set_traversal(self, k: int) -> None:
         """Appearance of traversal k (-1 = shared average) for the Background and Sky models."""
