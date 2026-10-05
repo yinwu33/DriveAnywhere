@@ -16,6 +16,7 @@ Example (sfm venv):
         --undistorted_root data/dashrecon/_undistorted/calib-glomap --max_features 8192 --overlap 20 --seed 0
 """
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -43,6 +44,8 @@ def main() -> None:
     parser.add_argument("--max_features", type=int, required=True)
     parser.add_argument("--overlap", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--focal_prior", default=None, help="focal.json of scripts/run_focal_prior.py: fix the focal to it "
+                        "(output calib-glomapf/ instead of calib-glomap/; E46)")
     parser.add_argument("--view_graph_calibration", action="store_true",
                         help="estimate focal lengths from the view graph before global mapping (dashrecon.pose.calib)")
     args = parser.parse_args()
@@ -54,7 +57,8 @@ def main() -> None:
     frames, paths = front_image_paths(os.path.dirname(img_dir), scene.start_timestep, scene.end_timestep)
     np.testing.assert_array_equal(io.read_frames(args.mask_dir), frames)
     names = [os.path.basename(p) for p in paths]
-    calib_dir = io.scene_dir(args.out_root, args.scene_id, TAG)
+    focal = None if args.focal_prior is None else float(json.load(open(args.focal_prior))["fx"])
+    calib_dir = io.scene_dir(args.out_root, args.scene_id, TAG if focal is None else TAG + "f")
     out_img_dir = os.path.join(args.undistorted_root, f"{scene.scene_idx:03d}", "images")
     assert not os.path.exists(calib_dir), f"{calib_dir} exists; delete it to recalibrate"
     assert not os.path.exists(out_img_dir), f"{out_img_dir} exists; delete it to recalibrate"
@@ -63,7 +67,7 @@ def main() -> None:
     print(f"[run_calib] {args.scene_id}: {len(frames)} FRONT frames {frames[0]}..{frames[-1]}", flush=True)
 
     res = run_glomap(img_dir, names, frames, args.mask_dir, work_dir, args.max_features, args.overlap, args.seed,
-                     args.view_graph_calibration)
+                     args.view_graph_calibration, focal=focal)
     # the COLMAP database and feature masks are large and fully determined by the inputs above
     os.remove(os.path.join(work_dir, "database.db"))
     shutil.rmtree(os.path.join(work_dir, "feature_masks"))
@@ -91,6 +95,7 @@ def main() -> None:
     io.write_poses(calib_dir, res.poses_c2w)
     io.write_sparse_obs(calib_dir, res.obs["frame"], res.obs["u"], res.obs["v"], res.obs["z"])
     io.write_meta(calib_dir, {
+        "focal_prior": None if focal is None else {"fx": focal, "source": os.path.relpath(args.focal_prior), "fixed": True},
         "backend": "glomap", "pycolmap": pycolmap.__version__, "scene_id": args.scene_id, "segment": scene.segment,
         "params": {k: getattr(args, k) for k in ("max_features", "overlap", "seed", "view_graph_calibration")},
         "camera_model": "RADIAL (f, cx, cy, k1, k2), shared by all frames, principal point fixed at the image centre",

@@ -65,7 +65,7 @@ def view_graph_calibration(db: str, seed: int) -> None:
 
 
 def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: str, work_dir: str,
-               max_features: int, overlap: int, seed: int, view_graph_calib: bool) -> CalibResult:
+               max_features: int, overlap: int, seed: int, view_graph_calib: bool, focal: float | None = None) -> CalibResult:
     """Self-calibrate one shared RADIAL camera and the trajectory of an ordered image sequence.
 
     Args:
@@ -78,6 +78,8 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
         overlap: sequential matching overlap (quadratic overlap on top).
         seed: random seed of the global mapper.
         view_graph_calib: run :func:`view_graph_calibration` before global mapping.
+        focal: if given, the shared focal length in pixels is fixed to it (E46: a single-image prior, since forward
+            motion leaves the focal weakly constrained); only the radial distortion and the poses are estimated.
     """
     import pycolmap
 
@@ -89,6 +91,10 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "RADIAL"
     reader.mask_path = mask_dir
+    if focal is not None:
+        assert not view_graph_calib, "view graph calibration would re-estimate the fixed focal"
+        w0, h0 = Image.open(os.path.join(image_dir, names[0])).size
+        reader.camera_params = f"{focal},{w0 / 2},{h0 / 2},0,0"
     extraction = pycolmap.FeatureExtractionOptions()
     extraction.sift.max_num_features = max_features
     pycolmap.extract_features(db, image_dir, image_names=names, camera_mode=pycolmap.CameraMode.SINGLE,
@@ -106,6 +112,8 @@ def run_glomap(image_dir: str, names: list[str], frames: np.ndarray, mask_root: 
     os.makedirs(sparse_dir)
     options = pycolmap.GlobalPipelineOptions()
     options.random_seed = seed
+    if focal is not None:
+        options.mapper.bundle_adjustment.refine_focal_length = False
     recs = pycolmap.global_mapping(db, image_dir, sparse_dir, options)
     t3 = time.time()
     assert len(recs) == 1, f"global mapping produced {len(recs)} models"
