@@ -12,8 +12,8 @@ not occluded; the same occluders affect every candidate, so the ranking holds.
 The run's Gaussians inside the fitted box (asset extent x --box_margin, up to the asset's height x --box_margin) are
 removed: they are the vehicle's own blurred Gaussians (E35: vehicles never supervised, then repainted by the
 generators, which also paint them a little off the real car: --box_margin around 1.4). With --complete_unseen (E47, on a
-run whose vehicles were supervised, E41 / E45) the run's Gaussians on the vehicle's observed surface stay (in its own
-frames: inside its instance mask at the estimated depth of --pose_dir within --obs_tol), the asset contributes only the
+run whose vehicles were supervised, E41 / E45) the run's Gaussians on the vehicle's observed surface stay (in its
+--fit_frames largest detections: inside its instance mask within --obs_tol scene units of the estimated depth of --pose_dir), the asset contributes only the
 Gaussians behind that surface in every frame (its far side), and both lose what lies in front of it (free space). With --clean_votes n, the run's Gaussians within --clean_radius
 that land inside the vehicle's instance mask, between --clean_front in front of the fitted asset and --clean_back behind its far side,
 in at least n of the vehicle's own frames are removed too: the real frames see only the vehicle there, so anything else
@@ -106,8 +106,8 @@ def canonical(asset: dict, up: str) -> tuple:
 
 def observation_state(pts: np.ndarray, dets, inst_dir: str, depth_dir: str, poses: np.ndarray, k_depth: np.ndarray, grid: dict,
                       fidx: dict, tol: float, dev: torch.device):
-    """Per point: on the observed surface of the vehicle in at least one of its frames (inside its instance mask, at the
-    estimated depth within tol), and in front of that surface (free space) in at least one."""
+    """Per point: on the observed surface of the vehicle in at least one of the frames ``dets`` (inside its instance mask,
+    within tol scene units of the estimated depth), and in front of that surface (free space) in at least one."""
     on = torch.zeros(len(pts), dtype=torch.bool, device=dev)
     front = torch.zeros(len(pts), dtype=torch.bool, device=dev)
     p = torch.tensor(pts, dtype=torch.float32, device=dev)
@@ -129,9 +129,9 @@ def observation_state(pts: np.ndarray, dets, inst_dir: str, depth_dir: str, pose
         sel = mt[v[idx], u[idx]] & (d[v[idx], u[idx]] > 0)
         idx = idx[sel]
         dz = d[v[idx], u[idx]]
-        rel = (z[idx] - dz) / dz
-        on[idx[rel.abs() < tol]] = True
-        front[idx[rel < -tol]] = True
+        diff = z[idx] - dz
+        on[idx[diff.abs() < tol]] = True
+        front[idx[diff < -tol]] = True
     return on.cpu().numpy(), front.cpu().numpy()
 
 
@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument("--affine_inverse", action="store_true", help="put asset colours through the inverse of the run's mean Affine")
     parser.add_argument("--complete_unseen", action="store_true",
                         help="keep the run's vehicle where its frames saw it; add the asset only behind the observed surface (E47)")
-    parser.add_argument("--obs_tol", type=float, default=0.05, help="relative depth tolerance of the observed surface")
+    parser.add_argument("--obs_tol", type=float, default=0.1, help="depth tolerance of the observed surface (scene units)")
     parser.add_argument("--yaw_prior", type=float, default=0.05, help="IoU cost of a heading 90 degrees off the observed axis")
     parser.add_argument("--min_iou", type=float, default=0.3, help="vehicles whose best fit is below this keep their Gaussians")
     args = parser.parse_args()
@@ -316,10 +316,11 @@ def main() -> None:
             # behind the observed surface in every frame; anything in front of it (free space) goes, scene or asset
             grid_d = io.read_meta(args.pose_dir)["depth_grid"]
             k_d = io.depth_intrinsics(k_img, grid_d)
-            on_a, front_a = observation_state(xyz, inst["detections"], args.inst_dir, args.pose_dir, poses, k_d, grid_d, fidx, args.obs_tol, dev)
+            obs_dets = [(f, i) for f, i, _ in ok]  # the vehicle's largest (closest) detections: depth is reliable there
+            on_a, front_a = observation_state(xyz, obs_dets, args.inst_dir, args.pose_dir, poses, k_d, grid_d, fidx, args.obs_tol, dev)
             keep_a = ~on_a & ~front_a
             in_idx = np.nonzero(inside)[0]
-            on_s, _ = observation_state(means[in_idx], inst["detections"], args.inst_dir, args.pose_dir, poses, k_d, grid_d, fidx, args.obs_tol, dev)
+            on_s, _ = observation_state(means[in_idx], obs_dets, args.inst_dir, args.pose_dir, poses, k_d, grid_d, fidx, args.obs_tol, dev)
             inside = inside.copy()
             inside[in_idx[on_s]] = False  # observed scene Gaussians stay
             rec_unseen = {"asset_kept": int(keep_a.sum()), "asset_on_surface": int(on_a.sum()), "asset_free_space": int(front_a.sum()),
