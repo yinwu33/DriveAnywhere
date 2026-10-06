@@ -70,12 +70,11 @@ class PlanarConstraint:
         sup = inb & f.support[i0c, j0c] & f.support[i0c + 1, j0c + 1]
         return h, grad, sup
 
-    @torch.no_grad()
-    def snap(self, model) -> dict:
-        means, quats, scales = model._means, model._quats, model._scales
+    def _targets(self, means: torch.Tensor) -> tuple:
+        """Per Gaussian: distance to the proxy it snaps to (inf if none), the snapped centre and the proxy normal."""
         n = means.shape[0]
         best = torch.full((n,), float("inf"), device=means.device)
-        target = means.data.clone()
+        target = means.clone()
         normal = torch.zeros_like(target)
         for f in self.fields:
             h, grad, sup = self._field_lookup(f, means[:, :2])
@@ -96,6 +95,18 @@ class PlanarConstraint:
             best = torch.where(cand, dist.abs(), best)
             target[cand] = (means - dist[:, None] * p.normal)[cand]
             normal[cand] = p.normal
+        return best, target, normal
+
+    @torch.no_grad()
+    def near(self, means: torch.Tensor) -> torch.Tensor:
+        """(N,) bool: Gaussians a snap would move onto a proxy (dashrecon.train.carve leaves them alone, E52)."""
+        return torch.isfinite(self._targets(means)[0])
+
+    @torch.no_grad()
+    def snap(self, model) -> dict:
+        means, quats, scales = model._means, model._quats, model._scales
+        n = means.shape[0]
+        best, target, normal = self._targets(means.data)
         sel = torch.isfinite(best)
         if not sel.any():
             return {"snapped": 0}

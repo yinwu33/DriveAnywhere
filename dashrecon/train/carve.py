@@ -21,6 +21,12 @@ With ``relocate`` (E50) the selected Gaussians are moved instead of removed: rem
 ray from the nearest cached camera that has depth at its pixel (mesh or estimated, the nearer of the two) onto that
 depth, and its scales are multiplied by the depth ratio (clamped to [1/3, 3]) so its footprint in that view stays about
 the same; the photometric loss then refits it in place.
+
+With ``front_only`` (E52) only free-space evidence counts against a Gaussian: being in front of the nearest surface of
+its cell (z < d - tol). Being behind it is occlusion, not evidence: E49 / E50 also counted it, which took the inside of
+tree crowns (behind the nearest leaf of the cell), Gaussians that model reflections, and road Gaussians snapped to the
+planar proxies (a few cm off the mesh), and cost 1.6-2 dB on FRONT. Gaussians the trainer passes as ``exempt`` (those
+on a planar proxy, dashrecon.train.planar.near) are never touched.
 """
 import torch
 from torch.nn import Parameter
@@ -32,9 +38,9 @@ PARAMS = ("_means", "_scales", "_quats", "_features_dc", "_features_rest", "_opa
 
 class FreeSpaceCarver:
     def __init__(self, every: int, start: int, stop: int, margin_rel: float, margin_abs: float, min_views: int,
-                 max_views: int, down: int, est_rel: float = None, relocate: bool = False) -> None:
+                 max_views: int, down: int, est_rel: float = None, relocate: bool = False, front_only: bool = False) -> None:
         self.every, self.start, self.stop = every, start, stop
-        self.est_rel, self.relocate = est_rel, relocate
+        self.est_rel, self.relocate, self.front_only = est_rel, relocate, front_only
         self.margin_rel, self.margin_abs, self.min_views = margin_rel, margin_abs, min_views
         self.max_views, self.down = max_views, down
         self.views = {}  # image index -> (w2c, K at 1/down, mesh depth at 1/down, estimated depth at 1/down or None)
@@ -63,7 +69,7 @@ class FreeSpaceCarver:
         return self.start <= step <= self.stop and step % self.every == 0 and len(self.views) >= self.min_views
 
     @torch.no_grad()
-    def carve(self, model, optimizer, step: int) -> int:
+    def carve(self, model, optimizer, step: int, exempt: torch.Tensor = None) -> int:
         means = model._means.data
         n = means.shape[0]
         on = torch.zeros(n, dtype=torch.bool, device=means.device)
@@ -83,14 +89,19 @@ class FreeSpaceCarver:
             zz = z[idx]
             dm = d[v[idx], u[idx]]
             has = dm > 0
-            hit = has & ((zz - dm).abs() <= torch.clamp(self.margin_rel * dm, min=self.margin_abs))
+            tol_m = torch.clamp(self.margin_rel * dm, min=self.margin_abs)
+            hit = has & ((zz - dm).abs() <= tol_m)
+            front = has & (zz < dm - tol_m)
             if e is not None:
                 em = e[v[idx], u[idx]]
                 has_e = em > 0
-                hit = hit | (has_e & ((zz - em).abs() <= torch.clamp(self.est_rel * em, min=self.margin_abs)))
+                tol_e = torch.clamp(self.est_rel * em, min=self.margin_abs)
+                hit = hit | (has_e & ((zz - em).abs() <= tol_e))
+                # in front of every surface the pixel has (the nearer of mesh and estimate decides)
+                front = (front | ~has) & (~has_e | (zz < em - tol_e)) & (has | has_e)
                 has = has | has_e
             on[idx[hit]] = True
-            off[idx[has & ~hit]] += 1
+            off[idx[(front if self.front_only else has) & ~hit]] += 1
             if self.relocate:
                 t = dm
                 if e is not None:
@@ -100,6 +111,8 @@ class FreeSpaceCarver:
                 best_z[j], best_t[j] = zz[better], t[better]
                 best_c[j] = -w2c[:3, :3].T @ w2c[:3, 3]
         prune = ~on & (off >= self.min_views)
+        if exempt is not None:
+            prune &= ~exempt
         n_prune = int(prune.sum())
         if n_prune and self.relocate:
             j = torch.nonzero(prune & torch.isfinite(best_z))[:, 0]
