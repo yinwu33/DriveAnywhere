@@ -10,6 +10,8 @@ Per Background Gaussian:
     mesh: distance from its centre to the nearest vertex of --mesh_ply (the run's own NKSR mesh, a dashrecon product).
     needle: extent along the ray from the nearest training camera over the largest extent across it
         (dashrecon.gen.floaters).
+    sky / skyfrac: FRONT training views (/ share of the views it projects into) in which its centre lands on confident
+        sky (dashrecon.gen.floaters.sky_views, --sky_erode).
     saturation: of its view-independent (DC) colour; the E5c config initialises 100k "near randoms" with random colours
         (models/trainers/scene_graph.py init.near_randoms).
     observation cone (dashrecon.gen.floaters.observation_cone): the weight-averaged direction the training views saw
@@ -17,7 +19,7 @@ Per Background Gaussian:
 
 Each --variants entry renders the same checkpoint with parameters changed in memory only: "base" (as trained), or
 '&'-joined terms where "dc" zeroes the SH rest coefficients (no colour extrapolated to unseen directions) and
-<quantity><|><value> terms (quantity support | scale | mesh | needle) select Gaussians that are made transparent when
+<quantity><|><value> terms (quantity support | scale | mesh | needle | sky | skyfrac) select Gaussians that are made transparent when
 all terms hold, e.g. "scale>1", "support<1", "scale>0.3&mesh>1", "dc&support<1". A "gate<margin>" term (degrees)
 instead fades the selected Gaussians (all Gaussians when there is no other term) per camera by
 dashrecon.gen.floaters.cone_gate: kept while the camera sees them within their observation cone + margin, gone
@@ -60,7 +62,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashrecon import io  # noqa: E402
 from dashrecon.gen.floaters import (blend_weight, cone_gate, needle_ratio, observation_cone, rasterize,  # noqa: E402
-                                     training_observations)
+                                     sky_views, training_observations)
 from dashrecon.gen.novel import build_trainer, refined_c2w, to_device  # noqa: E402
 from dashrecon.gen.views import ViewMove, front_image_index, moved_c2w, render_at  # noqa: E402
 from dashrecon.provenance import git_commit  # noqa: E402
@@ -70,7 +72,7 @@ from dashrecon.train.seeds import seed_scene_optimization  # noqa: E402
 HW = (704, 1280)
 SH_C0 = 0.28209479177387814
 TURBO = cv2.applyColorMap(np.arange(256, dtype=np.uint8)[:, None], cv2.COLORMAP_TURBO)[:, 0, ::-1].astype(np.float32) / 255
-TERM = re.compile(r"^(support|scale|mesh|needle)([<>])([0-9.]+)$")
+TERM = re.compile(r"^(support|scale|mesh|needle|sky|skyfrac)([<>])([0-9.]+)$")
 GATE = re.compile(r"^(d?)gate([0-9.]+)$")
 
 
@@ -133,6 +135,7 @@ def main() -> None:
     parser.add_argument("--variants", nargs="+", required=True)
     parser.add_argument("--cone_min_weight", type=float, required=True, help="pixels of weight for a view to count")
     parser.add_argument("--gate_fade", type=float, required=True, help="degrees over which a gated Gaussian fades out")
+    parser.add_argument("--sky_erode", type=int, default=4, help="sky quantity: pixels of sky required around the centre")
     parser.add_argument("--out_dir", type=Path, required=True)
     args = parser.parse_args()
     commit = git_commit()
@@ -190,7 +193,9 @@ def main() -> None:
         dc = (SH_C0 * bg._features_dc + 0.5).clamp(0, 1)
         saturation = dc.max(dim=1).values - dc.min(dim=1).values
     del weights
-    quantities = {"support": support, "scale": scale, "mesh": mesh_dist, "needle": needle}
+    sky, inframe = sky_views(trainer, dataset, device, bg._means.data, args.sky_erode)
+    skyfrac = sky.float() / inframe.clamp(min=1).float()
+    quantities = {"support": support, "scale": scale, "mesh": mesh_dist, "needle": needle, "sky": sky.float(), "skyfrac": skyfrac}
     order = torch.argsort(side, descending=True)
     top = order[: int((torch.cumsum(side[order], 0) < 0.8 * side.sum()).sum()) + 1]
     opacity0, rest0 = bg._opacities.data.clone(), bg._features_rest.data.clone()
@@ -270,7 +275,8 @@ def main() -> None:
     writer.close()
 
     shares = {}
-    for name, x, bins in [("scale", scale, [0, 0.05, 0.2, 0.5, 1, float("inf")]), ("mesh", mesh_dist, [0, 0.1, 0.3, 1, 3, float("inf")])]:
+    for name, x, bins in [("scale", scale, [0, 0.05, 0.2, 0.5, 1, float("inf")]), ("mesh", mesh_dist, [0, 0.1, 0.3, 1, 3, float("inf")]),
+                         ("sky", sky.float(), [0, 1, 2, 5, 20, float("inf")])]:
         shares[name] = [{"range": [a, b], "gaussians": int(((x >= a) & (x < b)).sum()),
                          "side_weight_share": float(side[(x >= a) & (x < b)].sum() / side.sum())} for a, b in zip(bins[:-1], bins[1:])]
     metrics = {

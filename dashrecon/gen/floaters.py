@@ -131,6 +131,37 @@ def training_observations(trainer, dataset, device) -> tuple:
     return torch.stack(weights), torch.stack(centres)
 
 
+def sky_views(trainer, dataset, device, means: torch.Tensor, erode: int) -> tuple:
+    """(sky (N,) int: FRONT training views in which a Background Gaussian's centre, in front of the camera, projects
+    onto a pixel whose whole (2 erode + 1)^2 neighbourhood is sky-masked; inframe (N,) int: views it projects into).
+    Nothing real lies between a camera and the sky, so a Gaussian that projects onto confident sky is a floater the
+    sky-opacity loss only made transparent along the training rays (or a segmentation miss: thin branches, wires, which
+    the erosion protects)."""
+    from dashrecon.gen.novel import to_device
+
+    sky = torch.zeros(means.shape[0], dtype=torch.int32, device=device)
+    inframe = torch.zeros_like(sky)
+    for j in range(len(dataset.train_image_set)):
+        ii, ci = dataset.train_image_set.get_image(j, 1)
+        ii, ci = to_device(ii, device), to_device(ci, device)
+        img_id = ii["img_idx"].flatten()[0]
+        with torch.no_grad():
+            cam = trainer.process_camera(camera_infos=ci, image_ids=img_id, novel_view=False)
+            m = (ii["sky_masks"] > 0.5).float()[None, None]
+            m = -torch.nn.functional.max_pool2d(-m, 2 * erode + 1, stride=1, padding=erode)[0, 0] > 0.5
+            w2c = torch.linalg.inv(cam.camtoworlds)
+            pc = means @ w2c[:3, :3].T + w2c[:3, 3]
+            z = pc[:, 2]
+            u = (cam.Ks[0, 0] * pc[:, 0] / z.clamp(min=1e-3) + cam.Ks[0, 2]).floor().long()
+            v = (cam.Ks[1, 1] * pc[:, 1] / z.clamp(min=1e-3) + cam.Ks[1, 2]).floor().long()
+            h, w = m.shape
+            ok = (z > 0.05) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            inframe += ok.int()
+            idx = torch.nonzero(ok)[:, 0]
+            sky[idx] += m[v[idx], u[idx]].int()
+    return sky, inframe
+
+
 @dataclass
 class ViewGate:
     """Observation-cone gate of the first ``n`` Background Gaussians of a model (those present when it was made;
