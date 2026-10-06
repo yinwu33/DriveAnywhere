@@ -21,6 +21,12 @@ training images is cached, and every ``every`` steps from ``start`` to ``stop`` 
 the mesh surface but off it in at least ``min_views`` of them are removed. Keys: every, start, stop, margin_rel,
 margin_abs, min_views, max_views, down.
 
+``trainer.losses.colour_anchor`` (E55): ``colour_anchor_loss`` = w * mean |c_i - I(p_i)| over the Background Gaussians
+whose centre projects into the current training image (outside the dynamic and sky masks) within ``depth_tol`` (relative)
+of the rendered depth there, i.e. the front layer; c_i is the view-independent (DC) colour, I(p_i) the image at the
+projected centre. Without it, overlapping Gaussians can take garish colours that only add up to the right colour along
+the training rays and come apart as coloured blobs from the side (D-F3, DECISIONS W). Keys: w, depth_tol.
+
 ``trainer.traversal`` (combined multi-traversal scenes with per-traversal appearance, dashrecon.train.traversal):
 ``starts`` (first virtual frame of every traversal) and ``novel`` (the traversal whose appearance novel views get, -1 =
 the shared average). Before every render the Background and Sky models get ``current_traversal`` from the image's frame
@@ -175,8 +181,31 @@ class DashreconTrainer(MultiTrainer):
                                 image_infos.get("raw_depth_map"))
         return outputs
 
+    def _colour_anchor_loss(self, outputs, image_infos) -> torch.Tensor:
+        cfg = self.losses_dict.colour_anchor
+        bg, cam = self.models["Background"], self._last_cam
+        with torch.no_grad():
+            w2c = torch.linalg.inv(cam.camtoworlds)
+            pc = bg._means @ w2c[:3, :3].T + w2c[:3, 3]
+            z = pc[:, 2]
+            u = (cam.Ks[0, 0] * pc[:, 0] / z.clamp(min=1e-3) + cam.Ks[0, 2]).floor().long()
+            v = (cam.Ks[1, 1] * pc[:, 1] / z.clamp(min=1e-3) + cam.Ks[1, 2]).floor().long()
+            h, w = image_infos["pixels"].shape[:2]
+            ok = (z > 0.05) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            idx = torch.nonzero(ok)[:, 0]
+            uu, vv = u[idx], v[idx]
+            d = outputs["depth"][..., 0].detach()[vv, uu]
+            static = (image_infos["dynamic_masks"][vv, uu] < 0.5) & (image_infos["sky_masks"][vv, uu] < 0.5)
+            front = static & (d > 0) & ((z[idx] - d).abs() <= float(cfg.depth_tol) * d)
+            idx, target = idx[front], image_infos["pixels"][vv[front], uu[front]]
+        if len(idx) == 0:
+            return bg._features_dc.sum() * 0.0
+        return float(cfg.w) * (bg.colors[idx] - target).abs().mean()
+
     def compute_losses(self, outputs, image_infos, cam_infos):
         loss_dict = super().compute_losses(outputs, image_infos, cam_infos)
+        if "colour_anchor" in self.losses_dict:
+            loss_dict["colour_anchor_loss"] = self._colour_anchor_loss(outputs, image_infos)
         if self.mesh_cfg is None:
             return loss_dict
         keep = outputs["mesh_valid"].float() * (1.0 - image_infos["dynamic_masks"]) * (1.0 - image_infos["sky_masks"])

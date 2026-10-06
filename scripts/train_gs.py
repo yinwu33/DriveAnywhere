@@ -33,6 +33,8 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
     E53  E51 + the E52 carving (estimated-depth loss on every static non-sky pixel, front-only relocation).
     E54  E53 with behind-the-surface evidence counted again (as E50), planar-proxy Gaussians still exempt: is the
          FRONT cost of E49 / E50 the road (exempt here) or the behind rule?
+    E55a / E55b  E53 + colour anchor (dashrecon.train.trainer, losses.colour_anchor; w 0.01 / 0.05): the DC colour of
+         every front-layer Gaussian is pulled towards the image colour at its projected centre.
     E51  E46 with the estimated-depth loss on every static non-sky pixel (no confidence percentile, no range cut):
          trees and the far side of the street, which the filter removed, get a depth target (D-F3).
     MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
@@ -78,7 +80,7 @@ PIPELINES = {
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
                "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
-               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv", "E49": "glomapf-mv", "E50": "glomapf-mv", "E51": "glomapf-mv", "E52": "glomapf-mv", "E53": "glomapf-mv", "E54": "glomapf-mv"}
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv", "E49": "glomapf-mv", "E50": "glomapf-mv", "E51": "glomapf-mv", "E52": "glomapf-mv", "E53": "glomapf-mv", "E54": "glomapf-mv", "E55a": "glomapf-mv", "E55b": "glomapf-mv"}
 MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
 # per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
 TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
@@ -115,22 +117,24 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "E40", "E41", "E45", "E46", "E48", "E49", "E50", "E51", "E52", "E53", "E54") + MT1_EXPS:
+    if exp in ("E5f", "E40", "E41", "E45", "E46", "E48", "E49", "E50", "E51", "E52", "E53", "E54", "E55a", "E55b") + MT1_EXPS:
         opts += E5F_REG
-    if exp in ("E48", "E49", "E50", "E52", "E53", "E54"):
+    if exp in ("E48", "E49", "E50", "E52", "E53", "E54", "E55a", "E55b"):
         opts += ["trainer.carve.every=500", "trainer.carve.start=1500", "trainer.carve.stop=28000", "trainer.carve.margin_rel=0.05",
                  "trainer.carve.margin_abs=0.1", "trainer.carve.min_views=3", "trainer.carve.max_views=90", "trainer.carve.down=4"]
-    if exp in ("E49", "E50", "E52", "E53", "E54"):
+    if exp in ("E49", "E50", "E52", "E53", "E54", "E55a", "E55b"):
         opts += ["trainer.carve.est_rel=0.2", "data.pixel_source.raw_depth=true"]
-    if exp in ("E50", "E52", "E53", "E54"):
+    if exp in ("E50", "E52", "E53", "E54", "E55a", "E55b"):
         opts += ["trainer.carve.relocate=true"]
-    if exp in ("E52", "E53"):
+    if exp in ("E52", "E53", "E55a", "E55b"):
         opts += ["trainer.carve.front_only=true"]
-    if exp in ("E52", "E53", "E54"):
+    if exp in ("E52", "E53", "E54", "E55a", "E55b"):
         opts += ["trainer.carve.exempt_planar=true"]
-    if exp in ("E51", "E53", "E54"):
+    if exp in ("E51", "E53", "E54", "E55a", "E55b"):
         opts += ["data.pixel_source.depth_conf_percentile=0", "data.pixel_source.depth_max=1000"]
-    if exp in ("E45", "E46", "E48", "E49", "E50", "E51", "E52", "E53", "E54"):
+    if exp in ("E55a", "E55b"):
+        opts += [f"trainer.losses.colour_anchor.w={0.01 if exp == 'E55a' else 0.05}", "trainer.losses.colour_anchor.depth_tol=0.1"]
+    if exp in ("E45", "E46", "E48", "E49", "E50", "E51", "E52", "E53", "E54", "E55a", "E55b"):
         opts += [f"trainer.planar.path={fusion_dir}/planes.npz", "trainer.planar.every=10", "trainer.planar.start=500",
                  "trainer.planar.below=0.6", "trainer.planar.above=0.05", "trainer.planar.band=0.1", "trainer.planar.thickness=0.01"]
     if exp in MT1_EXPS:
