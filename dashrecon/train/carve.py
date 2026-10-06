@@ -15,6 +15,12 @@ estimated depth e there (the raw per-frame depth of the pose backend: no confide
 pixels; image_infos ``raw_depth_map``), and views where only the estimated depth exists count too. The NKSR mesh misses
 most trees and the far side of the street (low depth confidence there); without this, real Gaussians there are never
 on the mesh, only in front of or behind it, and are carved (E48).
+
+With ``relocate`` (E50) the selected Gaussians are moved instead of removed: removing them leaves holes at +-45 deg
+(E48, E45g), but what a training view saw through a floater is surface colour at the wrong depth. Each is slid along the
+ray from the nearest cached camera that has depth at its pixel (mesh or estimated, the nearer of the two) onto that
+depth, and its scales are multiplied by the depth ratio (clamped to [1/3, 3]) so its footprint in that view stays about
+the same; the photometric loss then refits it in place.
 """
 import torch
 from torch.nn import Parameter
@@ -26,9 +32,9 @@ PARAMS = ("_means", "_scales", "_quats", "_features_dc", "_features_rest", "_opa
 
 class FreeSpaceCarver:
     def __init__(self, every: int, start: int, stop: int, margin_rel: float, margin_abs: float, min_views: int,
-                 max_views: int, down: int, est_rel: float = None) -> None:
+                 max_views: int, down: int, est_rel: float = None, relocate: bool = False) -> None:
         self.every, self.start, self.stop = every, start, stop
-        self.est_rel = est_rel
+        self.est_rel, self.relocate = est_rel, relocate
         self.margin_rel, self.margin_abs, self.min_views = margin_rel, margin_abs, min_views
         self.max_views, self.down = max_views, down
         self.views = {}  # image index -> (w2c, K at 1/down, mesh depth at 1/down, estimated depth at 1/down or None)
@@ -62,6 +68,10 @@ class FreeSpaceCarver:
         n = means.shape[0]
         on = torch.zeros(n, dtype=torch.bool, device=means.device)
         off = torch.zeros(n, dtype=torch.int32, device=means.device)
+        # relocation target: nearest camera (smallest z) with depth at the Gaussian's pixel, and that depth
+        best_z = torch.full((n,), float("inf"), device=means.device)
+        best_t = torch.zeros(n, device=means.device)
+        best_c = torch.zeros(n, 3, device=means.device)
         for w2c, k, d, e in self.views.values():
             h, w = d.shape
             pc = means @ w2c[:3, :3].T + w2c[:3, 3]
@@ -81,8 +91,24 @@ class FreeSpaceCarver:
                 has = has | has_e
             on[idx[hit]] = True
             off[idx[has & ~hit]] += 1
+            if self.relocate:
+                t = dm
+                if e is not None:
+                    t = torch.where((em > 0) & ((dm <= 0) | (em < dm)), em, dm)
+                better = (t > 0) & (zz < best_z[idx])
+                j = idx[better]
+                best_z[j], best_t[j] = zz[better], t[better]
+                best_c[j] = -w2c[:3, :3].T @ w2c[:3, 3]
         prune = ~on & (off >= self.min_views)
         n_prune = int(prune.sum())
+        if n_prune and self.relocate:
+            j = torch.nonzero(prune & torch.isfinite(best_z))[:, 0]
+            ratio = best_t[j] / best_z[j]
+            model._means.data[j] = best_c[j] + (means[j] - best_c[j]) * ratio[:, None]
+            model._scales.data[j] += torch.log(ratio.clamp(1 / 3, 3))[:, None]
+            self.history.append({"step": step, "gaussians": n, "relocated": int(len(j)), "views": len(self.views),
+                                 "median_ratio": float(ratio.median()) if len(j) else None})
+            return int(len(j))
         if n_prune:
             keep = ~prune
             for name in PARAMS:

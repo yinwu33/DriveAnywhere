@@ -49,7 +49,8 @@ class DashreconTrainer(MultiTrainer):
 
             self.carver = FreeSpaceCarver(int(carve.every), int(carve.start), int(carve.stop), float(carve.margin_rel),
                                           float(carve.margin_abs), int(carve.min_views), int(carve.max_views), int(carve.down),
-                                          float(carve.est_rel) if carve.get("est_rel") is not None else None)
+                                          float(carve.est_rel) if carve.get("est_rel") is not None else None,
+                                          bool(carve.get("relocate", False)))
         self.planar = None
         if planar is not None:
             from dashrecon.train.planar import PlanarConstraint
@@ -148,7 +149,8 @@ class DashreconTrainer(MultiTrainer):
                 print(f"[planar] step {step}: snapped {counts.get('snapped', 0):,} of {counts.get('of', 0):,} Background Gaussians", flush=True)
         if self.carver is not None and self.carver.due(step):
             n = self.carver.carve(self.models["Background"], self.optimizer, step)
-            print(f"[carve] step {step}: removed {n:,} Background Gaussians off the mesh surface ({len(self.carver.views)} cached views)", flush=True)
+            verb = "relocated" if self.carver.relocate else "removed"
+            print(f"[carve] step {step}: {verb} {n:,} Background Gaussians off the mesh surface ({len(self.carver.views)} cached views)", flush=True)
 
     def set_traversal(self, k: int) -> None:
         """Appearance of traversal k (-1 = shared average) for the Background and Sky models."""
