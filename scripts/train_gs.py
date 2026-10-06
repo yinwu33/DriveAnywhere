@@ -25,6 +25,8 @@ All: MapAnything poses / intrinsics / depth, Grounded-SAM-2 dynamic masks, SegFo
          (D-F2, docs/EXPERIMENTS.md E46); everything downstream (masks, depth, fusion, mesh, planes) redone on it.
     E48  E46 with free-space carving (dashrecon.train.carve): Gaussians never on the NKSR mesh surface but in front of /
          behind it in the cached training views are removed during training (docs/EXPERIMENTS.md E48).
+    E49  E48, but a Gaussian on the raw estimated depth (MapAnything, no confidence filter; within 20 %) in a view also
+         counts as on the surface there, so trees and the far side of the street, which the mesh misses, are kept.
     MT1app MT1 with per-traversal appearance (dashrecon.train.traversal: DC colour residual per traversal, one sky per
          traversal); novel views get the first traversal's appearance.
     MT1e / MT1x / MT1m  MT1 / MT1app / MTGS-style (per-traversal higher SH bands, one sky per traversal), all three with
@@ -68,7 +70,7 @@ PIPELINES = {
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
                "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
-               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv"}
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv", "E49": "glomapf-mv"}
 MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
 # per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
 TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
@@ -105,12 +107,14 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
                  "trainer.losses.mesh.normal_w=0.05", "trainer.losses.mesh.min_alpha=0.5",
                  "trainer.losses.mesh.near=0.05", "trainer.losses.mesh.far=500.0"]
     opts += [f"model.Background.init.from_dashrecon.{kv}" for kv in init]
-    if exp in ("E5f", "E40", "E41", "E45", "E46", "E48") + MT1_EXPS:
+    if exp in ("E5f", "E40", "E41", "E45", "E46", "E48", "E49") + MT1_EXPS:
         opts += E5F_REG
-    if exp == "E48":
+    if exp in ("E48", "E49"):
         opts += ["trainer.carve.every=500", "trainer.carve.start=1500", "trainer.carve.stop=28000", "trainer.carve.margin_rel=0.05",
                  "trainer.carve.margin_abs=0.1", "trainer.carve.min_views=3", "trainer.carve.max_views=90", "trainer.carve.down=4"]
-    if exp in ("E45", "E46", "E48"):
+    if exp == "E49":
+        opts += ["trainer.carve.est_rel=0.2", "data.pixel_source.raw_depth=true"]
+    if exp in ("E45", "E46", "E48", "E49"):
         opts += [f"trainer.planar.path={fusion_dir}/planes.npz", "trainer.planar.every=10", "trainer.planar.start=500",
                  "trainer.planar.below=0.6", "trainer.planar.above=0.05", "trainer.planar.band=0.1", "trainer.planar.thickness=0.01"]
     if exp in MT1_EXPS:

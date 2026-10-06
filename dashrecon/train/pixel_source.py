@@ -14,7 +14,9 @@ cx, cy get +0.5 before scaling to the load size.
 
 Extra image_infos key: ``est_depth_map`` (z-depth on the load grid, 0 = no supervision), the estimated depth
 restricted to static, non-sky pixels with confidence >= the training-frame percentile and depth < max_depth
-(same rule as Phase 5); used through the configurable depth-loss key (upstream patch P4).
+(same rule as Phase 5); used through the configurable depth-loss key (upstream patch P4). With ``raw_depth`` also
+``raw_depth_map``: the same estimated depth on static, non-sky pixels without the confidence and range filter (float16
+on the device), for free-space carving only (dashrecon.train.carve est_rel, E49), never as a loss target.
 """
 import os
 
@@ -33,10 +35,13 @@ class DashreconCameraData(CameraData):
 
     # loaded after CameraData.__init__ (which already calls self.to); same pattern as upstream lidar_depth_maps
     est_depth_maps = None
+    raw_depth_maps = None
 
-    def __init__(self, pose_dir: str, mask_dir: str, conf_percentile: float, max_depth: float, test_stride: int, **kwargs) -> None:
+    def __init__(self, pose_dir: str, mask_dir: str, conf_percentile: float, max_depth: float, test_stride: int,
+                 raw_depth: bool = False, **kwargs) -> None:
         self.pose_dir, self.mask_dir = pose_dir, mask_dir
         self.conf_percentile, self.max_depth, self.test_stride = conf_percentile, max_depth, test_stride
+        self.raw_depth = raw_depth
         assert not kwargs["undistort"], "undistortion would use Waymo calibration (DECISIONS D3)"
         super().__init__(**kwargs)
         self.load_est_depth()
@@ -104,23 +109,33 @@ class DashreconCameraData(CameraData):
         depths = [io.read_depth(self.pose_dir, int(t)) for t in frames]
         thr = float(np.percentile(np.concatenate([c[d > 0] for c, d, tr in zip(confs, depths, train) if tr]), self.conf_percentile))
         out = np.zeros((len(frames), lh, lw), dtype=np.float32)
+        raw = np.zeros((len(frames), lh, lw), dtype=np.float16) if self.raw_depth else None
+
+        def resample(dv: np.ndarray) -> np.ndarray:
+            sampled = dv[np.clip(v_d, 0, th - 1)][:, np.clip(u_d, 0, tw - 1)]
+            sampled[~v_ok, :] = 0.0
+            sampled[:, ~u_ok] = 0.0
+            return sampled
+
         for i, t in enumerate(frames):
             dyn = io.mask_to_depth_grid(io.read_mask(self.mask_dir, "dynamic", int(t)), grid)
             sky = io.mask_to_depth_grid(io.read_mask(self.mask_dir, "sky", int(t)), grid)
             d = depths[i]
             valid = (d > 0) & (d < self.max_depth) & (confs[i] >= thr) & ~dyn & ~sky
-            dv = np.where(valid, d, 0.0)
-            sampled = dv[np.clip(v_d, 0, th - 1)][:, np.clip(u_d, 0, tw - 1)]
-            sampled[~v_ok, :] = 0.0
-            sampled[:, ~u_ok] = 0.0
-            out[i] = sampled
+            out[i] = resample(np.where(valid, d, 0.0))
+            if raw is not None:
+                raw[i] = resample(np.where((d > 0) & ~dyn & ~sky, d, 0.0))
         self.est_depth_maps = torch.from_numpy(out).to(self.device)
         self.est_depth_conf_threshold = thr
+        if raw is not None:
+            self.raw_depth_maps = torch.from_numpy(raw).to(self.device)
 
     def to(self, device: torch.device) -> None:
         super().to(device)
         if self.est_depth_maps is not None:
             self.est_depth_maps = self.est_depth_maps.to(device)
+        if self.raw_depth_maps is not None:
+            self.raw_depth_maps = self.raw_depth_maps.to(device)
 
     def get_image(self, frame_idx: int):
         image_infos, cam_infos = super().get_image(frame_idx)
@@ -128,6 +143,11 @@ class DashreconCameraData(CameraData):
         if self.downscale_factor != 1.0:
             d = sparse_lidar_map_downsampler(d, self.downscale_factor)
         image_infos["est_depth_map"] = d
+        if self.raw_depth_maps is not None:
+            r = self.raw_depth_maps[frame_idx].float()
+            if self.downscale_factor != 1.0:
+                r = sparse_lidar_map_downsampler(r, self.downscale_factor)
+            image_infos["raw_depth_map"] = r
         return image_infos, cam_infos
 
 
@@ -146,6 +166,7 @@ class DashreconPixelSource(WaymoPixelSource):
                 conf_percentile=self.data_cfg.depth_conf_percentile,
                 max_depth=self.data_cfg.depth_max,
                 test_stride=self.data_cfg.test_image_stride,
+                raw_depth=bool(self.data_cfg.get("raw_depth", False)),
                 dataset_name=self.dataset_name,
                 data_path=self.data_path,
                 cam_id=cam_id,

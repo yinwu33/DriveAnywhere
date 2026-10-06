@@ -48,7 +48,8 @@ class DashreconTrainer(MultiTrainer):
             from dashrecon.train.carve import FreeSpaceCarver
 
             self.carver = FreeSpaceCarver(int(carve.every), int(carve.start), int(carve.stop), float(carve.margin_rel),
-                                          float(carve.margin_abs), int(carve.min_views), int(carve.max_views), int(carve.down))
+                                          float(carve.margin_abs), int(carve.min_views), int(carve.max_views), int(carve.down),
+                                          float(carve.est_rel) if carve.get("est_rel") is not None else None)
         self.planar = None
         if planar is not None:
             from dashrecon.train.planar import PlanarConstraint
@@ -163,7 +164,8 @@ class DashreconTrainer(MultiTrainer):
             outputs.update(self._mesh_maps(self._last_cam))
             outputs.update(self._gaussian_normals(self._last_gs, self._last_cam))
             if self.carver is not None and not novel_view:
-                self.carver.add(int(image_infos["img_idx"].flatten()[0]), self._last_cam, outputs["mesh_depth"])
+                self.carver.add(int(image_infos["img_idx"].flatten()[0]), self._last_cam, outputs["mesh_depth"],
+                                image_infos.get("raw_depth_map"))
         return outputs
 
     def compute_losses(self, outputs, image_infos, cam_infos):
