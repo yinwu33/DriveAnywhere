@@ -106,7 +106,9 @@ def main() -> None:
     from datasets.driving_dataset import DrivingDataset
 
     t0 = time.time()
-    results, ground_ref = {}, None
+    # the LiDAR is placed with each run's own estimated FRONT poses: runs on different calibrations (E45s glomap, E46s
+    # glomapf) live in different worlds. Until 10-06 it was placed once, with the first run's poses (val056_e46.json).
+    results, refs = {}, {}
     for spec in args.runs:
         label, log_dir = spec.split("=", 1)
         cfg = OmegaConf.load(os.path.join(log_dir, "config.yaml"))
@@ -126,7 +128,8 @@ def main() -> None:
         front_to_ego = gt_cam_to_ego(gt_dir, 0)
         gt_front = np.stack([np.loadtxt(os.path.join(gt_dir, "ego_pose", f"{int(t):03d}.txt")) @ front_to_ego for t in frames])
         s = umeyama_scale(gt_front[:, :3, 3], est[:, :3, 3])
-        if ground_ref is None:
+        pose_dir = str(cfg.data.pixel_source.pose_dir)
+        if pose_dir not in refs:
             pts, gnd = lidar_world(gt_dir, frames, est, front_to_ego, s, args.lidar_stride, args.min_range, args.voxel)
             pts_t = torch.tensor(pts, dtype=torch.float32, device=dev)
             # LiDAR ground height grid
@@ -141,11 +144,12 @@ def main() -> None:
             gz = np.full(shape[0] * shape[1], np.nan)
             gzs = g[order, 2]
             gz[uniq] = [np.median(gzs[a:a + c]) for a, c in zip(start, cnt)]
-            ground_ref = (org, gz.reshape(shape), s)
-            print(f"[eval_floaters] {len(pts):,} LiDAR points ({int(gnd.sum()):,} ground) in the run world, scale {s:.4f} ({time.time() - t0:.0f} s)", flush=True)
-        org, gz, s_ref = ground_ref
+            refs[pose_dir] = (pts_t, (org, gz.reshape(shape), s))
+            print(f"[eval_floaters] {len(pts):,} LiDAR points ({int(gnd.sum()):,} ground) in the world of {pose_dir}, scale {s:.4f} ({time.time() - t0:.0f} s)", flush=True)
+        pts_t, ground_ref = refs[pose_dir]
 
-        def ground_at(xy):
+        def ground_at(xy, ground_ref=ground_ref):
+            org, gz, _ = ground_ref
             ij = np.floor(xy / args.cell).astype(np.int64) - org
             ok = (ij[:, 0] >= 0) & (ij[:, 1] >= 0) & (ij[:, 0] < gz.shape[0]) & (ij[:, 1] < gz.shape[1])
             out = np.full(len(xy), np.nan)
@@ -159,6 +163,7 @@ def main() -> None:
         dz = m[:, 2] - gzm
         near = np.isfinite(dz) & (dz > -0.6) & (dz < 0.15)
         wq = lambda x, w, q: float(np.interp(q, np.cumsum(w[np.argsort(x)]) / w.sum(), np.sort(x)))  # noqa: E731
+        s_ref = ground_ref[2]
         qs = [wq(dz[near], op[near], q) / s_ref for q in (0.1, 0.5, 0.9)]
         road = {"gaussians_near_ground": int(near.sum()), "offset_m_p10_p50_p90": qs, "thickness_m_p90_p10": qs[2] - qs[0]}
         # per-frame depth calibration on the frame's own FRONT view
@@ -204,13 +209,27 @@ def main() -> None:
                     n_px += int(has.sum())
                     absrel.append(float(((d_r[opq] - d_hat[opq]).abs() / d_hat[opq]).mean()))
                 per_move[spec_m] = {"floater_rate": fl / max(n_px, 1), "depth_absrel_calibrated": float(np.mean(absrel)) if absrel else None}
-        results[label] = {"log_dir": log_dir, "road_layer": road, "moves": per_move}
+        results[label] = {"log_dir": log_dir, "pose_dir": pose_dir, "metre_to_units": s_ref, "road_layer": road, "moves": per_move}
         print(f"[eval_floaters] {label}: road layer offset p10/p50/p90 " + " / ".join(f"{x:+.2f}" for x in road["offset_m_p10_p50_p90"])
               + f" m (thickness {road['thickness_m_p90_p10']:.2f} m); calibration exponent median {np.median([c[1] for c in calib.values()]):.3f}; floater rate " + "  ".join(f"{k} {v['floater_rate']:.3f}" for k, v in per_move.items()), flush=True)
         del tr, ds
         torch.cuda.empty_cache()
-    planes = None
+    planes, s_ref = None, None
     if args.planes:
+        # the height fields live in the world of the pose backend their fusion directory was built on
+        pose_tag = os.path.basename(os.path.dirname(os.path.abspath(args.planes))).split("__")[0]
+        match = [k for k in refs if os.path.basename(os.path.normpath(k)) == pose_tag]
+        assert len(match) == 1, f"no run on the planes' poses {pose_tag}: {list(refs)}"
+        ground_ref = refs[match[0]][1]
+        s_ref = ground_ref[2]
+
+        def ground_at(xy):
+            org, gz, _ = ground_ref
+            ij = np.floor(xy / args.cell).astype(np.int64) - org
+            ok = (ij[:, 0] >= 0) & (ij[:, 1] >= 0) & (ij[:, 0] < gz.shape[0]) & (ij[:, 1] < gz.shape[1])
+            out = np.full(len(xy), np.nan)
+            out[ok] = gz[ij[ok, 0], ij[ok, 1]]
+            return out
         z = np.load(args.planes)
         planes = {}
         for gi in range(int(z["num_ground"])):
@@ -222,7 +241,7 @@ def main() -> None:
         print(f"[eval_floaters] height fields vs LiDAR ground: {planes}", flush=True)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
-        json.dump({"reads_gt": True, "params": vars(args), "metre_to_units": s_ref, "results": results, "height_fields": planes,
+        json.dump({"reads_gt": True, "params": vars(args), "planes_metre_to_units": s_ref, "results": results, "height_fields": planes,
                    "dashrecon_commit": commit}, f, indent=1)
 
 
