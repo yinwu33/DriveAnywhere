@@ -16,6 +16,11 @@ Config (``trainer.losses.mesh``): path, depth_w, normal_w, min_alpha, near, far.
 every densification step whose number is a multiple of ``every`` (from ``start`` on), Background Gaussians near a proxy
 are snapped onto it. Keys: path, every, start, below, above, band, thickness.
 
+``trainer.carve`` (E48, dashrecon.train.carve; needs ``trainer.losses.mesh``): the mesh depth of up to ``max_views``
+training images is cached, and every ``every`` steps from ``start`` to ``stop`` Background Gaussians that are never on
+the mesh surface but off it in at least ``min_views`` of them are removed. Keys: every, start, stop, margin_rel,
+margin_abs, min_views, max_views, down.
+
 ``trainer.traversal`` (combined multi-traversal scenes with per-traversal appearance, dashrecon.train.traversal):
 ``starts`` (first virtual frame of every traversal) and ``novel`` (the traversal whose appearance novel views get, -1 =
 the shared average). Before every render the Background and Sky models get ``current_traversal`` from the image's frame
@@ -36,8 +41,14 @@ from models.trainers.scene_graph import MultiTrainer
 class DashreconTrainer(MultiTrainer):
     """MultiTrainer + optional mesh depth/normal regularisation."""
 
-    def __init__(self, traversal=None, planar=None, **kwargs) -> None:
+    def __init__(self, traversal=None, planar=None, carve=None, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.carver = None
+        if carve is not None:
+            from dashrecon.train.carve import FreeSpaceCarver
+
+            self.carver = FreeSpaceCarver(int(carve.every), int(carve.start), int(carve.stop), float(carve.margin_rel),
+                                          float(carve.margin_abs), int(carve.min_views), int(carve.max_views), int(carve.down))
         self.planar = None
         if planar is not None:
             from dashrecon.train.planar import PlanarConstraint
@@ -134,6 +145,9 @@ class DashreconTrainer(MultiTrainer):
             counts = self.planar.snap(self.models["Background"])
             if step % 1000 == 0:
                 print(f"[planar] step {step}: snapped {counts.get('snapped', 0):,} of {counts.get('of', 0):,} Background Gaussians", flush=True)
+        if self.carver is not None and self.carver.due(step):
+            n = self.carver.carve(self.models["Background"], self.optimizer, step)
+            print(f"[carve] step {step}: removed {n:,} Background Gaussians off the mesh surface ({len(self.carver.views)} cached views)", flush=True)
 
     def set_traversal(self, k: int) -> None:
         """Appearance of traversal k (-1 = shared average) for the Background and Sky models."""
@@ -148,6 +162,8 @@ class DashreconTrainer(MultiTrainer):
         if self.mesh_cfg is not None and self.training:
             outputs.update(self._mesh_maps(self._last_cam))
             outputs.update(self._gaussian_normals(self._last_gs, self._last_cam))
+            if self.carver is not None and not novel_view:
+                self.carver.add(int(image_infos["img_idx"].flatten()[0]), self._last_cam, outputs["mesh_depth"])
         return outputs
 
     def compute_losses(self, outputs, image_infos, cam_infos):
