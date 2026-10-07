@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Generalisation of the current non-generative recipe (E55b) to another dev scene: the whole E46 pipeline (focal prior,
+# fixed-focal recalibration, masks, depth, moving-object masks, fusion, mesh, planes), E55b training, sky completion,
+# and the evaluations; baseline = the scene's existing E5c run + sky completion (E5cs).
+set -euo pipefail
+cd /home/tjhu78u/workspace/DriveAnywhere
+export CUDA_HOME=$HOME/cuda-12.6 TORCH_CUDA_ARCH_LIST=9.0 HF_HUB_OFFLINE=1 PATH=$PWD/.venvs/main/bin:$HOME/cuda-12.6/bin:$PATH
+S=$1
+G=data/waymo/processed/validation; U=data/dashrecon/_undistorted/calib-glomapf; D=data/dashrecon/$S
+M0=$D/mask-gsam2_sky-segformer_img-glomapf; MV=$D/mask-gsam2mv_sky-segformer_img-glomapf; VRU=$D/mask-gsam2_sky-segformer_img-glomapf-vru
+P=$D/pose-glomapf_depth-mapanything; F=$D/pose-glomapf_depth-mapanything__mask-gsam2mv_sky-segformer_img-glomapf
+MASKARGS="--detector_id IDEA-Research/grounding-dino-base --sam_id facebook/sam2.1-hiera-large --box_threshold 0.25 --text_threshold 0.25 --dilate_px 5 --seg_model_id nvidia/segformer-b5-finetuned-cityscapes-1024-1024 --seg_input_hw 1024 1536"
+echo "== focal $(date +%T)"
+[ -f $D/focal-moge/focal.json ] || .venvs/sam3d/bin/python scripts/run_focal_prior.py --scene_id $S --processed_root $G --out_root data/dashrecon --frames 30
+echo "== calib $(date +%T)"
+[ -f $D/calib-glomapf/meta.json ] || .venvs/sfm/bin/python scripts/run_calib.py --scene_id $S --processed_root $G --mask_dir $D/mask-gsam2_sky-segformer --out_root data/dashrecon --undistorted_root $U --max_features 8192 --overlap 20 --seed 0 --focal_prior $D/focal-moge/focal.json
+echo "== masks $(date +%T)"
+[ -f $M0/meta.json ] || .venvs/masks/bin/python scripts/run_masks.py --scene_id $S --processed_root $U --out_root data/dashrecon $MASKARGS --image_tag img-glomapf
+[ -f $VRU/meta.json ] || .venvs/masks/bin/python scripts/run_masks.py --scene_id $S --processed_root $U --out_root data/dashrecon $MASKARGS --prompts person bicycle motorcycle --image_tag img-glomapf-vru
+echo "== pose / depth $(date +%T)"
+[ -f $P/meta.json ] || HF_HUB_OFFLINE=0 .venvs/mapanything/bin/python scripts/run_pose.py --scene_id $S --backend mapanything --model_id facebook/map-anything --processed_root $U --camera_dir $D/calib-glomapf --out_root data/dashrecon --scale model --max_views 300
+echo "== moving-object masks $(date +%T)"
+[ -f $MV/meta.json ] || PYTHONPATH=. .venvs/main/bin/python scripts/refine_dynamic_masks.py --scene_id $S --mask_dir $M0 --pose_dir $P --out_root data/dashrecon --test_stride 10 --conf_percentile 0 --max_depth 60 --offsets 5 10 15 20 --consistency_rel 0.05 --consistency_min 2 --static_share 0.5 --min_tested 30 --always_dir $VRU
+echo "== fusion $(date +%T)"
+[ -f $F/points_fused.ply ] || .venvs/main/bin/python scripts/run_fusion.py --scene_id $S --pose_dir $P --mask_dir $MV --processed_root $U --out_root data/dashrecon --test_stride 10 --conf_percentile 30 --max_depth 60 --consistency_k 4 --consistency_rel 0.05 --consistency_min 2 --voxel 0.05 --outlier_nb 20 --outlier_std 2.0 --road_cell 0.5 --road_sigma 2.0 --road_min_points 5 --road_max_dz 0.3 --normal_knn 30 --rejected_sample 200000 --seed 0
+echo "== mesh $(date +%T)"
+[ -f $F/mesh_nksr.ply ] || PATH=$PWD/.venvs/nksr/bin:$HOME/cuda-12.6/bin:$PATH .venvs/nksr/bin/python scripts/run_mesh.py --fusion_dir $F --detail_level 0.5 --mise_iter 1 --solver_tol 1e-4 --coverage_radius 0.15
+echo "== planes $(date +%T)"
+[ -f $F/planes.npz ] || PYTHONPATH=. .venvs/main/bin/python scripts/fit_planes.py --scene_id $S --fused_dir $F --pose_dir $P --processed_root $U --seg_model_id nvidia/segformer-b5-finetuned-cityscapes-1024-1024 --test_stride 10 --frame_stride 3 --depth_tol 0.05 --cell 0.25 --min_cell_points 3 --smooth_cells 1.0 --support_dilate 2 --inlier 0.04 --min_inliers 150 --max_tilt_deg 15 --patch_eps 0.3 --max_planes 80 --vertical_source mesh --out $F/planes.npz
+echo "== train $(date +%T)"
+[ -f results/E55b/$S/checkpoint_final.pth ] || .venvs/main/bin/python scripts/train_gs.py --exp E55b --scene_id $S --output_root results
+echo "== sky $(date +%T)"
+[ -f results/E55bs/$S/checkpoint_final.pth ] || PYTHONPATH=. .venvs/main/bin/python scripts/complete_sky.py --log_dir results/E55b/$S --out_log_dir results/E55bs/$S --exp E55bs
+[ -f results/E5cs/$S/checkpoint_final.pth ] || PYTHONPATH=. .venvs/main/bin/python scripts/complete_sky.py --log_dir results/E5c/$S --out_log_dir results/E5cs/$S --exp E5cs
+echo "== eval $(date +%T)"
+export PYTHONPATH=.
+for R in E55b E5c; do
+  [ -f results/$R/$S/front_heldout/metrics.json ] || .venvs/main/bin/python scripts/eval_front_heldout.py --log_dir results/$R/$S --example_frames 50 100 150
+done
+for R in E55bs E5cs; do
+  [ -d results/$R/$S/view_range ] || .venvs/main/bin/python scripts/eval_view_range.py --log_dir results/$R/$S --gt_root $G --seg_model_id nvidia/segformer-b5-finetuned-cityscapes-1024-1024 --frame_stride 10 --example_frames 50 100 150
+  [ -f results/$R/$S/realism_fs/metrics.json ] || .venvs/main/bin/python scripts/eval_cross_camera.py --log_dir results/$R/$S --gt_root $G --frame_stride 5 --alpha 0.5 --example_frames 50 100 150 --cams 1 2 --save_renders --out_subdir realism_fs
+done
+IDX=$(printf "%03d" $((10#${S#val})))
+if [ -d $G/$IDX/lidar ]; then .venvs/main/bin/python scripts/eval_floaters.py --runs E5cs=results/E5cs/$S E55bs=results/E55bs/$S --gt_root $G --out results/_diagnostics/floaters/${S}_gen.json --planes $F/planes.npz; else echo "no LiDAR for $S: floater evaluation skipped"; fi
+echo "== done $(date +%T)"
