@@ -10,7 +10,8 @@ only there, so they drive on the road only; z is the road height field.
 Vehicles: generated 3D assets of --assets_dir (scripts/vehicle_assets_sam3d.py, SAM 3D Objects: GENERATED CONTENT)
 whose fit in --asset_fits (scripts/vehicle_insert.py meta.json) reached --min_iou; scale = the fitted scale x
 --world_scale (the fits were made in another pose backend's world: ratio of the two ego path lengths, no GT). The
-asset's longest ground axis is its length; its front is the end with fewer red Gaussians (tail lights). Per oncoming
+asset's longest ground axis is its length; its front is the end with fewer red Gaussians (tail lights; --flip overrides
+assets where that fails); Gaussians outside its 1-99 % box grown by --box_pad are dropped. Per oncoming
 lane --oncoming_cars vehicles at speeds drawn from --oncoming_speed (scene units per frame), spaced --spacing apart
 (same speed within a lane: no overtaking); in the ego lane one lead vehicle --lead_gap ahead of the ego camera,
 following it. Each vehicle carries a contact shadow (flat dark discs over its footprint, as scripts/vehicle_insert.py).
@@ -129,6 +130,8 @@ def main() -> None:
     parser.add_argument("--lead_gap", type=float, required=True, help="0: no lead vehicle")
     parser.add_argument("--ego_moves", nargs="+", required=True)
     parser.add_argument("--min_iou", type=float, default=0.7)
+    parser.add_argument("--flip", type=int, nargs="*", default=[], help="assets whose front the tail-light test gets wrong (checked by eye)")
+    parser.add_argument("--box_pad", type=float, default=0.08, help="drop asset Gaussians outside the 1-99 %% box grown by this share")
     parser.add_argument("--parked_clear", type=float, default=1.3)
     parser.add_argument("--shadow_opacity", type=float, default=0.6)
     parser.add_argument("--shadow_fade", type=float, default=0.15)
@@ -175,14 +178,19 @@ def main() -> None:
             continue
         asset = read_gs_ply(os.path.join(args.assets_dir, f"asset_{v['id']}.ply"))
         r_can, lo, hi = canonical(asset, v["asset_up"])
-        sign = front_sign(asset, r_can, lo, hi)
+        sign = front_sign(asset, r_can, lo, hi) * (-1.0 if v["id"] in args.flip else 1.0)
+        # stray Gaussians outside the vehicle (SAM 3D sometimes keeps a faint background layer)
+        pc = asset["xyz"] @ r_can.T
+        pad = args.box_pad * (hi - lo)
+        inside = np.all((pc >= lo - pad) & (pc <= hi + pad), axis=1)
+        asset = {k: x[inside] for k, x in asset.items()}
         flip = np.diag([sign, sign, 1.0])  # 180 degrees about z when the front is at -x
         r_can = flip @ r_can
         off = np.array([(lo[0] + hi[0]) / 2 * sign, (lo[1] + hi[1]) / 2 * sign, lo[2]])
         s = v["scale"] * args.world_scale
         length, width, height = (hi - lo) * s
         pool.append({"id": v["id"], "asset": asset, "r_can": r_can, "off": off, "s": s, "size": [float(length), float(width), float(height)],
-                     "front_sign": sign, "iou": v["iou"]})
+                     "front_sign": sign, "iou": v["iou"], "cropped": int((~inside).sum())})
     print(f"[simulate_traffic] {len(pool)} assets (fit IoU >= {args.min_iou}): " +
           ", ".join(f"{a['id']} {a['size'][0]:.2f}x{a['size'][1]:.2f}" for a in pool), flush=True)
 
@@ -295,7 +303,7 @@ def main() -> None:
 
     hw = tuple(args.hw)
     traffic = {"lanes": [{"offset": lane.offset, "oncoming": lane.oncoming, "drivable": float(lane.ok.mean())} for lane in lanes],
-               "vehicles": vehicles, "assets": {a["id"]: {"size": a["size"], "front_sign": a["front_sign"], "fit_iou": a["iou"]} for a in pool},
+               "vehicles": vehicles, "assets": {a["id"]: {"size": a["size"], "front_sign": a["front_sign"], "fit_iou": a["iou"], "gaussians_cropped": a["cropped"]} for a in pool},
                "frames": {}}
     frames = list(range(0, len(tf), args.frame_stride))
     for f in frames:
