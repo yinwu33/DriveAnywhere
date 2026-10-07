@@ -9,11 +9,15 @@ up for this pipeline):
               bottoms, pole feet);
     full      top-down view: the class of the cell's points with the highest priority (car > pole / sign > building /
               wall / fence > vegetation > ground classes), objects at any height, tree crowns over the road included;
-    drivable  the road support of --planes (fit_planes.py height field, class road) minus cells with an obstacle (car,
+    drivable  the road support of --planes (fit_planes.py height field, class road) minus cells whose near-ground class
+              is another ground class (the support is dilated into the kerb), minus cells with an obstacle (car,
               pole, sign, building, wall, fence, vegetation trunks: more than --obstacle_points points between
               --obstacle_low and --obstacle_high above the road surface) and minus the footprints of --parked
               (scripts/vehicle_instances.py); its boundary typed as kerb (the cell across has observed non-road ground)
-              or open (nothing observed across: field-of-view edge, occlusion, range end); the ego path on top.
+              or open (nothing observed across: field-of-view edge, occlusion, range end); the ego path on top;
+    state     the planner raster: 1 drivable, 2 non-drivable (observed and not drivable, obstacles and parked vehicles
+              included), 0 unknown (nothing observed). Kerb = 1 next to 2, open edge = 1 next to 0.
+The panels are rotated so that the ego path runs left to right (the grids in the npz are not rotated).
 Local ground: the road height field where supported, else the sidewalk field, else the 5th height percentile of the
 cell's points.
 
@@ -65,6 +69,7 @@ def main() -> None:
     parser.add_argument("--obstacle_low", type=float, default=0.3)
     parser.add_argument("--obstacle_high", type=float, default=1.2)
     parser.add_argument("--obstacle_points", type=int, default=3)
+    parser.add_argument("--min_island", type=int, default=50, help="smallest drivable connected region kept (cells)")
     parser.add_argument("--px", type=int, default=4, help="pixels per cell")
     args = parser.parse_args()
     commit = git_commit()
@@ -153,7 +158,14 @@ def main() -> None:
         a = (cx - c[0]) * ax[0] + (cy - c[1]) * ax[1]
         b = -(cx - c[0]) * ax[1] + (cy - c[1]) * ax[0]
         parked |= (np.abs(a) < v["extent"][0] / 2 + 0.15) & (np.abs(b) < max(v["extent"][1], 0.8) / 2 + 0.15)
-    drivable = road_s & ~ndimage.binary_dilation(obst | parked, iterations=1)
+    # the road support is dilated outwards (fit_planes --support_dilate): cells whose near-ground points are mostly
+    # another class (sidewalk, terrain, ...) are not road
+    other_ground = (ground_cls >= 0) & (ground_cls != CITYSCAPES.index("road"))
+    drivable = ndimage.binary_closing(road_s & ~other_ground, iterations=1) & road_s & ~other_ground
+    drivable &= ~ndimage.binary_dilation(obst | parked, iterations=1)
+    lab, n_lab = ndimage.label(drivable)  # drop small islands (speckle inside sidewalks)
+    sizes = ndimage.sum(drivable, lab, np.arange(1, n_lab + 1))
+    drivable &= np.isin(lab, 1 + np.nonzero(sizes >= args.min_island)[0])
     observed = (n_near.reshape(shape) > 0) | (cnt_all.sum(1).reshape(shape) > 0)
     edge = drivable & ~ndimage.binary_erosion(drivable)
     across = ndimage.binary_dilation(~drivable & observed, iterations=2) & edge
@@ -177,23 +189,42 @@ def main() -> None:
     dr_img[parked] = (0, 0, 200)
     dr_img[kerb] = (255, 255, 255)
     dr_img[open_edge] = (255, 140, 0)
+    state = np.zeros(shape, np.uint8)
+    state[observed | obst | parked] = 2
+    state[drivable] = 1
+    st_img = np.zeros(shape + (3,), np.uint8)
+    st_img[state == 1] = (128, 64, 128)
+    st_img[state == 2] = (230, 230, 230)
     layers = [("rgb: ground orthophoto (fused points within %.2f of the ground)" % args.ground_band, (np.clip(ortho, 0, 1) * 255).astype(np.uint8)),
               ("ground: class of near-ground points (SegFormer votes)", colour(ground_cls)),
               ("full: top-down class (objects at any height)", colour(full_cls)),
-              ("drivable: road minus obstacles / parked cars; white = kerb, orange = open (unobserved) edge; yellow = ego path", dr_img)]
+              ("drivable: road minus obstacles / parked cars; white = kerb, orange = open (unobserved) edge; yellow = ego path", dr_img),
+              ("state (planner raster): purple = drivable, light grey = non-drivable, black = unknown", st_img)]
+    ego = poses[:, :2, 3]
+    heading = np.degrees(np.arctan2(*(ego[-1] - ego[0])[::-1]))
     tiles = []
     for title, arr in layers:
         im = Image.fromarray(to_img(arr)).resize((shape[0] * args.px, shape[1] * args.px), Image.NEAREST)
         dr = ImageDraw.Draw(im)
-        if title.startswith("drivable"):
+        if title.startswith("drivable") or title.startswith("state"):
             pts = [(float((p[0, 3] / args.cell - lo[0]) * args.px), float((shape[1] - (p[1, 3] / args.cell - lo[1])) * args.px)) for p in poses]
             dr.line(pts, fill=(255, 230, 0), width=3)
+        im = im.rotate(-heading, resample=Image.NEAREST, expand=True)  # ego path left to right
+        bbox = Image.fromarray((np.asarray(im).sum(-1) > 0).astype(np.uint8) * 255).getbbox()
+        tiles.append((title, im, bbox))
+    x0, y0 = min(b[0] for _, _, b in tiles), min(b[1] for _, _, b in tiles)
+    x1, y1 = max(b[2] for _, _, b in tiles), max(b[3] for _, _, b in tiles)
+    out_tiles = []
+    for title, im, _ in tiles:
+        im = im.crop((max(x0 - 10, 0), max(y0 - 24, 0), min(x1 + 10, im.width), min(y1 + 24, im.height)))
+        dr = ImageDraw.Draw(im)
         dr.rectangle([0, 0, 900, 18], fill=(0, 0, 0))
         dr.text((6, 3), title, fill=(255, 255, 255))
         bar = int(10 / args.cell * args.px)  # 10 scene units
         dr.rectangle([10, im.height - 14, 10 + bar, im.height - 8], fill=(255, 255, 255))
         dr.text((14 + bar, im.height - 18), "10 units", fill=(255, 255, 255))
-        tiles.append(np.asarray(im.convert("RGB")))
+        out_tiles.append(np.asarray(im.convert("RGB")))
+    tiles = out_tiles
     legend = Image.new("RGB", (tiles[0].shape[1], 40), (20, 20, 20))
     dl = ImageDraw.Draw(legend)
     x = 6
@@ -207,9 +238,10 @@ def main() -> None:
     stats = {"cells": int(np.prod(shape)), "road_support": int(road_s.sum()), "drivable": int(drivable.sum()),
              "removed_obstacles": int((road_s & obst).sum()), "removed_parked": int((road_s & parked).sum()),
              "edge_kerb": int(kerb.sum()), "edge_open": int(open_edge.sum()),
+             "state_cells": {"unknown": int((state == 0).sum()), "drivable": int((state == 1).sum()), "non_drivable": int((state == 2).sum())},
              "classes": {CITYSCAPES[c]: int((cls == c).sum()) for c in range(n_cls) if (cls == c).any()}}
     np.savez_compressed(os.path.splitext(args.out)[0] + ".npz", origin_cell=lo, cell=args.cell, ground_cls=ground_cls, full_cls=full_cls,
-                        drivable=drivable, kerb=kerb, open_edge=open_edge, road_support=road_s)
+                        drivable=drivable, kerb=kerb, open_edge=open_edge, road_support=road_s, state=state)
     with open(os.path.splitext(args.out)[0] + ".json", "w") as f:
         json.dump({"params": vars(args), "stats": stats, "uses_oracle": False, "dashrecon_commit": commit, "runtime_s": time.time() - t0}, f, indent=1)
     print(f"[bev_semantic] {stats} -> {args.out} ({time.time() - t0:.0f} s)", flush=True)
