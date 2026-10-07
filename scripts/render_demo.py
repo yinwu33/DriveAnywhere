@@ -13,7 +13,8 @@ frame (dashrecon.gen.views.ViewMove) by a fixed choreography of --duration secon
     29-32 s  straight ahead.
 A = --lateral, Y = --yaw, U = --up, P = --pitch (scene units / degrees); defaults stay inside DECISIONS Z (lateral +-3 m,
 yaw +-45 deg, up 0-2 m), where the reconstruction is valid. Novel-view rendering as everywhere else (render_at: the
-run's sky, mean Affine). Output: --out (mp4, H.264, --fps). GT is not read.
+run's sky, mean Affine). Output: --out (mp4, H.264, --fps); with --cameras_out the cameras as JSON (time, path frame,
+c2w, K), which scripts/simulate_traffic.py --cameras renders with traffic. GT is not read.
 
 Example (main venv):
     PYTHONPATH=. .venvs/main/bin/python scripts/render_demo.py --log_dir results/E54s/val056 --out results/E54s/val056/demo.mp4
@@ -74,6 +75,8 @@ def main() -> None:
     parser.add_argument("--up", type=float, default=0.75)
     parser.add_argument("--pitch", type=float, default=10.0)
     parser.add_argument("--hw", type=int, nargs=2, default=[720, 1280])
+    parser.add_argument("--cameras_out", help="also write the cameras (JSON; scripts/simulate_traffic.py --cameras)")
+    parser.add_argument("--cameras_only", action="store_true", help="write --cameras_out without rendering")
     args = parser.parse_args()
     t0 = time.time()
     dev = torch.device("cuda")
@@ -110,7 +113,8 @@ def main() -> None:
     fpos = args.start + (args.end - args.start) * prog / prog[-1]
 
     h, w = args.hw
-    writer = imageio.get_writer(args.out, fps=args.fps, quality=9, macro_block_size=16)
+    cams = []
+    writer = None if args.cameras_only else imageio.get_writer(args.out, fps=args.fps, quality=9, macro_block_size=16)
     with torch.no_grad():
         for j, (tau, f) in enumerate(zip(taus, fpos)):
             base = np.eye(4)
@@ -125,12 +129,20 @@ def main() -> None:
             kk[:2] *= w / w0
             kk[1, 2] -= (h0 * w / w0 - h) / 2
             c2w = moved_c2w(torch.tensor(base, dtype=torch.float32, device=dev), mv)
+            cams.append({"time": float(tau), "path_frame": float(f), "frame": fi, "c2w": c2w.cpu().tolist(), "K": kk.cpu().tolist(), "hw": [h, w]})
+            if writer is None:
+                continue
             out = render_at(tr, ii, ci, c2w, kk, (h, w))
             writer.append_data((out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8))
             if j % 150 == 0:
                 print(f"[render_demo] {j}/{n_out} (frame {f:.1f}, {mv}) {time.time() - t0:.0f} s", flush=True)
-    writer.close()
-    print(f"[render_demo] {n_out} frames -> {args.out} ({time.time() - t0:.0f} s)", flush=True)
+    if writer is not None:
+        writer.close()
+    if args.cameras_out:
+        import json
+        with open(args.cameras_out, "w") as fh:
+            json.dump({"log_dir": args.log_dir, "fps": args.fps, "params": vars(args), "cameras": cams}, fh)
+    print(f"[render_demo] {n_out} frames -> {args.out if writer is not None else args.cameras_out} ({time.time() - t0:.0f} s)", flush=True)
 
 
 if __name__ == "__main__":

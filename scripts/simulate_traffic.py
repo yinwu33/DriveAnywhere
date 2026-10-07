@@ -19,8 +19,11 @@ Asset colours go through the inverse of the run's mean Affine colour model (vehi
 Rendering: per frame and per --ego_moves entry (dashrecon.gen.views.ViewMove of the frame's trained camera, e.g.
 "right=0", "right=1.29" = 3 m left, "yaw=-30"), the vehicles' Gaussians at their poses at that frame are appended to
 the run's Background model and the frame is rendered at --hw with the run's own sky.
+With --cameras (a camera path of scripts/render_demo.py --cameras_out) that path is rendered instead, as one video
+camera_path.mp4 at its frame rate; traffic time runs uniformly over the clip (--clock uniform: the other vehicles keep
+their speed when the camera slows down) and the lead vehicle stays --lead_gap ahead of the camera's path position.
 Output --out_dir: traffic.json (lanes, vehicles, per-frame poses), <move>.mp4 (10 fps), <move>_sheet.jpg (6 frames),
-meta.json (generated content: every vehicle). GT is not read.
+camera_path.mp4 (with --cameras), meta.json (generated content: every vehicle). GT is not read.
 
 Example (main venv):
     PYTHONPATH=. .venvs/main/bin/python scripts/simulate_traffic.py --log_dir results/E54s/val056 \\
@@ -128,7 +131,10 @@ def main() -> None:
     parser.add_argument("--oncoming_speed", type=float, nargs=2, required=True)
     parser.add_argument("--spacing", type=float, required=True)
     parser.add_argument("--lead_gap", type=float, required=True, help="0: no lead vehicle")
-    parser.add_argument("--ego_moves", nargs="+", required=True)
+    parser.add_argument("--ego_moves", nargs="*", default=[])
+    parser.add_argument("--cameras", help="camera path JSON of scripts/render_demo.py --cameras_out: render it (one video) instead of --ego_moves")
+    parser.add_argument("--clock", choices=["uniform", "path"], default="uniform",
+                        help="--cameras: traffic time runs uniformly over the clip (other vehicles keep their speed when the camera slows) or with the camera's path progress")
     parser.add_argument("--min_iou", type=float, default=0.7)
     parser.add_argument("--flip", type=int, nargs="*", default=[], help="assets whose front the tail-light test gets wrong (checked by eye)")
     parser.add_argument("--box_pad", type=float, default=0.08, help="drop asset Gaussians outside the 1-99 %% box grown by this share")
@@ -215,11 +221,13 @@ def main() -> None:
     pool_by_id = {a["id"]: a for a in pool}
     lane_by_off = {lane.offset: lane for lane in lanes}
 
-    def poses_at(f: int) -> list:
+    def poses_at(f: float, f_ego: float = None) -> list:
+        """Vehicles at traffic time f (frames, may be fractional); the lead vehicle follows the ego at path frame f_ego."""
+        f_ego = f if f_ego is None else f_ego
         out = []
         for j, veh in enumerate(vehicles):
             lane = lane_by_off[veh["lane"]]
-            s = s_ego[f] + veh["lead_gap"] if "lead_gap" in veh else veh["s0"] - veh["speed"] * f
+            s = float(np.interp(f_ego, tf, s_ego)) + veh["lead_gap"] if "lead_gap" in veh else veh["s0"] - veh["speed"] * f
             r = lane.at(s)
             if r is None or not r[2]:
                 continue
@@ -278,10 +286,10 @@ def main() -> None:
         return torch.stack([w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2, w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
                             w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2], -1)
 
-    def set_traffic(f) -> int:
-        """Append the vehicles at frame f to the Background model (f None: none)."""
+    def set_traffic(f, f_ego=None) -> int:
+        """Append the vehicles at traffic time f (lead vehicle at ego path frame f_ego) to the Background model (f None: none)."""
         extra = []
-        for j, ctr, yaw in ([] if f is None else poses_at(f)):
+        for j, ctr, yaw in ([] if f is None else poses_at(f, f_ego)):
             c = canon[vehicles[j]["asset"]]
             cy, sy_ = math.cos(yaw), math.sin(yaw)
             rz = torch.tensor([[cy, -sy_, 0], [sy_, cy, 0], [0, 0, 1]], dtype=torch.float32, device=dev)
@@ -309,6 +317,27 @@ def main() -> None:
     for f in frames:
         traffic["frames"][f] = [{"vehicle": j, "centre": ctr.tolist(), "yaw": yaw} for j, ctr, yaw in poses_at(f)]
     stats = {}
+    if args.cameras:
+        cam_path = json.load(open(args.cameras))
+        cams = cam_path["cameras"]
+        p0, p1, t_end = cams[0]["path_frame"], cams[-1]["path_frame"], max(cams[-1]["time"], 1e-6)
+        writer = imageio.get_writer(os.path.join(args.out_dir, "camera_path.mp4"), fps=cam_path["fps"], quality=9, macro_block_size=16)
+        n_vis = []
+        with torch.no_grad():
+            for j, c in enumerate(cams):
+                clock = p0 + (p1 - p0) * c["time"] / t_end if args.clock == "uniform" else c["path_frame"]
+                set_traffic(clock, c["path_frame"])
+                n_vis.append(len(poses_at(clock, c["path_frame"])))
+                ii, ci = ds.full_image_set.get_image(front_image_index(ds, c["frame"]), 1)
+                ii, ci = to_device(ii, dev), to_device(ci, dev)
+                out = render_at(tr, ii, ci, torch.tensor(c["c2w"], dtype=torch.float32, device=dev),
+                                torch.tensor(c["K"], dtype=torch.float32, device=dev), tuple(c["hw"]))
+                writer.append_data((out["rgb"].clamp(0, 1).cpu().numpy() * 255).round().astype(np.uint8))
+                if j % 150 == 0:
+                    print(f"[simulate_traffic] camera path {j}/{len(cams)}: {n_vis[-1]} vehicles ({time.time() - t0:.0f} s)", flush=True)
+        writer.close()
+        set_traffic(None)
+        stats["camera_path"] = {"frames": len(cams), "clock": args.clock, "vehicles_on_road_per_frame_mean": float(np.mean(n_vis))}
     for spec in args.ego_moves:
         mv = ViewMove.parse(spec)
         name = spec.replace("=", "").replace(",", "_")
