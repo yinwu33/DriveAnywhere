@@ -241,7 +241,9 @@ def main() -> None:
              "state_cells": {"unknown": int((state == 0).sum()), "drivable": int((state == 1).sum()), "non_drivable": int((state == 2).sum())},
              "classes": {CITYSCAPES[c]: int((cls == c).sum()) for c in range(n_cls) if (cls == c).any()}}
     np.savez_compressed(os.path.splitext(args.out)[0] + ".npz", origin_cell=lo, cell=args.cell, ground_cls=ground_cls, full_cls=full_cls,
-                        drivable=drivable, kerb=kerb, open_edge=open_edge, road_support=road_s, state=state)
+                        drivable=drivable, kerb=kerb, open_edge=open_edge, road_support=road_s, state=state,
+                        obstacle=obst, parked=parked, other_ground=other_ground, n_points=cnt_all.sum(1).reshape(shape).astype(np.int32),
+                        n_road_points=cnt_all[:, CITYSCAPES.index("road")].reshape(shape).astype(np.int32))
     with open(os.path.splitext(args.out)[0] + ".json", "w") as f:
         json.dump({"params": vars(args), "stats": stats, "uses_oracle": False, "dashrecon_commit": commit, "runtime_s": time.time() - t0}, f, indent=1)
     print(f"[bev_semantic] {stats} -> {args.out} ({time.time() - t0:.0f} s)", flush=True)
