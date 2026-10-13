@@ -31,6 +31,7 @@ Example (main venv):
 """
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -156,8 +157,10 @@ def main() -> None:
                 bg._opacities.data[drop] = -30.0
                 b = render_moved(trainer, dataset, t, ViewMove.parse(spec), device)[0]["rgb"].clamp(0, 1)
                 bg._opacities.data.copy_(full_ops)
-                checks.append({"frame": t, "move": spec, "psnr_cut_vs_full": float(-10 * torch.log10(((a - b) ** 2).mean()))})
-    print("[export_web_scene] cut vs full PSNR: " + "  ".join(f"t{c['frame']} {c['move']} {c['psnr_cut_vs_full']:.1f}" for c in checks), flush=True)
+                mse = float(((a - b) ** 2).mean())  # 0 when nothing was cut: PSNR null (JSON has no Infinity)
+                checks.append({"frame": t, "move": spec, "psnr_cut_vs_full": -10 * math.log10(mse) if mse > 0 else None})
+    print("[export_web_scene] cut vs full PSNR: " + "  ".join(
+        f"t{c['frame']} {c['move']} {'identical' if c['psnr_cut_vs_full'] is None else round(c['psnr_cut_vs_full'], 1)}" for c in checks), flush=True)
 
     # cameras (as rendered for novel views)
     frames = np.arange(dataset.start_timestep, dataset.end_timestep)
@@ -245,7 +248,7 @@ def main() -> None:
             "metre_to_units": s, "metre_scale_source": scale_source,
             "cameras": cams, "dashrecon_commit": commit}
     with open(os.path.join(out, "scene.json"), "w") as f:
-        json.dump(meta, f)
+        json.dump(meta, f, allow_nan=False)
     print(f"[export_web_scene] {args.label}: {len(rec):,} splats in {len(files)} file(s), {sum(os.path.getsize(os.path.join(out, x)) for x in files) / 1e6:.1f} MB "
           f"-> {out}", flush=True)
 
