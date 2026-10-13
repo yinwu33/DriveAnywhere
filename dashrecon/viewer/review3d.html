@@ -195,6 +195,7 @@ const VAL056_MODELS = [
 // of the newer exports are in the artifact's asset store (scene.json "asset_urls").
 const E54S_DESC = "与 val056 的 E54s 同一流程，只用这段视频：MoGe 焦距先验 → 固定焦距的 GLOMAP 自标定 → 掩码（Grounded-SAM-2、SegFormer）→ MapAnything 深度 → 多视角运动物体掩码 → 融合、NKSR 网格、平面 → 3DGS（网格深度 / 法向、平面吸附、训练中把离开表面的高斯挪回表面）→ 天空补全。仿真用的工作点：侧面最干净。";
 const E55BS_DESC = "G1 的推广实验：同一流程，训练换成 E55b（只挪表面前面的高斯，加颜色锚定）。5 个 Waymo 场景平均：正前 PSNR 高 1.0 dB，转 45° 的空洞少一些；侧面略多碎片。";
+const E54DS_DESC = "E54s 的流程，只改运动物体检测：与前后几帧比深度一致性时，帧间隔按这段视频自己估计的相机步长缩放（Mapillary 每 2–3 m 一张，Waymo 约 1 m 一帧；原来固定 5 / 10 / 15 / 20 帧）。停着的车判对的更多，参与训练。";
 const WAYMO_SCALE = "米制按评测侧 GT 轨迹换算";
 const SCENES = [
   { id: "val056", group: "waymo", place: "凤凰城 · 直路", title: "val056 · Waymo 凤凰城",
@@ -229,17 +230,26 @@ const SCENES = [
       { id: "E55bs", name: "E55bs", tag: "论文默认 · 不含生成", gen: false, desc: E55BS_DESC,
         nums: [["FRONT", "26.33"], ["KID 20°", "0.068"], ["KID 45°", "0.130"], ["全组", "0.073"]] }] },
   { id: "mly01", group: "mapillary", place: "洛杉矶 · 住宅区", title: "mly01 · 洛杉矶（网上行车记录仪）",
-    sub: "Mapillary 上的手机行车记录仪（iPhone 5C 装在挡风玻璃后），2018-02 阴天，住宅区主路约 400 m，两侧停车。160 张图，约每 2.5 m 一张（约 5 帧/秒）；裁掉了引擎盖。没有任何 GT。", start: "E54s",
-    seq: "lognym6ypc762dziaz1xr0", models: [{ id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
-      nums: [["FRONT 留出帧", "25.28"], ["LPIPS", "0.191"]] }] },
+    sub: "Mapillary 上的手机行车记录仪（iPhone 5C 装在挡风玻璃后），2018-02 阴天，住宅区主路约 400 m，两侧停车。160 张图，约每 2.5 m 一张（约 5 帧/秒）；裁掉了引擎盖。没有任何 GT。", start: "E54ds",
+    seq: "lognym6ypc762dziaz1xr0", models: [
+      { id: "E54ds", name: "E54ds", tag: "按步长的运动检测 · 不含生成", gen: false, desc: E54DS_DESC,
+        nums: [["FRONT 留出帧", "25.32"], ["LPIPS", "0.189"]] },
+      { id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
+        nums: [["FRONT 留出帧", "25.28"], ["LPIPS", "0.191"]] }] },
   { id: "mly02", group: "mapillary", place: "华沙 · 市中心", title: "mly02 · 华沙（网上行车记录仪）",
-    sub: "Mapillary 上的行车记录仪（VANTRUE S1 Pro，广角、桶形畸变很强），2025-10 阴天，华沙市中心约 500 m，高楼、高架、车流。160 张图，约每 3 m 一张（约 5 帧/秒）；裁掉了时间戳和标志。没有任何 GT。", start: "E54s",
-    seq: "PmlcgfWQ5isOv0p2DtqSHj", models: [{ id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
-      nums: [["FRONT 留出帧", "25.63"], ["LPIPS", "0.128"]] }] },
+    sub: "Mapillary 上的行车记录仪（VANTRUE S1 Pro，广角、桶形畸变很强），2025-10 阴天，华沙市中心约 500 m，高楼、高架、车流。160 张图，约每 3 m 一张（约 5 帧/秒）；裁掉了时间戳和标志。没有任何 GT。", start: "E54ds",
+    seq: "PmlcgfWQ5isOv0p2DtqSHj", models: [
+      { id: "E54ds", name: "E54ds", tag: "按步长的运动检测 · 不含生成", gen: false, desc: E54DS_DESC,
+        nums: [["FRONT 留出帧", "25.61"], ["LPIPS", "0.129"]] },
+      { id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
+        nums: [["FRONT 留出帧", "25.63"], ["LPIPS", "0.128"]] }] },
   { id: "mly03", group: "mapillary", place: "巴黎 · 林荫大道", title: "mly03 · 巴黎（网上车载相机）",
-    sub: "Mapillary 上的车载相机，2019-01 冬天阴天，巴黎 16 区的林荫大道约 310 m，两侧停车、落叶树。160 张图，约每 2 m 一张。没有任何 GT。右侧近处的停放车辆大多被运动物体检测判成了在动的车、没有参与训练（车辆像素只有 9% 判为静止；停车多的 Waymo 场景 val039 / 056 / 094 是 58–87%），那一侧重建得很碎。", start: "E54s",
-    seq: "-LKoKeuP_b-lJTq6YEw1_A", models: [{ id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
-      nums: [["FRONT 留出帧", "19.06"], ["LPIPS", "0.266"]] }] },
+    sub: "Mapillary 上的车载相机，2019-01 冬天阴天，巴黎 16 区的林荫大道约 310 m，两侧停车、落叶树。160 张图，约每 2 m 一张。没有任何 GT。E54s 里右侧近处的停放车辆大多被运动物体检测判成了在动的车、没有参与训练（车辆像素只有 9% 判为静止；停车多的 Waymo 场景 val039 / 056 / 094 是 58–87%），那一侧很碎；E54ds 按相机步长比较（2 / 4 / 6 / 8 帧），判为静止的升到 51%，停放车辆重建出来了。", start: "E54ds",
+    seq: "-LKoKeuP_b-lJTq6YEw1_A", models: [
+      { id: "E54ds", name: "E54ds", tag: "按步长的运动检测 · 不含生成", gen: false, desc: E54DS_DESC,
+        nums: [["FRONT 留出帧", "20.09"], ["LPIPS", "0.245"]] },
+      { id: "E54s", name: "E54s", tag: "仿真工作点 · 不含生成", gen: false, desc: E54S_DESC,
+        nums: [["FRONT 留出帧", "19.06"], ["LPIPS", "0.266"]] }] },
 ];
 for (const sc of SCENES) for (const m of sc.models) m.path = sc.id === "val056" ? m.id : `${sc.id}/${m.id}`;
 const GROUPS = [["waymo", "Waymo 验证段（有 GT：评测数字可比）"], ["mapillary", "Mapillary 网上视频（CC BY-SA 4.0，没有 GT，只有 FRONT 留出帧的数字）"]];
