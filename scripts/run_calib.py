@@ -74,13 +74,30 @@ def main() -> None:
 
     h, w = cv2.imread(paths[0]).shape[:2]
     dist5 = np.array([res.dist[0], res.dist[1], 0.0, 0.0, 0.0])
-    map_x, map_y = cv2.initUndistortRectifyMap(res.K, dist5, None, res.K, (w, h), cv2.CV_32FC1)
+
+    def undistort_maps(zoom: float) -> tuple:
+        k_out = res.K.copy()
+        k_out[0, 0] *= zoom
+        k_out[1, 1] *= zoom
+        mx, my = cv2.initUndistortRectifyMap(res.K, dist5, None, k_out, (w, h), cv2.CV_32FC1)
+        return k_out, mx, my, max(-0.5 - mx.min(), mx.max() - (w - 0.5), -0.5 - my.min(), my.max() - (h - 0.5), 0.0)
     # barrel distortion keeps the undistorted image (same K) inside the original one up to a thin border: allow
-    # EDGE_TOLERANCE_PX outside the image (filled by replicating the edge pixel); anything more needs a cropped K
-    outside = max(-0.5 - map_x.min(), map_x.max() - (w - 0.5), -0.5 - map_y.min(), map_y.max() - (h - 0.5), 0.0)
-    assert outside <= EDGE_TOLERANCE_PX, (
-        f"undistortion samples {outside:.1f} px outside the image (x {map_x.min():.1f}..{map_x.max():.1f}, "
-        f"y {map_y.min():.1f}..{map_y.max():.1f}): a cropped K would be needed")
+    # EDGE_TOLERANCE_PX outside the image (filled by replicating the edge pixel). A lens whose corners would need more
+    # (mly03, Mapillary) gets a cropped K instead: the focal of the undistorted images zoomed by the smallest factor that
+    # keeps them inside (bisection); the sparse observations, pinhole projections with K, move with it.
+    zoom = 1.0
+    k_und, map_x, map_y, outside = undistort_maps(zoom)
+    if outside > EDGE_TOLERANCE_PX:
+        lo, hi = 1.0, 1.5
+        assert undistort_maps(hi)[3] <= EDGE_TOLERANCE_PX, f"undistortion {outside:.1f} px outside even at zoom {hi}"
+        for _ in range(30):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (lo, mid) if undistort_maps(mid)[3] <= EDGE_TOLERANCE_PX else (mid, hi)
+        zoom = hi
+        print(f"[run_calib] undistortion {outside:.1f} px outside the image at the estimated K: focal zoomed by {zoom:.4f}", flush=True)
+        k_und, map_x, map_y, outside = undistort_maps(zoom)
+        for key, c in (("u", 0), ("v", 1)):
+            res.obs[key] = res.K[c, 2] + zoom * (res.obs[key] - res.K[c, 2])
     os.makedirs(out_img_dir)
     for name, path in zip(names, paths):
         img = cv2.imread(path)
@@ -90,7 +107,8 @@ def main() -> None:
                     [cv2.IMWRITE_JPEG_QUALITY, 95])
 
     io.write_camera(calib_dir, {"model": "COLMAP RADIAL, principal point fixed", "image_hw": [h, w],
-                                "K": res.K.tolist(), "dist": res.dist.tolist()})
+                                "K": k_und.tolist(), "dist": res.dist.tolist(),
+                                **({} if zoom == 1.0 else {"K_distorted": res.K.tolist(), "undistort_zoom": zoom})})
     io.write_frames(calib_dir, frames)
     io.write_poses(calib_dir, res.poses_c2w)
     io.write_sparse_obs(calib_dir, res.obs["frame"], res.obs["u"], res.obs["v"], res.obs["z"])
@@ -104,6 +122,7 @@ def main() -> None:
         "undistorted_images": os.path.relpath(out_img_dir),
         "undistort_map_range": {"x": [float(map_x.min()), float(map_x.max())], "y": [float(map_y.min()), float(map_y.max())]},
         "undistort_outside_px": float(outside),
+        "undistort_zoom": zoom,
         "num_observations": int(len(res.obs["z"])),
         **res.stats,
         "uses_oracle": False, "uses_calibration": False,
