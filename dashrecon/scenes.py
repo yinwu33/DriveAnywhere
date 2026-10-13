@@ -57,6 +57,23 @@ MT_SCENES = (
 )
 MULTI_TRAVERSALS = {"mt1": ("mt1a", "mt1b")}
 
+# Online dashcam videos (user 10-09 / 10-13: "a street dashcam video from the web through the E54s method"): Mapillary
+# image sequences (CC BY-SA 4.0) fetched with scripts/fetch_mapillary.py into data/mapillary/processed/<scene_idx>/;
+# scene_idx 950+ cannot collide with a Waymo processed index. segment = the Mapillary sequence id; the frames are the
+# fetched slice (start / count in <scene_idx>/mapillary.json), renumbered from 0. No GT of any kind.
+MAPILLARY_ROOT = "data/mapillary/processed"
+MAPILLARY_SCENES = (
+    Scene("mly01", "mapillary", 950, "lognym6ypc762dziaz1xr0", "online_dashcam",
+          "Los Angeles residential arterial, iPhone 5C behind the windscreen, overcast, 2018-02-14; frames 200-359, "
+          "~400 m straight, parked cars both sides", 0, -1),
+    Scene("mly02", "mapillary", 951, "PmlcgfWQ5isOv0p2DtqSHj", "online_dashcam",
+          "Warsaw city centre (Emilii Plater area), VANTRUE S1 Pro dashcam, wide-angle lens with strong barrel distortion, "
+          "overcast, 2025-10-16; frames 200-359, ~500 m straight at ~16 m/s, high-rises, moving traffic", 0, -1),
+    Scene("mly03", "mapillary", 952, "-LKoKeuP_b-lJTq6YEw1_A", "online_dashcam",
+          "Paris 16e boulevard, car-mounted camera, winter overcast, 2019-01-04; frames 200-359, ~310 m straight, "
+          "parked cars both sides, bare trees", 0, -1),
+)
+
 # E34 (docs/E34_DATA.md): Waymo training segments that become repair-model training pairs, addressed as
 # "wt<idx:03d>", idx = line index in data/waymo_train_list.txt (the drivestudio processed-scene index). Their FRONT
 # image tree is the undistorted, renumbered one of scripts/e34_calib.py (frames counted from 0 there), so the scene
@@ -80,10 +97,10 @@ def training_scene(scene_id: str) -> Scene:
 
 
 def get_scene(scene_id: str) -> Scene:
-    """Look up a development, multi-traversal or E34 training scene by id."""
+    """Look up a development, multi-traversal, Mapillary or E34 training scene by id."""
     if scene_id.startswith(TRAINING_PREFIX):
         return training_scene(scene_id)
-    known = DEV_SCENES + MT_SCENES
+    known = DEV_SCENES + MT_SCENES + MAPILLARY_SCENES
     matches = [s for s in known if s.scene_id == scene_id]
     assert len(matches) == 1, f"unknown scene_id {scene_id}; known: {[s.scene_id for s in known]}"
     return matches[0]

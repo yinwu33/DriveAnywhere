@@ -16,7 +16,8 @@ Sky: the run's Sky model queried on an equirectangular grid (--sky_hw), azimuth 
 from -180 to 180 degrees left to right, elevation from +90 at the top to -90 at the bottom; JPEG.
 Cameras: every frame's FRONT camera as rendered for novel views (CamPose refined, OpenCV c2w, world x forward, y left,
 z up), its pinhole intrinsics and image size, and the evaluation-side metre scale (GT FRONT trajectory Sim(3), as
-scripts/eval_view_range.py; reads GT, for labelling the page's metre sliders only).
+scripts/eval_view_range.py; reads GT, for labelling the page's metre sliders only; a Mapillary scene, which has no GT,
+takes it from the image positions of its mapillary.json instead: --gps_json).
 
 The page is dashrecon/viewer/review3d.html (a WebGL2 splat renderer with the same gate); copy it to <out_dir>/index.html.
 Output <out_dir>/<label>/: splats_<k>.png, sky.jpg, scene.json (counts, chunk files, gate parameters, cameras, scale).
@@ -90,7 +91,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--log_dir", required=True)
     parser.add_argument("--label", required=True)
-    parser.add_argument("--gt_root", required=True)
+    parser.add_argument("--gt_root", help="Waymo: metre scale from the GT FRONT trajectory")
+    parser.add_argument("--gps_json", help="Mapillary scenes (no GT): metre scale from the positions in scripts/fetch_mapillary.py's "
+                        "mapillary.json (computed_geometry, else geometry)")
     parser.add_argument("--max_splats", type=int, required=True)
     parser.add_argument("--chunk", type=int, default=400000)
     parser.add_argument("--range_budget", type=int, default=0, help="Gaussians kept per generated range (0: global ranking only)")
@@ -99,6 +102,7 @@ def main() -> None:
     parser.add_argument("--colour", choices=["nearest_view", "dc"], default="nearest_view")
     parser.add_argument("--out_dir", required=True)
     args = parser.parse_args()
+    assert (args.gt_root is None) != (args.gps_json is None), "give exactly one of --gt_root / --gps_json"
     commit = git_commit()
     device = torch.device("cuda")
     out = os.path.join(args.out_dir, args.label)
@@ -219,16 +223,26 @@ def main() -> None:
     Image.fromarray((sky * 255).round().astype(np.uint8)).save(os.path.join(out, "sky.jpg"), quality=88)
 
     # the evaluation-side metre scale
-    gt_dir = os.path.join(args.gt_root, f"{int(cfg.data.scene_idx):03d}")
-    front_to_ego = gt_cam_to_ego(gt_dir, 0)
-    gt_front = np.stack([np.loadtxt(os.path.join(gt_dir, "ego_pose", f"{int(t):03d}.txt")) @ front_to_ego for t in frames])
-    s = umeyama_scale(gt_front[:, :3, 3], np.stack(est)[:, :3, 3])
+    if args.gt_root:
+        gt_dir = os.path.join(args.gt_root, f"{int(cfg.data.scene_idx):03d}")
+        front_to_ego = gt_cam_to_ego(gt_dir, 0)
+        gt_front = np.stack([np.loadtxt(os.path.join(gt_dir, "ego_pose", f"{int(t):03d}.txt")) @ front_to_ego for t in frames])
+        s = umeyama_scale(gt_front[:, :3, 3], np.stack(est)[:, :3, 3])
+        scale_source = "evaluation side: Sim(3) of the GT FRONT trajectory (reads GT)"
+    else:  # Mapillary: local east / north metres of the image positions (height unknown: 0), Sim(3) scale as above
+        recs = json.load(open(args.gps_json))["images"]
+        ll = np.array([(recs[int(t)].get("computed_geometry") or recs[int(t)]["geometry"])["coordinates"] for t in frames])
+        r_earth, lat0 = 6371000.0, np.deg2rad(ll[:, 1].mean())
+        en = np.stack([np.deg2rad(ll[:, 0] - ll[0, 0]) * r_earth * np.cos(lat0), np.deg2rad(ll[:, 1] - ll[0, 1]) * r_earth,
+                       np.zeros(len(ll))], 1)
+        s = umeyama_scale(en, np.stack(est)[:, :3, 3])
+        scale_source = "Mapillary image positions (computed_geometry: GPS refined by Mapillary), Sim(3); viewer labels only"
     lo, hi = means[keep].quantile(0.01, dim=0).cpu().numpy(), means[keep].quantile(0.99, dim=0).cpu().numpy()
     meta = {"label": args.label, "log_dir": args.log_dir, "splats": int(len(rec)), "gaussians_total": int(n_all), "files": files,
             "file_info": file_info, "png_width": PNG_WIDTH, "chunk": args.chunk, "record_bytes": 32, "gate": None if gate is None else {"margin": gate.margin, "fade": gate.fade,
             "double_sided": gate.double_sided, "gated_in_export": int(((rec["flags"] & 1) > 0).sum())},
             "sh_degree_exported": 0, "colour": colour, "cut_check": checks, "bbox_p1_p99": [lo.round(3).tolist(), hi.round(3).tolist()],
-            "metre_to_units": s, "metre_scale_source": "evaluation side: Sim(3) of the GT FRONT trajectory (reads GT)",
+            "metre_to_units": s, "metre_scale_source": scale_source,
             "cameras": cams, "dashrecon_commit": commit}
     with open(os.path.join(out, "scene.json"), "w") as f:
         json.dump(meta, f)

@@ -33,6 +33,7 @@ pandaset-devkit/
 # dashrecon
 data/data
 data/dashrecon/
+data/mapillary/
 results/*
 !results/SUMMARY.md
 .venvs/

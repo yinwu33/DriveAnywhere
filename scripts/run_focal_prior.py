@@ -24,8 +24,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dashrecon.provenance import git_commit  # noqa: E402
+from dashrecon.scenes import get_scene  # noqa: E402
 
-SCENE_IDX = {"val039": 39, "val041": 41, "val056": 56, "val087": 87, "val094": 94}
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
     t0 = time.time()
     dev = torch.device("cuda")
     model = MoGeModel.from_pretrained(args.model_id).to(dev).eval()
-    img_dir = os.path.join(args.processed_root, f"{SCENE_IDX[args.scene_id]:03d}", "images")
+    img_dir = os.path.join(args.processed_root, f"{get_scene(args.scene_id).scene_idx:03d}", "images")
     names = sorted(n for n in os.listdir(img_dir) if n.endswith("_0.jpg"))
     pick = [names[int(i)] for i in np.linspace(0, len(names) - 1, args.frames).round()]
     fx = []
