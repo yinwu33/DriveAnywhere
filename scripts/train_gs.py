@@ -76,12 +76,15 @@ PIPELINES = {
     "glomap-da3": ("pose-glomap_depth-da3", "mask-gsam2_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
     "glomap-mv": ("pose-glomap_depth-mapanything", "mask-gsam2mv_sky-segformer_img-glomap", "data/dashrecon/_undistorted/calib-glomap"),
     "glomapf-mv": ("pose-glomapf_depth-mapanything", "mask-gsam2mv_sky-segformer_img-glomapf", "data/dashrecon/_undistorted/calib-glomapf"),
+    "glomapf-mvd": ("pose-glomapf_depth-mapanything", "mask-gsam2mvd_sky-segformer_img-glomapf", "data/dashrecon/_undistorted/calib-glomapf"),
 }
 E3_ROOT = "data/dashrecon/_e3_nocleanup"
 EXPERIMENTS = {"E3": "mapanything", "E4": "mapanything", "E5": "mapanything", "E4c": "glomap", "E5c": "glomap",
                "E5f": "glomap", "MT1": "glomap-mt1", "MT1A": "glomap-mt1", "MT1app": "glomap-mt1",
-               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv", "E49": "glomapf-mv", "E50": "glomapf-mv", "E51": "glomapf-mv", "E52": "glomapf-mv", "E53": "glomapf-mv", "E54": "glomapf-mv", "E55a": "glomapf-mv", "E55b": "glomapf-mv"}
+               "MT1e": "glomap-mt1", "MT1x": "glomap-mt1", "MT1m": "glomap-mt1", "E40": "glomap-da3", "E41": "glomap-mv", "E45": "glomap-mv", "E46": "glomapf-mv", "E48": "glomapf-mv", "E49": "glomapf-mv", "E50": "glomapf-mv", "E51": "glomapf-mv", "E52": "glomapf-mv", "E53": "glomapf-mv", "E54": "glomapf-mv", "E55a": "glomapf-mv", "E55b": "glomapf-mv", "E54d": "glomapf-mvd"}
 MT1_EXPS = ("MT1", "MT1A", "MT1app", "MT1e", "MT1x", "MT1m")
+# the same training as another experiment, only on other inputs (G2b: E54 on the moving-object masks with step-scaled offsets)
+SAME_TRAINING = {"E54d": "E54"}
 # per-traversal appearance of the MT1 runs: Gaussian colour residuals (dashrecon.train.traversal) and one sky per traversal
 TRAVERSAL_RESIDUAL = {"MT1app": ["dc"], "MT1x": ["dc"], "MT1m": ["rest"]}
 # MTGS's per-image exposure (dashrecon.train.exposure) instead of drivestudio's Affine, whose zero-initialised MLP never learns
@@ -101,6 +104,7 @@ def experiment_opts(exp: str, scene_id: str) -> list[str]:
     pose_dir = io.scene_dir("data/dashrecon", scene_id, pose_tag)
     mask_dir = io.scene_dir("data/dashrecon", scene_id, mask_tag)
     fusion_dir = io.scene_dir(MT1A_ROOT if exp == "MT1A" else "data/dashrecon", scene_id, fusion_tag)
+    exp = SAME_TRAINING.get(exp, exp)
     opts = [
         f"data.data_root={image_root}",
         f"data.scene_idx={scene.scene_idx}",

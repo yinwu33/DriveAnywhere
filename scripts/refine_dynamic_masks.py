@@ -13,7 +13,12 @@ Regions with too few tested pixels (far, tiny, low confidence) stay masked. Peop
 the static background: the dynamic mask of --always_dir (Grounded-SAM-2 with "person / bicycle / motorcycle" only) is
 added back after the test (on val056 two pedestrians walking beside a parked van share its region and were released).
 
-Output: <out_root>/<scene_id>/<mask tag with gsam2 -> gsam2mv>/ with mask_dynamic (moving only), the input's sky and
+With --offset_step the offsets are frames at that camera step (estimated pose units per frame; the Waymo dev scenes at
+10 Hz move about 0.5) and are rescaled to this video's median step, at least 1 frame (G2b: a Mapillary sequence is
+sampled every 2-3 m, so 5-20 frames span 10-60 m and close parked cars leave the view or hide behind each other); the
+output tag is then gsam2mvd.
+
+Output: <out_root>/<scene_id>/<mask tag with gsam2 -> gsam2mv, or gsam2mvd with --offset_step>/ with mask_dynamic (moving only), the input's sky and
 road masks (copied), frames.txt and meta.json (parameters, per-frame regions kept / released). GT is not read.
 
 Example (main venv):
@@ -78,6 +83,8 @@ def main() -> None:
     parser.add_argument("--conf_percentile", type=float, required=True)
     parser.add_argument("--max_depth", type=float, required=True)
     parser.add_argument("--offsets", type=int, nargs="+", required=True, help="frame offsets checked on each side")
+    parser.add_argument("--offset_step", type=float, default=None,
+                        help="camera step (pose units per frame) the --offsets are given at; rescaled to this video's step")
     parser.add_argument("--consistency_rel", type=float, required=True)
     parser.add_argument("--consistency_min", type=int, required=True)
     parser.add_argument("--static_share", type=float, required=True)
@@ -89,7 +96,8 @@ def main() -> None:
     scene = get_scene(args.scene_id)
     tag = os.path.basename(os.path.normpath(args.mask_dir))
     assert tag.startswith("mask-gsam2_"), tag
-    out_dir = io.scene_dir(args.out_root, args.scene_id, tag.replace("mask-gsam2_", "mask-gsam2mv_", 1))
+    out_tag = "mask-gsam2mvd_" if args.offset_step else "mask-gsam2mv_"
+    out_dir = io.scene_dir(args.out_root, args.scene_id, tag.replace("mask-gsam2_", out_tag, 1))
     os.makedirs(out_dir, exist_ok=True)
 
     frames = io.read_frames(args.pose_dir)
@@ -103,6 +111,11 @@ def main() -> None:
     conf_thr = float(np.percentile(confs_all[train][depths_all[train] > 0], args.conf_percentile))
     # neighbours are training frames only (as the fusion); a test frame is checked against them too
     tr_idx = np.nonzero(train)[0]
+    median_step = float(np.median(np.linalg.norm(np.diff(poses_all[:, :3, 3], axis=0), axis=1)))
+    offsets = list(args.offsets)
+    if args.offset_step:
+        offsets = sorted({max(1, int(round(o * args.offset_step / median_step))) for o in args.offsets})
+        print(f"[refine_dynamic_masks] median camera step {median_step:.3f}: offsets {args.offsets} -> {offsets} frames", flush=True)
 
     per_frame, kept_px, released_px = [], 0, 0
     for i, t in enumerate(frames):
@@ -112,7 +125,7 @@ def main() -> None:
         small = labels_to_depth_grid(labels, grid)
         testable = (small > 0) & (depths_all[i] > 0) & (confs_all[i] >= conf_thr) & (depths_all[i] < args.max_depth)
         # the nearest training frame at each offset (test frames are never neighbours)
-        others = sorted({int(tr_idx[np.argmin(np.abs(tr_idx - (i + s * o)))]) for o in args.offsets for s in (-1, 1)
+        others = sorted({int(tr_idx[np.argmin(np.abs(tr_idx - (i + s * o)))]) for o in offsets for s in (-1, 1)
                          if 0 <= i + s * o < len(frames)} - {i})
         counts = offset_counts(depths_all, k_all, poses_all, testable, i, others, args.consistency_rel)
         ok = counts >= args.consistency_min
@@ -148,7 +161,7 @@ def main() -> None:
     meta = {k: src_meta[k] for k in ("scene_id", "segment", "image_hw", "image_source", "semantic", "uses_oracle", "uses_calibration")}
     meta.update({"dynamic": {"source": args.mask_dir, "source_dynamic": src_meta["dynamic"],
                              "always": args.always_dir, "always_dynamic": io.read_meta(args.always_dir)["dynamic"], "refinement": "multi-view depth consistency per region",
-                             "pose_dir": args.pose_dir, "conf_threshold": conf_thr, **{k: v for k, v in vars(args).items() if k not in ("mask_dir", "pose_dir", "out_root")}},
+                             "pose_dir": args.pose_dir, "conf_threshold": conf_thr, "median_step": median_step, "offsets_used": offsets, **{k: v for k, v in vars(args).items() if k not in ("mask_dir", "pose_dir", "out_root")}},
                  "summary": {"released_px": released_px, "kept_px": kept_px, "released_share": released_px / max(1, released_px + kept_px)},
                  "oracle_note": "estimated depth / poses and the Grounded-SAM-2 mask only; no GT boxes",
                  "runtime_s": time.time() - t0, "dashrecon_commit": commit, "per_frame": per_frame})
